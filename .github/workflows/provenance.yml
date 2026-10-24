@@ -1,0 +1,28 @@
+name: Fixture provenance
+on:
+  workflow_dispatch:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  provenance:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'manual-provenance' || 'provenance' }} (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 4 # budget: 2 minutes
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.13.1'
+          enable-cache: false
+      - run: uv run --no-project --python 3.14.8 python -m unittest discover -s tests -p test_provenance.py -v
+      - run: uv run --no-project --python 3.14.8 python tools/provenance.py

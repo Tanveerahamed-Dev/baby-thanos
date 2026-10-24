@@ -1,0 +1,23 @@
+fixture_id: validator-synthetic-output
+file: raw.txt
+tier: S
+source:
+  kind: synthetic
+  repository:
+    url: "https://github.com/Tanveerahamed-Dev/atlas-brain-staging"
+    commit: "7324467b2a0e910c32c9ea9a497163ff242ec4b6"
+    path: "tests/test_provenance.py"
+platform:
+  family: unstated
+  model: unstated
+  version: unstated
+  version_basis: unknown
+licence:
+  name: Apache-2.0
+  redistribution: public
+  notice: "Synthetic transport self-test authored for Atlas Brain under repository Apache-2.0 licence; see LICENSE. No upstream attribution notice; never device evidence."
+sha256: "50496eb933ee5e6c8b2db35e409a9968b48a9b430ffab0d47d40e09f75531d70"
+privacy:
+  scanner_version: "tools/privacy.py@a41f882902b40d698cf64ff058654a7149cf9c79"
+  result: pass
+  exemption: null

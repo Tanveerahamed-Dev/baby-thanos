@@ -1,0 +1,54 @@
+[
+  {
+    "name": "genieparser",
+    "repository": "https://github.com/CiscoTestAutomation/genieparser",
+    "commit": "6e0b25eb76be058e787e2859a89bc6edfa4e0bf6",
+    "archive_url": "https://codeload.github.com/CiscoTestAutomation/genieparser/zip/6e0b25eb76be058e787e2859a89bc6edfa4e0bf6",
+    "archive_sha256": "fb1cf85d94283a37f8fd3b2269802e7e32f24d99f6d69a974c85086d54c53b35",
+    "licence": "Apache-2.0",
+    "licence_path": "LICENSE",
+    "licence_sha256": "c95bae1d1ce0235ecccd3560b772ec1efb97f348a79f0fbe0a634f0c2ccefe2c",
+    "notice_path": "docs/contract/tier-p/_licences/genieparser/NOTICE",
+    "upstream_notice_present": false,
+    "upstream_licence_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  {
+    "name": "ntc-templates",
+    "repository": "https://github.com/networktocode/ntc-templates",
+    "commit": "d4f30da6077dfb3e41cb6ff7ece5f5b768f59457",
+    "archive_url": "https://codeload.github.com/networktocode/ntc-templates/zip/d4f30da6077dfb3e41cb6ff7ece5f5b768f59457",
+    "archive_sha256": "75ec0e3722e211ab88a5b5f4c7cf79050ebcdcfd45e21a8838ef3d2bf5459a17",
+    "licence": "Apache-2.0",
+    "licence_path": "docs/contract/tier-p/_licences/ntc-templates/LICENSE",
+    "licence_sha256": "5247d627c7cebca8061461fbc00104e27f1fbbd356cfec260147a6dac88a7dd4",
+    "notice_path": "docs/contract/tier-p/_licences/ntc-templates/NOTICE",
+    "upstream_notice_present": false,
+    "upstream_licence_sha256": "5247d627c7cebca8061461fbc00104e27f1fbbd356cfec260147a6dac88a7dd4"
+  },
+  {
+    "name": "suzieq",
+    "repository": "https://github.com/netenglabs/suzieq",
+    "commit": "75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+    "archive_url": "https://codeload.github.com/netenglabs/suzieq/zip/75198b5585ebef91f0659b6b1ec3c964cc2cd1ad",
+    "archive_sha256": "977452f540f0863ee84c9ee7d172738775e6353596cb13161b4dcb1f47297963",
+    "licence": "Apache-2.0",
+    "licence_path": "LICENSE",
+    "licence_sha256": "c95bae1d1ce0235ecccd3560b772ec1efb97f348a79f0fbe0a634f0c2ccefe2c",
+    "notice_path": "docs/contract/tier-p/_licences/suzieq/NOTICE",
+    "upstream_notice_present": false,
+    "upstream_licence_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  {
+    "name": "napalm",
+    "repository": "https://github.com/napalm-automation/napalm",
+    "commit": "820a06b2069eb1d7b0cbe8943ee2dea6e2949d1a",
+    "archive_url": "https://codeload.github.com/napalm-automation/napalm/zip/820a06b2069eb1d7b0cbe8943ee2dea6e2949d1a",
+    "archive_sha256": "4020e6c9dba556444c3974d08dcbba89aeee59f1591ab20cc797e0c7286523a0",
+    "licence": "Apache-2.0",
+    "licence_path": "LICENSE",
+    "licence_sha256": "c95bae1d1ce0235ecccd3560b772ec1efb97f348a79f0fbe0a634f0c2ccefe2c",
+    "notice_path": "docs/contract/tier-p/_licences/napalm/NOTICE",
+    "upstream_notice_present": true,
+    "upstream_licence_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  }
+]

@@ -1,0 +1,23 @@
+fixture_id: governance-historical-review-metadata
+file: historical-reviews.json
+tier: S
+source:
+  kind: synthetic
+  repository:
+    url: "https://github.com/Tanveerahamed-Dev/atlas-brain-staging"
+    commit: "e9d98c8c8b29b1122e0f0390e5febff43d353267"
+    path: "fixtures/governance/historical-reviews.json"
+platform:
+  family: unstated
+  model: unstated
+  version: unstated
+  version_basis: unknown
+licence:
+  name: Apache-2.0
+  redistribution: public
+  notice: "Structured regression metadata authored for Atlas Brain; hashes transcribed from the public REV records linked in the JSON. Repository Apache-2.0 licence, see LICENSE. Not device evidence."
+sha256: "c104e8bb951738788420fc80eb62fe30b0bf114ea009900f0b57da18961dd4f4"
+privacy:
+  scanner_version: "tools/privacy.py@a41f882902b40d698cf64ff058654a7149cf9c79; structural run 39427883062"
+  result: pass
+  exemption: null

@@ -1,0 +1,33 @@
+fixture_id: mu-nxos-show-environment-public-001
+file: raw.txt
+tier: P
+source:
+  kind: library_testdata
+  repository:
+    url: "https://github.com/networktocode/ntc-templates"
+    commit: "d4f30da6077dfb3e41cb6ff7ece5f5b768f59457"
+    path: "tests/cisco_nxos/show_environment/cisco_nxos_show_environment2.raw"
+  archive_sha256: "75ec0e3722e211ab88a5b5f4c7cf79050ebcdcfd45e21a8838ef3d2bf5459a17"
+capture:
+  tool: unstated
+  form: "nxos.show_environment"
+  utc: null
+  attempted: null
+  succeeded: null
+  read_scope: unstated
+platform:
+  family: nxos
+  model: "unstated"
+  version: "unstated"
+  version_basis: unknown
+licence:
+  name: Apache-2.0
+  redistribution: public
+  notice: "Unmodified public library test sample from https://github.com/networktocode/ntc-templates. Revision: d4f30da6077dfb3e41cb6ff7ece5f5b768f59457 Source path: tests/cisco_nxos/show_environment/cisco_nxos_show_environment2.raw Licence: Apache-2.0. See docs/contract/mutation-sources/ntc-templates/LICENSE and NOTICE. Full licence text: LICENSE  Source: https://github.com/networktocode/ntc-templates Pinned revision: d4f30da6077dfb3e41cb6ff7ece5f5b768f59457 Licence: Apache-2.0; upstream root LICENSE retained verbatim. No upstream root NOTICE was present at this revision. Raw samples, where imported, are unmodified. No endorsement is implied. Copyright 2015 Jason Edelman. Network to Code, LLC. Full attribution: docs/contract/mutation-sources/ntc-templates/LICENSE."
+sha256: "747fa1adb364620e04f98828366d3be13ded0dd4b7b1480d83d16b681a8d7557"
+privacy:
+  scanner_version: q-public-import-v1
+  result: pass
+  exemption: null
+line_count: 48
+format_floor: false

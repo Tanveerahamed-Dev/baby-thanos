@@ -1,0 +1,21 @@
+{
+  "kind": "local_file_custody_checks_not_CI_acceptance",
+  "base_commit": "361efed5717610e226c1c41c2835f4019f4844ff",
+  "variants": 54,
+  "source_archives_verified": 4,
+  "inventory_rows_verified": 93,
+  "raw_files_byte_equal": 18,
+  "version_stated_floors": 1,
+  "unknown_version_floors": 0,
+  "upstream_licences_byte_equal": 4,
+  "upstream_notices_byte_equal": 1,
+  "effective_raw_text_attributes": "unset",
+  "privacy_import_screen": "pass within documented scope; owner-marker/promotion scan unavailable",
+  "planted_negative_cases": 5,
+  "documentation_address_positive_case": "pass",
+  "schema_validation": "not_verified_validator_not_landed",
+  "engine_runtime_acceptance": "not_run",
+  "CI_acceptance": "not_run",
+  "remote_push": "held_public_visibility_conflicts_with_bootstrap",
+  "pull_request": "not_created"
+}

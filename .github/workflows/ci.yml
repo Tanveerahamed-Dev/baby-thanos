@@ -1,0 +1,89 @@
+name: C1 gates
+on:
+  workflow_dispatch:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 22 * * *'
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: c1-${{ github.workflow }}-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
+env:
+  GH_TOKEN: ${{ github.token }}
+  UV_VERSION: '0.13.1'
+  ATLAS_TEST_MARKER: ${{ github.run_id }}-synthetic-canary
+jobs:
+  lock:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'manual-lock' || 'lock' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8 # budget: 4 minutes
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - run: uv lock
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lock-${{ github.event.pull_request.head.sha || github.sha }}
+          path: uv.lock
+          if-no-files-found: error
+      - run: git ls-files --error-unmatch uv.lock
+      - run: git diff --exit-code -- uv.lock
+      - run: uv lock --check
+  static:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'manual-static' || 'static' }} (${{ matrix.os }})
+    # BOOTSTRAP_PR_LINUX_ONLY defaults true; set repository variable false to restore Windows PRs.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON((github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || vars.BOOTSTRAP_PR_LINUX_ONLY == 'false') && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10 # budget: 5 minutes (S6 A1)
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync pyright
+      - run: uv run --no-sync python tools/fence.py
+      - run: uv run --no-sync pytest -q
+  privacy:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'manual-privacy' || 'privacy' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8 # budget: 4 minutes (S6 A2)
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv run --no-sync pytest -q tests/test_privacy.py
+      - name: Scan changed blobs (full tree on nightly)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        shell: bash
+        run: |
+          if [[ -n "$BASE" && ! "$BASE" =~ ^0+$ ]]; then
+            uv run --no-sync python tools/privacy.py --base "$BASE" --head HEAD
+          else
+            uv run --no-sync python tools/privacy.py
+          fi

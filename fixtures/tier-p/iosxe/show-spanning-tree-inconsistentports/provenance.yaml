@@ -1,0 +1,33 @@
+fixture_id: iosxe-show-spanning-tree-inconsistentports-public-001
+file: raw.txt
+tier: P
+source:
+  kind: library_testdata
+  repository:
+    url: "https://github.com/CiscoTestAutomation/genieparser"
+    commit: "6e0b25eb76be058e787e2859a89bc6edfa4e0bf6"
+    path: "src/genie/libs/parser/iosxe/tests/ShowSpanningTreeInconsistentports/cli/equal/golden_output_2_output.txt"
+  archive_sha256: "fb1cf85d94283a37f8fd3b2269802e7e32f24d99f6d69a974c85086d54c53b35"
+capture:
+  tool: unstated
+  form: "iosxe.show_spanning-tree_inconsistentports"
+  utc: null
+  attempted: null
+  succeeded: null
+  read_scope: unstated
+platform:
+  family: iosxe
+  model: "unstated"
+  version: "unstated"
+  version_basis: unknown
+licence:
+  name: Apache-2.0
+  redistribution: public
+  notice: "Source: https://github.com/CiscoTestAutomation/genieparser Pinned revision: 6e0b25eb76be058e787e2859a89bc6edfa4e0bf6 Licence: Apache-2.0; full licence text is retained in repository LICENSE. No upstream root NOTICE was present at this revision. Raw samples, where imported, are unmodified. No endorsement is implied. Full Apache-2.0 licence text is retained in repository LICENSE."
+sha256: "e8327779c18f424b3fca0f62b2e5d532f49a9920d387443c58be79f8430190f1"
+privacy:
+  scanner_version: q-public-import-v1
+  result: pass
+  exemption: null
+line_count: 5
+format_floor: false

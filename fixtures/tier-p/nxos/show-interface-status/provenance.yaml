@@ -1,0 +1,33 @@
+fixture_id: nxos-show-interface-status-public-001
+file: raw.txt
+tier: P
+source:
+  kind: library_testdata
+  repository:
+    url: "https://github.com/napalm-automation/napalm"
+    commit: "820a06b2069eb1d7b0cbe8943ee2dea6e2949d1a"
+    path: "test/nxos_ssh/mocked_data/test_get_facts/7009_6_2_14/show_interface_status.txt"
+  archive_sha256: "4020e6c9dba556444c3974d08dcbba89aeee59f1591ab20cc797e0c7286523a0"
+capture:
+  tool: unstated
+  form: "nxos.show_interface_status"
+  utc: null
+  attempted: null
+  succeeded: null
+  read_scope: unstated
+platform:
+  family: nxos
+  model: "7009"
+  version: "6.2(14)"
+  version_basis: source_stated
+licence:
+  name: Apache-2.0
+  redistribution: public
+  notice: "napalm Copyright 2015 Spotify AB. All rights reserved. This project includes software developed at Spotify AB. Mircea Ulinic, Kirk Byers, David Barroso, and many others, who are not necessarily associated with Spotify AB, have contributed as well. Full Apache-2.0 licence text is retained in repository LICENSE."
+sha256: "3296040bf6d8fec6ae4db793794ab66d5fd36137ec0df3ab05069354e7f88094"
+privacy:
+  scanner_version: q-public-import-v1
+  result: pass
+  exemption: null
+line_count: 16
+format_floor: false

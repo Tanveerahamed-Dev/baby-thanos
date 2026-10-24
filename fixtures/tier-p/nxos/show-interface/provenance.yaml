@@ -1,0 +1,33 @@
+fixture_id: nxos-show-interface-public-001
+file: raw.txt
+tier: P
+source:
+  kind: library_testdata
+  repository:
+    url: "https://github.com/networktocode/ntc-templates"
+    commit: "d4f30da6077dfb3e41cb6ff7ece5f5b768f59457"
+    path: "tests/cisco_nxos/show_interface/cisco_nxos_show_interface11_nve.raw"
+  archive_sha256: "75ec0e3722e211ab88a5b5f4c7cf79050ebcdcfd45e21a8838ef3d2bf5459a17"
+capture:
+  tool: unstated
+  form: "nxos.show_interface"
+  utc: null
+  attempted: null
+  succeeded: null
+  read_scope: unstated
+platform:
+  family: nxos
+  model: "unstated"
+  version: "unstated"
+  version_basis: unknown
+licence:
+  name: Apache-2.0
+  redistribution: public
+  notice: "Source: https://github.com/networktocode/ntc-templates Pinned revision: d4f30da6077dfb3e41cb6ff7ece5f5b768f59457 Licence: Apache-2.0; full licence text is retained in repository LICENSE. No upstream root NOTICE was present at this revision. Raw samples, where imported, are unmodified. No endorsement is implied. Copyright 2015 Jason Edelman <jason@networktocode.com> Network to Code, LLC Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License. Full Apache-2.0 licence text is retained in repository LICENSE."
+sha256: "29a640c1c921fa7e6c685b6295f41c2b6898b57d2da290304c90ed6febbe7485"
+privacy:
+  scanner_version: q-public-import-v1
+  result: pass
+  exemption: null
+line_count: 9
+format_floor: false

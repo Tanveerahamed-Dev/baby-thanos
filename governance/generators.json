@@ -1,0 +1,22 @@
+{
+  "uv.lock": {
+    "command": "uv lock",
+    "tool": "uv==0.13.1",
+    "inputs": [
+      "pyproject.toml",
+      ".python-version"
+    ]
+  },
+  "docs/contract/header.schema.json": {
+    "inputs": [
+      "atlas_brain/contract/header.py",
+      "atlas_brain/kernel/states.py",
+      "atlas_brain/contract/canonical.py",
+      "tools/contract_schema.py",
+      "tools/publish_contract_schema.py",
+      ".python-version"
+    ],
+    "command": "uv run --no-sync python -m tools.publish_contract_schema --write",
+    "tool": "python==3.14.8"
+  }
+}

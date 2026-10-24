@@ -1,0 +1,20 @@
+# Tier-P public corpus
+
+These public library samples supply format and robustness evidence, never device semantics or accuracy truth.
+The inventory covers 54 Engine v1 variants: 28 IOS-XE and 26 NX-OS. Four pinned repositories supply 45 exact-family/form candidates; eight variants have source-stated versions; nine have no confirmed exact source. Eighteen exact-byte raw samples are imported. Ninety-four shortlisted candidates are recorded.
+
+`inventory.csv` retains immutable URLs, full commits, raw hashes, line/byte counts, source-stated platform/version, lexical fault-token locations, dispositions and imported paths. `census.csv` separates discovery, imports and floor candidacy. Generic IOS labels do not establish IOS-XE, and scoped/filtered/JSON/default-VRF commands do not establish a different requested command. NX-OS `show role` remains provisional for the adapter author to settle.
+
+Raw samples and their sibling `provenance.yaml` records remain under `fixtures/tier-p/`. No raw bytes were redacted or changed. The M0 provenance gate checks declarations and integrity. It cannot approve parser support, source authenticity, privacy clearance, licence correctness or a format floor. Every record therefore declares `format_floor: false`; zero floors are approved by this import.
+
+One unconflicted floor candidate remains: NX-OS 6.2(14), model 7009, `show interface status`. Its explicit `7009_6_2_14` path label is corroborated by the sibling version banner. That supports only this candidate cohort, not Nexus 9000 or an extended train range. Parser-census approval remains pending.
+
+The IOS-XE C9300 `show vrf detail` sample is held for inconsistent version evidence. Its directory says 16.10.1, while the sibling version file reports `BLD_V1610_THROTTLE_LATEST_20180903_070602_V16_10_0_101_2`. The source-stated path label is retained in provenance; its held status is explicit in the census. Whether the files share a capture/device is unstated. No exact-release or same-train mutation claim follows before source clarification. Other unknown-version samples test robustness only.
+
+`sources.json` pins all four archives and records their SHA-256 values. Required source notices are retained under `_licences/` and included in each record's inline `licence.notice`. NTC's upstream short LICENSE and NAPALM's NOTICE are retained verbatim. Genie, SuzieQ and NAPALM's full Apache-2.0 licence texts are identical to repository `LICENSE` after line-ending/final-whitespace normalization; that shared full text also accompanies NTC's notice. Original upstream licence digests remain recorded separately from the retained licence-file digest.
+
+Capture time, collection tool, privilege and attempt/success fields are unstated; null preserves that uncertainty. The `q-public-import-v1` privacy declaration describes the original import screen and manual review of the selected bytes: non-documentation addresses, MACs, serials, prompts/hostnames, domains, credentials, descriptions and custom VRF names. No exemption was used. Hosted privacy gates and the pre-push guard remain independent requirements. `initial-custody-checks.json` is the historical local receipt before validator integration, not current CI acceptance or a public-push hold.
+
+Fault-token matches are lexical witnesses and can occur in legends. No sample establishes a paired native-VLAN mismatch. A tier-M operator requires same-family/train verbatim token witnesses and independently registered labels; P itself is never accuracy truth. No upstream expected-output files were read, imported or executed. No truth labels, mutations, holdout records, measurements, qualification or support-range claims are supplied.
+
+R2's pinned NTC all-VRF OSPF-neighbor table was independently hash-checked and added as a reference candidate. Its leading sh abbreviation is preserved; command scope, plural neighbors and all-VRF text mode are unchanged. Non-documentation addresses prevent import, and its release is unstated. This closes one discovery gap without creating a floor, mutation witness or admissible truth bundle.

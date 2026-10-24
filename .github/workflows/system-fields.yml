@@ -1,0 +1,40 @@
+name: System field extraction
+on:
+  workflow_dispatch:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  system-fields:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'manual-system-fields' || 'system-fields' }} (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 4 # budget: 2 minutes
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.13.1'
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv run --no-sync pytest -v tests/test_system_fields.py tests/test_system_capture.py
+      - name: Report source admission refusals with the existing C1 checker
+        run: |
+          uv run --no-sync python -c '
+          import json, subprocess
+          from pathlib import Path
+          from tools.fence import source_allowed
+          paths = subprocess.check_output(["git", "ls-files", "-z"]).decode("utf-8").split("\0")
+          sources = {p: Path(p).read_text(encoding="utf-8") for p in paths if p.startswith("atlas_brain/") and p.endswith(".py")}
+          refused = sorted(p for p, source in sources.items() if not source_allowed(source, sources, p))
+          print(json.dumps({"source_refusals": refused}, sort_keys=True))
+          raise SystemExit(int(bool(refused)))
+          '

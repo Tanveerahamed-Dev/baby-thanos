@@ -1,0 +1,29 @@
+[project]
+name = "atlas-brain"
+version = "0.0.0"
+requires-python = ">=3.14.7"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest==9.1.1",
+  "pyright==1.1.414",
+  "ruff==0.17.1",
+  "import-linter==2.15",
+  "hypothesis==6.170.2",
+  "jsonschema==4.26.0",
+]
+
+[tool.pyright]
+include = ["atlas_brain"]
+typeCheckingMode = "strict"
+pythonVersion = "3.14"
+enableTypeIgnoreComments = false
+reportUnnecessaryTypeIgnoreComment = "error"
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

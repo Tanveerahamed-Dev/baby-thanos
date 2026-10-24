@@ -1,0 +1,32 @@
+Baby Thanos
+Copyright 2026 Tanveerahamed-Dev
+
+This product includes software derived from "Atlas Brain"
+(https://github.com/Tanveerahamed-Dev/atlas-brain-staging),
+Copyright 2026 Tanveerahamed-Dev, licensed under the Apache License, Version 2.0.
+
+Derived material
+----------------
+The engine foundation (atlas_brain/), tests, fixtures, tools, docs/contract,
+docs/adr, governance/ and the CI workflow files were copied from
+atlas-brain-staging at commit 4f476b8c (2026-10-23). Those files remain under
+the Apache License 2.0. Modifications to derived files are recorded in the
+commit history.
+
+New material
+------------
+README.md, PLAN.md, plan/, reference/, NOTICE and any file added by later
+commits are original work of this repository's authors unless stated
+otherwise.
+
+Third-party notices
+-------------------
+Notice files for third-party sample output and licences are preserved under
+docs/contract/tier-p/_licences/ and docs/contract/mutation-sources/.
+
+Reference material
+------------------
+reference/ccie-ei-v1.1-blueprint.txt is public Cisco exam-topic text
+("2023 Cisco Systems, Inc. This document is Cisco Public"), included only to
+scope the product against the CCIE Enterprise Infrastructure v1.1 blueprint.
+It is not covered by this project's Apache-2.0 licence.
