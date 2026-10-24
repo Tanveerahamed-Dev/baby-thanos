@@ -54,7 +54,7 @@ L7-01 DNS, L7-12/13 inspection, L7-14 voice, L7-15 service insertion, the remain
 | Adapter | v1? | Justification |
 |---|---|---|
 | **IOS-XE CLI** | **yes** | The only OS family named by the blueprint ("4.1 Device security on Cisco IOS XE"); owns 57 of the 60 EI rows; read-only `show`/config evidence |
-| Classic IOS | E1 back-fill (optional) | Zero blueprint mentions; EI labs are IOS-XE; cheap to add later, adds no EI coverage |
+| Classic IOS | E1 back-fill (optional) | Zero blueprint mentions; EI labs are IOS-XE (owner has no lab today); cheap to add later, adds no EI coverage |
 | vManage REST (SD-WAN Manager) | **E4** | EI 2.2 + 5.3.a; owns L3-23; REST is only safe after a page-set-consistency evidence contract exists |
 | Catalyst Center (DNAC) REST | **E4** | EI 2.1.a LAN automation/PnP + 5.3.b; owns OOS-08; same prerequisite |
 | ISE REST | excluded unless the owner schedules it | never named; implied only by TrustSec/SGACL. Without it, L7-16 is unassessable and L2-15/L3-25 stay device-side |
@@ -91,7 +91,7 @@ weak), and the domain-4 breadth.
 
 | # | Row | Pack | Primary evidence (IOS-XE) | Depth target | Truth path |
 |---|---|---|---|---|---|
-| 1 | L1-01 Interface state and counters | `l1.interface` | `show interfaces`, `show ip interface brief`, error counters | expected-vs-observed | `measured_*` on mutation truth (virtual images), `verified` only on owner hardware |
+| 1 | L1-01 Interface state and counters | `l1.interface` | `show interfaces`, `show ip interface brief`, error counters | expected-vs-observed | `measured_*` on mutation/regression truth; `verified` deferred — owner has no lab (decision 2026-10-24) |
 | 2 | L1-10 Physical links / cabling from both ends | `l1.link` | CDP/LLDP + interface outputs | cross-device-correlated | cited |
 | 3 | L2-01 VLANs (access/trunk/native/allowed/voice) | `l2.vlan_trunk` | `show interfaces trunk`, `show vlan brief`, config | cross-device-correlated | cited (U4a) |
 | 4 | L2-03 STP (root, guards, PortFast) | `l2.stp` | `show spanning-tree`, interface detail, config | cross-device-correlated | cited |
