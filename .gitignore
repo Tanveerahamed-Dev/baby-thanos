@@ -5,3 +5,5 @@ __pycache__/
 .hypothesis/
 .lock-artifact/
 .ci-evidence/
+pytest-of-*/
+tmp*/

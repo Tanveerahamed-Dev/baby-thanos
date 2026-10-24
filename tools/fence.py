@@ -19,10 +19,10 @@ CALLABLE_VALUE = "$callable:"
 CARRIER_RETURN = "$carrier:"
 RESULT_VALUE = "$result:"
 
-ROOTS = {"README.md", "LICENSE", ".gitattributes", ".gitignore",
+ROOTS = {"README.md", "LICENSE", "NOTICE", "PLAN.md", ".gitattributes", ".gitignore",
          "pyproject.toml", "uv.lock", ".python-version"}
 TREES = ("atlas_brain/", "tests/", "fixtures/", "docs/adr/", "docs/contract/",
-         "tools/", "governance/", ".github/")
+         "tools/", "governance/", ".github/", "plan/", "reference/")
 DENIED = {"plans", "prompts", "agents.md", "claude.md", ".claude", ".codex",
           ".agents", ".mcp.json", ".specify", "specs"}
 PROCESS = re.compile(r"(?:^|[-_.])(boards?|agent[-_]?notes?)(?:$|[-_.])", re.ASCII)
