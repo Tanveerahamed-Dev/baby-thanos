@@ -40,9 +40,11 @@ canonical output contract, an IOS-XE `show version` pack, and **440 passing test
 records and CI gates. What is missing is the product: a runner, a fact store, an IOS-XE interface
 adapter, and the EI packs. That is the build.
 
-**Target:** `ei-v1` tag in **9–12 weeks** (2 author streams + reviewer, 4–6 hours/day each), with the
-fit test at PR 10 replacing that estimate with a measured one — the rule is written in §11, so a
-bad estimate fails loudly instead of quietly.
+**Target (phased — see §8.1a):** **first demo in 1–2 working days**; usable two-switch EI analysis in
+**about one week**; `ei-v1` tag in **3–4 weeks** as a target, not a promise. The build is split into
+seven short phases, each ending with a runnable demo and a written "what worked / what did not" note;
+a phase cannot start until the previous demo exists. Measured phase durations replace estimates (§11),
+so a bad estimate fails loudly instead of quietly.
 
 **What you must decide:** approve this plan (G0), name the reviewer, and confirm the EI
 evidence-channel boundary (§4.4). The truth route is **decided**: the owner has **no lab** today, so v1
@@ -320,9 +322,9 @@ dropped at seed time; the remaining workflows are self-contained and run here.
 | Milestone | Definition | Target | Owner gate |
 |---|---|---|---|
 | **G0** | Owner approves this plan (scope, doctrine, v1 rows, schedule rule) | now | **approve** |
-| **M0 — walking skeleton** | Runner + fact store + IOS-XE adapter + `l1.interface` pack end-to-end: evidence bundle in → canonical result directory out; determinism double run; CI green; inherited tests still green; 10 PRs merged | weeks 1–3 | **G0+2 scope check** |
-| **M1 — architecture proof** | 12 EI packs (`l1.interface`, `l1.link`, `l2.discovery`, `l2.vlan_trunk`, `l2.stp`, `l2.etherchannel`, `l2.mtu`, `l3.addressing`, `l3.vrf`, `l3.ospf`, `l3.fhrp`, `l3.mtu`) + correlation R1 + exit criteria EX-01..EX-15 pass; frozen kernel; architecture report | weeks 3–7 | **G1** (proceed to v1) |
-| **v1 — EI Network Infrastructure** | The 12 committed rows deliver a real analysis of an EI campus on IOS-XE; tagged `ei-v1`; measured throughput and accuracy published | weeks 7–11 | **G2** release |
+| **M0 — walking skeleton** | Runner + fact store + IOS-XE adapter + `l1.interface` pack end-to-end: evidence bundle in → canonical result directory out; determinism double run; CI green; inherited tests still green; 10 PRs merged | phases P0–P2 (~week 1) | **G0+2 scope check** |
+| **M1 — architecture proof** | 12 EI packs (`l1.interface`, `l1.link`, `l2.discovery`, `l2.vlan_trunk`, `l2.stp`, `l2.etherchannel`, `l2.mtu`, `l3.addressing`, `l3.vrf`, `l3.ospf`, `l3.fhrp`, `l3.mtu`) + correlation R1 + exit criteria EX-01..EX-15 pass; frozen kernel; architecture report | phase P3–P4 (~week 2) | **G1** (proceed to v1) |
+| **v1 — EI Network Infrastructure** | The 12 committed rows deliver a real analysis of an EI campus on IOS-XE; tagged `ei-v1`; measured throughput and accuracy published | phases P5–P6 (~week 3–4) | **G2** release |
 | **E1 — campus depth / IGPs** | L1-02, L1-05, L1-08, L1-09, L2-05, L2-07, L3-03, L3-06, L3-07, L3-10, L3-11, L3-12, L3-14, L3-27, L7-03; classic-IOS back-fill and the IPv6/OSPFv3 decision | after v1 | G3 |
 | **E2 — transport + managed services** | L3-18, L3-19, L3-20, L4-01, L4-02, L7-02, L7-04, L7-06, L7-07 | after E1 | G4 |
 | **E3 — campus security & services** | L2-10..L2-15, L2-17, L2-18, L2-19, L3-15, L3-25, L4-05, L4-06, L7-08..L7-11, L7-16, L7-17 | after E2 | G5 |
@@ -331,6 +333,29 @@ dropped at seed time; the remaining workflows are self-contained and run here.
 
 Gate rule: at each gate the owner may stop, re-scope or continue. M1 is never cut: it is the proof
 that the architecture holds.
+
+### 8.1a Phase plan — the smallest demoable increments (owner request 2026-10-24)
+
+The owner asked for the smallest thing first and for frequent visible progress instead of one long
+build. So the build is a sequence of **demo phases**, not a calendar. Each phase ends with a command
+that works on real files in this repository, a written "what worked / what did not" note in the PR,
+and an owner decision to continue or re-scope. **A phase cannot start until the previous demo
+exists.** If a phase overruns its target by 50%, stop and cut scope — never lower the honesty bar.
+
+| Phase | Target | The demo you can watch (smallest valuable increment) | What it proves / stop rule |
+|---|---|---|---|
+| **P0 — First light** | 1–2 days | `python -m atlas_brain.runner analyse <capture-dir> --out out/` reads one IOS-XE `show version` capture, prints the model, image version and uptime facts with their evidence spans, and writes a deterministic JSON summary; a second run is byte-identical | The evidence → fact → summary path works end-to-end. Stop if the runner cannot produce a deterministic artifact |
+| **P1 — One interface answer** | +2–3 days | Same command on `show interfaces` / `show ip interface brief` reports "Gi1/0/5 admin up / oper down", citing the exact evidence lines, with `next_evidence` for every unknown | A real EI question is decided from public real output. Stop if the parse kit cannot handle the format floor |
+| **P2 — Two ends** | +3–4 days | A synthetic 2-switch bundle: a native-VLAN mismatch on a trunk is reported with both ends cited | Cross-device pairing and evidence spans hold. Stop if pairing needs a model redesign |
+| **P3 — Cause chain** | +3–4 days | Bundle with MTU mismatch + stuck OSPF: chain "MTU mismatch → EXSTART/EXCHANGE", showing the unknown hop when the second timed capture is missing | Timing and two-sample honesty work without a lab. Stop if the rule cannot be honest without one |
+| **P4 — EI breadth** | +4–5 days | STP root/guards, EtherChannel membership, FHRP groups reported on the demo estate; adding each pack touches ≤3 files outside its pack/fixtures | Fix locality holds; packs are pluggable |
+| **P5 — Hardening + v1 report** | +2–3 days | Full demo run + the `measured_*` report (n, cells, unknown rate, known limits), tagged `ei-v1` | Is v1 trustworthy enough to call done? |
+| **P6 — Handover/demo pack** | +1–2 days | A "demo estate" folder plus a one-command README reproduction you can run locally | You can reproduce every claim without the agent |
+
+**Status board:** each phase is a GitHub issue labelled `phase:P0`… with its demo command in the
+body; the PR that closes it links the actual output. Phase durations are measured and posted back
+here, so "what is working and what is not" is visible at every step.
+
 
 ### 8.2 Milestone M0/M1 detail (what changes in the repository)
 
@@ -493,11 +518,15 @@ it defers the hardware-truth L1 rows (L1-02, L1-05) to E1. Net estimate:
 | v1 release (tag, reports, accuracy run) | 6–12 | measured run, contract 1.0.0, documentation, v1 report |
 | **Total** | **43–72 units** | ≈ 4–6 units per EI pack; 0.75–1.5 units per PR |
 
-**Calendar (2 author streams + 1 reviewer, ~4–6 hours/day per stream):** M0 ~2–3 weeks, M1 ~4 weeks,
-v1 release ~2–3 weeks → **tag `ei-v1` in 9–12 weeks**, range 8–16 weeks once PR 10 measures the
-actual rate. Single-stream (owner only) would roughly double: 18–24 weeks. All figures are planning
-assumptions, not promises: the fit test at PR 10 (§10) is the mechanism that replaces them with
-measured numbers.
+**Calendar — replaced by the phase plan (§8.1a).** We manage by phases, not weeks: P0's demo is due
+in 1–2 working days, P2 (usable two-switch analysis) in about a week, and `ei-v1` is a 3–4-week
+target. Each phase's measured duration replaces the old unit estimates at its end, and a phase that
+overruns its target by 50% triggers a scope cut instead of a date slip. The unit table above stays as
+a sizing input for planning, not as a promise.
+
+**Fit rule (kept, compressed):** at the end of each phase, compare measured duration with its target;
+if the cumulative overrun exceeds 50%, the owner chooses scope cut, extra stream or later `ei-v1`.
+Stretch items are admitted only after their phase's demo exists.
 
 ---
 
