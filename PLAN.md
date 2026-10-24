@@ -44,8 +44,9 @@ adapter, and the EI packs. That is the build.
 fit test at PR 10 replacing that estimate with a measured one — the rule is written in §11, so a
 bad estimate fails loudly instead of quietly.
 
-**What you must decide:** approve this plan (G0), choose the lab/truth route (§13), name the
-reviewer, and confirm the EI evidence-channel boundary (§4.4).
+**What you must decide:** approve this plan (G0), name the reviewer, and confirm the EI
+evidence-channel boundary (§4.4). The truth route is **decided**: the owner has **no lab** today, so v1
+truth is tier-P public real output + mutation/regression truth, published as `measured_*` only (§9).
 
 ---
 
@@ -130,8 +131,8 @@ failure this project exists to avoid, and the fence is machine-checked from the 
    no consumer re-derives it. Fact ids are pack-prefixed and mechanically checked.
 6. **Privacy by construction.** No client data in the repository, ever: no names, hostnames,
    addresses, MACs, serials or configurations from real engagements. Tests use public vendor
-   examples, lab captures or synthetic data, each with a provenance record. A privacy gate runs from
-   the first commit; the owner holds the marker list.
+   examples, synthetic/mutation data, or lab captures when available, each with a provenance
+   record. A privacy gate runs from the first commit; the owner holds the marker list.
 7. **Proposer is not verifier.** Every consequential change gets an independent review from a
    different model or person than its author before it merges. This repository is public; review
    records are attached to PRs.
@@ -161,15 +162,18 @@ entirely.
 
 - **v1: IOS-XE only** — Catalyst 9000, Catalyst 8000/8000V, ISR/ASR 1000, CSR1000V; 17.x train
   primary, 16.x where a fixture proves it. One adapter, one family, one `detect()`.
-- **Backfill: classic IOS** only when an EI lab image requires it; it is a cheap back-fill and adds
-  one fixture family, not a re-plan.
+- **Backfill: classic IOS** only if legacy estates need it (E1 back-fill; no lab dependency); it is
+  a cheap addition and adds one fixture family, not a re-plan.
 - **Excluded from this repository:** IOS-XR, NX-OS, ASA/FTD, ACI, ISE, wireless, UCS, collaboration,
   SD-WAN/ SD-Access controller channels. The inherited NX-OS fixtures stay as reference bytes only
   (they belong to upstream) and are not part of the EI product.
-- **Lab images / fixture sources:** CCIE EI lab images in CML 2.10 (IOSvL2/IOL-L2 switching,
-  IOSv/Catalyst 8000V routed), public vendor documentation examples, and version-stated public
-  samples. Every supported (train, platform class) needs at least one format-floor fixture with a
-  provenance record; a form without one publishes `unknown(parse_unsupported_variant)`.
+- **Lab images / fixture sources (owner has no lab — decision recorded 2026-10-24):** v1 uses
+  **tier-P public real-output fixtures** (vendor documentation examples, version-stated public
+  samples, licence-clean upstream fixture bytes) plus **mutation and synthetic truth**. No CML/lab
+  images are assumed and no acceptance criterion depends on them. Every supported (train, platform
+  class) still needs at least one format-floor fixture with a provenance record; a form without one
+  publishes `unknown(parse_unsupported_variant)`. `verified` truth is deferred until the owner has a
+  lab or hardware; v1 publishes `measured_*` with n, cells and the shortfall stated.
 
 ### 4.3 Evidence channels
 
@@ -177,7 +181,7 @@ entirely.
 |---|---|---|
 | Folder of one-file-per-command captures | **yes** | — |
 | Terminal session logs (prompt, pager, truncated capture handling) | **yes** | — |
-| Lab harness export | **yes (M1)** | — |
+| Lab-harness export (only if a capture ever exists; owner has no lab) | optional (M1) | — |
 | Controller REST snapshot (vManage, DNAC/Catalyst Center) | no | W4/W5, separate decision + new envelope |
 | Flow/telemetry/pcap evidence | no | out of engine (W5+ decision) |
 
@@ -407,7 +411,7 @@ G1 review.
 | EX-06 | Absence guards: valid-empty control passes; failed-command-looks-empty case is `unknown`; no check can be `ok` from `not_collected` inputs |
 | EX-07 | Offline witness: tripwire denies and counts every probe; Linux `--network none` bytes equal host bytes |
 | EX-08 | Every supported parser variant has a format-floor fixture with a provenance record, or publishes `variant_support: allowlisted` |
-| EX-09 | Truth: zero false-healthy on faults; zero false-healthy on insufficient evidence; zero incorrect N/A; precision ≥0.95, recall ≥0.90 on the sealed holdout (or published `measured_*` with n) |
+| EX-09 | Truth (no lab — owner decision 2026-10-24): zero false-healthy on faults, zero false-healthy on insufficient evidence, zero incorrect N/A on every replay; every result publishes `measured_*` with n, cells and shortfall stated; precision ≥0.95 / recall ≥0.90 apply only if a sealed holdout exists |
 | EX-10 | Determinism: four-digest comparison green on every merged PR; 5 consecutive green nightly matrices on the tagged SHA |
 | EX-11 | CI: per-PR active time ≤15 min p90, nightly ≤60 min; scale: 500-device EI estate ≤120 s median, ≤2 GiB peak on the 2-vCPU reference runner |
 | EX-12 | Contract: schema 1.0.0 validates every result; RFC 8785 bytes; no floats; every unknown/problem has `next_evidence` |
@@ -419,13 +423,16 @@ G1 review.
 
 ## 9. Quality and test strategy
 
-- **Truth tiers.** P public real-output fixtures (format floors only), L lab captures (private),
-  H owner hardware (private), M mutation truth, S synthetic. Client captures never enter a
-  repository. Each fixture carries a provenance record (source, platform, version, licence, SHA-256).
-- **Accuracy targets.** Per pack, on the sealed holdout: precision ≥0.95, recall ≥0.90, **zero
-  observed false-healthy**, with unknown-rate, N/A-rate and assessability reported with denominators.
-  Without a lab/holdout operator, results publish as `measured_*` with n and cells — never as
-  `verified`.
+- **Truth tiers.** P public real-output fixtures (format floors only), M mutation truth, S synthetic
+  and the EI-R regression catalogue. **L (lab captures) and H (owner hardware) are unavailable today
+  — the owner has no lab (decision 2026-10-24)** — so they are optional inputs if such captures ever
+  arrive, never a gate. Client captures never enter a repository. Each fixture carries a provenance
+  record (source, platform, version, licence, SHA-256).
+- **Accuracy targets, adapted to a no-lab reality.** On every measured replay: **zero observed
+  false-healthy** on faults, zero false-healthy on insufficient evidence, zero incorrect N/A, and
+  unknown-rate/N-A-rate/assessability reported with denominators. Precision/recall targets
+  (≥0.95/≥0.90) apply only where a sealed holdout exists — with no lab the v1 deliverable publishes
+  **`measured_*`** results with n, cells and the shortfall printed; `verified` is not claimed.
 - **Regression catalogue.** EI-R01..EI-R18 seeded from the old toolkit's named defects and re-pointed
   at IOS-XE, each with a must-flag case and twins: PSU absence-as-installed, half-duplex as Auto,
   blank native VLAN as VLAN 1, root guard default, telnet-with-no-transport-input, OSPF 2WAY
@@ -500,11 +507,11 @@ measured numbers.
 |---|---|---|
 | Second-system effect / never shipping | no end-to-end result by PR 5; PR 10 late | thin slice first (PR 5), PR-size cap, fit test, M1 gate |
 | Scope drift back to all-CIEI/all-families | PRs touching non-EI rows; fence edits | machine-checked fence, scope file, owner gates |
-| Fixture/truth scarcity (no lab today) | parsers shipping without floors; `measured_*` everywhere | tier-P format floors first; lab route decision D-2; publish measured_* honestly |
+| Fixture/truth scarcity (no lab — decided) | parsers shipping without floors; `measured_*` everywhere | tier-P format floors first; honest `measured_*` with n; no `verified` claim; lab optional later |
 | Evidence model mis-fit for EI (show output drift) | rising `unknown(parse_unsupported_variant)` | per-train fixtures, variant allowlist, adapter DoD (EX-15) |
 | SD-Access/SD-WAN truth unreachable offline | EI domain 2/5 rows stalling | explicit E4 decision; honest `unknown(evidence_channel_unavailable)` meanwhile |
 | Privacy leak in a public repo | any hit in fixture scan | provenance gate from PR 1; owner marker list; no client data ever |
-| Single-person bus factor (review, holdout) | review latency >1 day; unreviewed merges | independent reviewer (other model) required; records in repo; owner spot-audits |
+| Single-person bus factor (review) | review latency >1 day; unreviewed merges | independent reviewer (other model) required; records in repo; owner spot-audits |
 | Upstream divergence from atlas-brain-staging | duplicated fixes | this repo starts fresh; upstream is reference only, no refs carried, sync only by deliberate cherry-pick |
 
 ---
@@ -514,8 +521,8 @@ measured numbers.
 | ID | Decision | Recommendation | Owner action |
 |---|---|---|---|
 | D-1 | Approve this plan and the 12 committed v1 rows | approve | sign G0 |
-| D-2 | Lab route: CML 2.10 licenses/images for IOSvL2/IOL-L2/Catalyst 8000V (or a lab host) | start with tier-P format floors, decide before M1 exit | provide images/host or defer |
-| D-3 | Holdout custody: owner-held sealed truth set vs `measured_*` only | owner-held holdout by M1 | decide |
+| D-2 | **DECIDED 2026-10-24 — no lab available.** Truth route: tier-P public floors + mutation/synthetic truth, `measured_*` only; lab stays optional forever | keep tier-P floors and honest `measured_*`; no delivery gate on a lab | recorded |
+| D-3 | **DECIDED 2026-10-24 — no holdout operator.** No sealed holdout; precision/recall are reported only where data exists, never claimed | publish `measured_*` with n, cells, shortfall | recorded |
 | D-4 | Independent reviewer: other-model agent + review record format | required from PR 2 | confirm |
 | D-5 | Keep the plan in-tree until `ei-v1`? | yes (owner asked for plan in GitHub) | confirm |
 | D-6 | Controller evidence channel (SD-Access/SD-WAN): decide at E4 | defer, keep it a separate ADR | note |
@@ -526,6 +533,12 @@ measured numbers.
 | D-11 | L1 hardware rows (L1-02 speed/duplex, L1-05 environment) | defer to E1 (truth is hardware-only); L1-01/L1-10 stay in v1 | note |
 | D-12 | Classic IOS back-fill | E1 only; adds no EI coverage | note |
 | D-13 | IPv6 / OSPFv3 timing (EI is explicitly dual-stack, OSPFv3 is topic 1.4) | first E1 decision: add IPv6 fact model + OSPFv3 packs, or keep IPv4/OSPFv2 with honest `unknown` | decide at E1 |
+
+**Owner decisions recorded 2026-10-24:** the owner has **no lab and no holdout operator**. D-2 and
+D-3 are therefore decided as described above: v1 ships on tier-P public real output plus mutation and
+regression truth, every result publishes `measured_*` with n/cells/shortfall, and no acceptance
+criterion, milestone or CI gate depends on a lab, CML images or a sealed holdout. If a lab or
+hardware ever becomes available, `verified` truth is a later-wave upgrade, not a re-plan of v1.
 
 ---
 
