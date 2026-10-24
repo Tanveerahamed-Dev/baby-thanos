@@ -57,6 +57,12 @@ There is no product-level end-to-end path today.
    repository's CI-run receipts and PR/board model; Baby Thanos replaces them with PR-linked review
    records and its own governance checks (PLAN.md §10, PR 10). Their removal also removes the two
    slowest tests from the local suite.
+6. **Two pinned-upstream source-policy tests removed** — `tests/test_starred_api_admission.py` and
+   `tests/test_zip_api_admission.py` `git show` pinned atlas-brain-staging commits
+   (`b5ddc54f`, `a5a2959d`) that do not exist in this repository's fresh history, so they fail by
+   construction (9 tests in the first CI run). They qualify upstream draft work outside the EI
+   product; their tooling (`tools/check_*_inventory.py`, `tools/output_witness.py`) stays for now and
+   is part of the M0 prune decision.
 
 Nothing in `atlas_brain/` was modified at seed time except the fence allowlist (a `tools/` change).
 
