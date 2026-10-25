@@ -103,6 +103,7 @@ def _require_system_text(text: str) -> None:
         r"Last reload reason: .+",
     )
     contexts = (
+        r"(?:end|!|\^c?)",
         r"[a-z0-9_.:-]+(?:\([^)]*\))?[>#].*",
         r"(?:building configuration|current configuration|banner(?:[ \t]|$)|(?:do[ \t]+)?sh(?:ow|o)?[ \t]).*",
         r"(?:cisco (?:nexus operating system|ios[- ]xr)|nx-os software|arista networks eos|junos software).*",

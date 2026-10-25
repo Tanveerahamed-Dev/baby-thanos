@@ -51,7 +51,7 @@ uv run python -m atlas_brain.runner --evidence captures --out out
 Put raw UTF-8 IOS-XE `show version` files in `captures/`; keep `out/` separate.
 Each file must contain one response beginning with its IOS-XE header, or the
 supported headerless three-field fragment. An exact `show version` prompt may
-wrap it; conflicting commands and configuration sections refuse. See
+wrap it; recognized conflicting command/configuration markers refuse. See
 [ADR-0016](docs/adr/0016-runner-response-recognition.md) for recognition limits.
 The runner writes `SUMMARY.txt` and `MANIFEST.json` with uptime, image, reload reason
 and boot epoch states, capture IDs and byte-span evidence. Missing collector time

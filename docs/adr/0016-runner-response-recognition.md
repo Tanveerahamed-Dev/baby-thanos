@@ -13,11 +13,12 @@ The first nonblank payload line must be an IOS-XE banner with a token boundary,
 or the whole payload must contain only the three supported system-record forms.
 An optional initial exact `HOST[>#] ?show version` and one terminal bare prompt
 are allowed; when both exist, the complete prompt must match. Interior prompts,
-additional responses, explicit configuration sections, competing platform
+repeated response banners, recognized configuration markers, competing platform
 banners and unsupported command echoes refuse with `evidence_unsupported_capture`.
 Rejection checks ignore case and indentation, but field parsing and raw bytes
 are unchanged. Exact field records take precedence over rejection keywords so
-a hostname such as `show` does not become a spurious command.
+a hostname such as `show` does not become a spurious command. Recognized closing
+configuration/cancel markers (`end`, `!`, `^`, `^C`) also refuse.
 
 Recognition uses physical LF/CRLF lines, matching the pack parser. Bare CR,
 NEL and Unicode line/paragraph separators refuse as `evidence_invalid_text`.

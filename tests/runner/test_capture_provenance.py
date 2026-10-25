@@ -63,6 +63,10 @@ def assert_refused(tmp_path, members, code="evidence_unsupported_capture", *, ex
 
 
 CONTEXT_REFUSALS = [
+    pytest.param(SAMPLE + b"^C\n", id="closing-config-banner"),
+    pytest.param(SAMPLE + b"^\n", id="closing-caret-banner"),
+    pytest.param(SAMPLE + b"  EnD \n", id="closing-config-end"),
+    pytest.param(SAMPLE + b"!\n", id="configuration-separator"),
     pytest.param(MOTD_CAPTURE, id="running-config-motd"),
     pytest.param(b"Building configuration...\nbanner motd ^C\n" + SAMPLE + b"^C\nend\n",
                  id="config-without-command-echo"),
