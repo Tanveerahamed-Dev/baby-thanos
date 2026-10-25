@@ -141,9 +141,9 @@ def test_discovery_does_not_shorten_or_casefold_peer_or_port_identifiers():
     (LLDP_OP, LLDP.replace(b"Port id:", b"-------------------------\nPort id:")),
     (CDP_OP, CDP.replace(b"Interface: Gi1/0/1, Port ID (outgoing port): Gi1/0/1\n", b"")),
     (CDP_OP, CDP.replace(b"port): Gi1/0/1", b"port): ")),
-    (CDP_OP, b"-------------------------\nDevice ID: sw-b\n"
+    (CDP_OP, (b"-------------------------\nDevice ID: sw-b\n"
      b"Interface: Gi1/0/1, Port ID (outgoing port): Gi1/0/1\n"
-     b"Platform: synthetic-switch, Capabilities: Switch\n"),
+     b"Platform: synthetic-switch, Capabilities: Switch\n")),
     (LLDP_OP, LLDP.replace(b"Enabled Capabilities: B\n", b"")),
     (LLDP_OP, LLDP + b"System Name: sw-c\n"),
 ])
