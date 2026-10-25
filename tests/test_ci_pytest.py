@@ -243,7 +243,7 @@ def _cli(root, *arguments, extra_env=None):
     env.update(extra_env or {})
     return subprocess.run(
         [sys.executable, str(root / "tools" / "ci_pytest.py"), *arguments],
-        cwd=root, env=env, capture_output=True, text=True, timeout=30,
+        cwd=root, env=env, capture_output=True, text=True, check=False, timeout=30,
     )
 
 

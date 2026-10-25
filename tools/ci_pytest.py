@@ -282,7 +282,7 @@ def _run(args):
         if os.environ.get("PYTEST_ADDOPTS") or os.environ.get("PYTEST_PLUGINS"):
             collector._fail("pytest_environment_options_refused")
         code = int(pytest.main(["-q", "--durations=20", "tests"], plugins=[collector]))
-    except BaseException as error:
+    except (pytest.UsageError, KeyboardInterrupt, SystemExit) as error:
         collector.collection_errors.append("pytest_raised:" + type(error).__name__)
     try:
         _context(args)
