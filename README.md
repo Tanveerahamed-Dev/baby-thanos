@@ -3,7 +3,7 @@
 **Atlas Brain — CCIE Enterprise Infrastructure edition.** A read-only, offline, deterministic Cisco
 network analysis engine.
 
-Status: **v0.1 — plan proposed (2026-10-24), foundation seeded.** Not yet a runnable product.
+Status: **P0 — offline system-field analysis.** The wider EI engine remains planned.
 
 ## What this is
 
@@ -43,12 +43,20 @@ Requires Python 3.14.7+ and [uv](https://docs.astral.sh/uv/):
 
 ```powershell
 uv sync --locked
+$env:ATLAS_TEST_MARKER = "codex-local"
 uv run pytest -q
+uv run python -m atlas_brain.runner --evidence captures --out out
 ```
 
-The inherited code is a tested **foundation library**, not a runner: there is no CLI yet, and only one
-parser (IOS-XE `show version`). The first end-to-end vertical — L1 interface state — is Milestone 0 in
-[PLAN.md](PLAN.md).
+Put raw UTF-8 IOS-XE `show version` files in `captures/`; keep `out/` separate.
+The runner writes `SUMMARY.txt` and `MANIFEST.json` with uptime, image, reload reason
+and boot epoch states, capture IDs and byte-span evidence. Missing collector time
+leaves boot epoch `unknown(as_of_missing)`; unsupported or unsafe inputs refuse
+with exit code 2. Output is identical across reruns and `--workers 1` / `--workers 4`.
+P0 extracts observed fields only; it does not identify/merge devices or qualify
+platform/train support. Keep input/output trees stable during each run. Limits and
+admissions are documented in [ADR-0015](docs/adr/0015-runner-evidence-path.md).
+The L1 interface-state vertical remains planned in [PLAN.md](PLAN.md).
 
 ## Provenance and licence
 

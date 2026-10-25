@@ -106,9 +106,16 @@ RUNNER_API = {
 }
 
 
+# ADR-0015: resolved input/output separation, without changing prior inventories.
+RUNNER_EVIDENCE_API = {
+    "atlas_brain/runner/coordinator.py": {"pathlib.Path.resolve", "pathlib.Path.is_relative_to", "pathlib.Path.lstat"},
+}
+
+
 def admitted_apis() -> frozenset[str]:
     """Every API admitted by a map, for constructor/member inventory only."""
-    return frozenset(STDLIB_API | set().union(*SCOPED_API.values(), *RUNTIME_API.values(), *RUNNER_API.values()))
+    return frozenset(STDLIB_API | set().union(*SCOPED_API.values(), *RUNTIME_API.values(),
+                                           *RUNNER_API.values(), *RUNNER_EVIDENCE_API.values()))
 
 
 def repository_path(path):
@@ -603,7 +610,8 @@ def constructor_members(apis):
 
 def source_refusals(source: str, sources=None, path="atlas_brain/probe.py") -> set[str]:
     tree = ast.parse(source)
-    apis = STDLIB_API | SCOPED_API.get(path, set()) | RUNTIME_API.get(path, set()) | RUNNER_API.get(path, set())
+    apis = (STDLIB_API | SCOPED_API.get(path, set()) | RUNTIME_API.get(path, set())
+            | RUNNER_API.get(path, set()) | RUNNER_EVIDENCE_API.get(path, set()))
     factories = constructor_members(frozenset(apis))
     all_factories = constructor_members(admitted_apis())
     scoped_modules = {p.removesuffix(".py").replace("/", ".") for p in SCOPED_API}

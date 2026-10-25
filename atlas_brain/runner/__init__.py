@@ -1,4 +1,4 @@
-"""Baby Thanos runner: CLI and Python API for the M0 walking skeleton.
+"""Baby Thanos runner: CLI and Python API for offline system facts.
 
 Every runner process installs an audit-hook egress tripwire first; a witness that
 fails to deny refuses the run.
@@ -15,7 +15,7 @@ __all__ = ("RunResult", "RunnerRefused", "run")
 
 
 def run(evidence: Path, out: Path, workers: int = 4) -> RunResult:
-    """Run the skeleton in a spawned CLI process and return its manifest result."""
+    """Analyse captures in a spawned CLI process and return its manifest result."""
     command = [sys.executable, "-m", "atlas_brain.runner", "--evidence", str(evidence),
                "--out", str(out), "--workers", str(workers)]
     completed = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -25,7 +25,7 @@ def run(evidence: Path, out: Path, workers: int = 4) -> RunResult:
     if not isinstance(payload, dict):
         raise RunnerRefused("invalid_manifest")
     record = cast(dict[str, object], payload)
-    if set(record) != {"schema", "evidence", "plan", "egress", "steps"}:
+    if set(record) != {"schema", "evidence", "plan", "egress", "steps", "facts"} or not isinstance(record["facts"], dict):
         raise RunnerRefused("invalid_manifest")
     evidence_fields, egress_fields = record["evidence"], record["egress"]
     step_receipts = record["steps"]
