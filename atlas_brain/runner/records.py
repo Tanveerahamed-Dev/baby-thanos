@@ -6,6 +6,7 @@ from pathlib import Path
 from atlas_brain.evidence.capture import Capture
 from atlas_brain.kernel import states as k
 from atlas_brain.kernel.states import digest, require
+from atlas_brain.packs.l1.interface import build as interface_pack
 from atlas_brain.packs.platform.system.build import build_capture
 
 EXIT_OK = 0
@@ -21,44 +22,85 @@ class RunnerRefused(ValueError):
         self.code = code
 
 
+def next_evidence(needs: tuple[k.EvidenceNeed, ...]) -> list[dict[str, object]]:
+    return [{"node": str(need.node), "operation": need.operation, "resolves": need.resolves,
+             "reruns": need.reruns} for need in needs]
+
+
+def fact_record[T](capture: Capture | None, fact: k.Known[T] | k.Unknown) -> tuple[dict[str, object], str]:
+    evidence: list[dict[str, str | int]] = []
+    locations: list[str] = []
+    for ref in fact.evidence:
+        if not isinstance(ref, k.EvidenceRef) or capture is None or ref.capture != capture.id:
+            raise RunnerRefused("invalid_fact_evidence")
+        record: dict[str, str | int] = {"capture": str(ref.capture), "sha256": ref.excerpt_sha256}
+        if isinstance(ref.locator, k.ByteSpan):
+            record.update(locator="bytes", start=ref.locator.start, end=ref.locator.end)
+            location = f"span={ref.locator.start}..{ref.locator.end}"
+        elif isinstance(ref.locator, k.WholeCapture):
+            record["locator"] = "whole_capture"
+            location = "whole_capture"
+        else:
+            raise RunnerRefused("invalid_fact_evidence")
+        evidence.append(record)
+        locations.append(f"capture={ref.capture} {location}")
+    projected: dict[str, object] = {"evidence": evidence}
+    if isinstance(fact, k.Known):
+        projected.update(state="known", basis=str(fact.basis), value=fact.value)
+        rendered = "known value=" + json.dumps(fact.value, ensure_ascii=True)
+    else:
+        projected.update(state="unknown", reason=str(fact.reason))
+        rendered = f"unknown({fact.reason})"
+        if fact.detail is not None:
+            projected["detail"] = fact.detail
+            rendered += f" detail={fact.detail}"
+        if fact.next_evidence:
+            projected["next_evidence"] = next_evidence(fact.next_evidence)
+            rendered += " next_evidence=" + ",".join(need.operation for need in fact.next_evidence)
+    return projected, rendered + " " + "; ".join(locations)
+
+
 def system_facts(capture: Capture) -> tuple[dict[str, object], tuple[str, ...]]:
-    """Project the owning pack's facts, retaining every raw-byte evidence reference."""
     fields = build_capture(capture)
     facts: dict[str, object] = {}
-    lines: list[str] = [f"{capture.id} parse: {fields.parse.quality}"]
+    lines = [f"{capture.id} parse: {fields.parse.quality}"]
     for name, fact in (("uptime", fields.uptime), ("image", fields.image),
                        ("reload_reason", fields.reload_reason), ("boot_epoch", fields.boot_epoch)):
-        evidence: list[dict[str, str | int]] = []
-        locations: list[str] = []
-        for ref in fact.evidence:
-            if not isinstance(ref, k.EvidenceRef) or ref.capture != capture.id:
-                raise RunnerRefused("invalid_fact_evidence")
-            record: dict[str, str | int] = {"capture": str(ref.capture), "sha256": ref.excerpt_sha256}
-            if isinstance(ref.locator, k.ByteSpan):
-                record.update(locator="bytes", start=ref.locator.start, end=ref.locator.end)
-                location = f"span={ref.locator.start}..{ref.locator.end}"
-            elif isinstance(ref.locator, k.WholeCapture):
-                record["locator"] = "whole_capture"
-                location = "whole_capture"
-            else:
-                raise RunnerRefused("invalid_fact_evidence")
-            evidence.append(record)
-            locations.append(f"capture={ref.capture} {location}")
-        projected: dict[str, object] = {"evidence": evidence}
-        if isinstance(fact, k.Known):
-            value = (fact.value if isinstance(fact.value, str)
-                     else [[count, str(unit)] for count, unit in fact.value])
-            projected.update(state="known", basis=str(fact.basis), value=value)
-            rendered = "known value=" + json.dumps(value, ensure_ascii=True)
-        else:
-            projected.update(state="unknown", reason=str(fact.reason))
-            rendered = f"unknown({fact.reason})"
-            if fact.detail is not None:
-                projected["detail"] = fact.detail
-                rendered += f" detail={fact.detail}"
-        facts[name] = projected
-        lines.append(f"{capture.id} {name}: {rendered} {'; '.join(locations)}")
+        facts[name], description = fact_record(capture, fact)
+        lines.append(f"{capture.id} {name}: {description}")
     return facts, tuple(lines)
+
+
+def capture_facts(capture: Capture) -> tuple[dict[str, object], tuple[str, ...]]:
+    if capture.operation == "iosxe.show_version":
+        return system_facts(capture)
+    result = interface_pack.build_capture(capture)
+    coverage, description = fact_record(capture, result.coverage)
+    lines = [f"{capture.id} l1.interface parse: {result.parse.quality} observed={result.observed}",
+             f"{capture.id} coverage: {description}"]
+    interfaces: list[dict[str, object]] = []
+    for item in result.interfaces:
+        row: dict[str, object] = {}
+        for name, fact in (("name", item.name), ("admin", item.admin), ("oper", item.oper)):
+            row[name], description = fact_record(capture, fact)
+            lines.append(f"{capture.id} {item.name.value} {name}: {description}")
+        check: dict[str, object] = {"id": interface_pack.CHECK, "state": item.verdict,
+                                   "next_evidence": next_evidence(item.next_evidence)}
+        if item.reason is not None:
+            check["reason"] = str(item.reason)
+        row["check"] = check
+        interfaces.append(row)
+        admin = item.admin.value if isinstance(item.admin, k.Known) else "unknown"
+        oper = item.oper.value if isinstance(item.oper, k.Known) else "unknown"
+        request = " next_evidence=" + ",".join(need.operation for need in item.next_evidence) if item.next_evidence else ""
+        lines.append(f"{capture.id} {interface_pack.CHECK}: {item.name.value} admin {admin} / oper {oper}: {item.verdict}{request}")
+    return {"pack": "l1.interface", "operation": capture.rendered, "parse": result.parse.quality,
+            "denominator": {"scope": "observed_in_capture", "count": result.observed},
+            "coverage": coverage, "interfaces": interfaces}, tuple(lines)
+
+
+def missing_interfaces() -> tuple[dict[str, object], str]:
+    return fact_record(None, interface_pack.missing_evidence())
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

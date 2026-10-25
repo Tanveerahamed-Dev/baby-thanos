@@ -56,6 +56,41 @@ jobs:
           print(outputs[0]["SUMMARY.txt"].decode("ascii"))
           print("P0_DIGESTS " + receipt, end="")
           PY
+      - name: Demonstrate P1 interface findings and unknowns
+        shell: bash
+        run: |
+          uv run --no-sync python - <<'PY'
+          import json
+          import subprocess
+          import sys
+          from hashlib import sha256
+          from pathlib import Path
+          root = Path(".ci-evidence/p0-demo/p1")
+          evidence = root / "captures"
+          evidence.mkdir(parents=True)
+          samples = {
+              "interfaces.txt": b"sw-a#show interfaces\nGi1/0/5 is up, line protocol is down\nsw-a#\n",
+              "brief.txt": (b"sw-a#show ip interface brief\nInterface IP-Address OK? Method Status Protocol\n"
+                            b"Gi1/0/6 unassigned YES unset up\nsw-a#\n"),
+          }
+          for name, raw in samples.items():
+              (evidence / name).write_bytes(raw)
+          outputs = []
+          for index, workers in enumerate((1, 4, 4)):
+              out = root / f"out-{index}"
+              subprocess.run([sys.executable, "-m", "atlas_brain.runner", "--evidence", str(evidence),
+                              "--out", str(out), "--workers", str(workers)], check=True)
+              outputs.append({name: (out / name).read_bytes() for name in ("SUMMARY.txt", "MANIFEST.json")})
+          assert outputs[0] == outputs[1] == outputs[2]
+          assert all((evidence / name).read_bytes() == raw for name, raw in samples.items())
+          rows = [row for result in json.loads(outputs[0]["MANIFEST.json"])["facts"].values()
+                  for row in result["interfaces"]]
+          assert any(row["name"]["value"] == "Gi1/0/5" and row["check"]["state"] == "problem" for row in rows)
+          assert any(row["name"]["value"] == "Gi1/0/6" and row["check"]["state"] == "unknown"
+                     and row["check"]["next_evidence"] for row in rows)
+          print(outputs[0]["SUMMARY.txt"].decode("ascii"))
+          print("P1_DIGESTS " + json.dumps({name: sha256(raw).hexdigest() for name, raw in outputs[0].items()}, sort_keys=True))
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: p0-demo-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}

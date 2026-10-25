@@ -3,7 +3,7 @@
 **Atlas Brain — CCIE Enterprise Infrastructure edition.** A read-only, offline, deterministic Cisco
 network analysis engine.
 
-Status: **P0 — offline system-field analysis.** The wider EI engine remains planned.
+Status: **P1 — capture-scoped interface answers plus system-field analysis.**
 
 ## What this is
 
@@ -60,7 +60,13 @@ with exit code 2. Output is identical across reruns and `--workers 1` / `--worke
 P0 extracts observed fields only; it does not identify/merge devices or qualify
 platform/train support. Keep input/output trees stable during each run. Limits and
 admissions are documented in [ADR-0015](docs/adr/0015-runner-evidence-path.md).
-The L1 interface-state vertical remains planned in [PLAN.md](PLAN.md).
+P1 also accepts `show interfaces` and `show ip interface brief` captures, reporting
+admin/line-protocol mismatches as `l1.interface.admin_up_oper_down` findings.
+Unknowns include the next command to collect; missing interface evidence is explicit.
+Counts cover observed names per capture, with no cross-file device or alias joining.
+Support is measured on synthetic regressions, not qualified across devices/trains;
+unmodelled detail lines keep healthy captures partial/unknown. See
+[ADR-0017](docs/adr/0017-interface-answer.md).
 
 ## Provenance and licence
 

@@ -25,7 +25,9 @@ def run(evidence: Path, out: Path, workers: int = 4) -> RunResult:
     if not isinstance(payload, dict):
         raise RunnerRefused("invalid_manifest")
     record = cast(dict[str, object], payload)
-    if set(record) != {"schema", "evidence", "plan", "egress", "steps", "facts"} or not isinstance(record["facts"], dict):
+    if (set(record) - {"interface_coverage"} != {"schema", "evidence", "plan", "egress", "steps", "facts"}
+            or not isinstance(record["facts"], dict)
+            or "interface_coverage" in record and not isinstance(record["interface_coverage"], dict)):
         raise RunnerRefused("invalid_manifest")
     evidence_fields, egress_fields = record["evidence"], record["egress"]
     step_receipts = record["steps"]
