@@ -43,19 +43,19 @@ class LinkResult:
 class _Input:
     node: Node
     port: str
-    subject: k.EntityKey
+    subject: str
     device: k.Known[str] | k.Unknown
     remote: k.Known[str] | k.Unknown
     bridge: k.Known[bool] | k.Unknown
 
     @property
     def refs(self) -> tuple[k.Evidence, ...]:
-        return tuple(k.FactRef(fact=fact, subject=self.subject) for fact in discovery.IDS)
+        return tuple(k.FactRef(fact=fact, subject=cast("k.EntityKey", self.subject)) for fact in discovery.IDS)
 
 
-def _read[T](reader: FactReader, fact: k.FactId, subject: k.EntityKey,
+def _read[T](reader: FactReader, fact: k.FactId, subject: str,
              expected: type[T]) -> k.Known[T] | k.Unknown:
-    state = reader.read(fact=fact, subject=subject)
+    state = reader.read(fact=fact, subject=cast("k.EntityKey", subject))
     if isinstance(state, k.Unknown):
         return state
     if not isinstance(state, k.Known) or type(state.value) is not expected:
@@ -64,14 +64,14 @@ def _read[T](reader: FactReader, fact: k.FactId, subject: k.EntityKey,
 
 
 def _unknown(reason: k.UnknownReason, detail: str | None, evidence: tuple[k.Evidence, ...],
-             node: Node, candidates: tuple[k.EntityKey, ...] = (), *,
+             node: Node, candidates: tuple[str, ...] = (), *,
              nodes: tuple[Node, ...] = ()) -> k.Unknown:
     needs = tuple(k.EvidenceNeed(node=collector.key, operation=command, params=(), resolves=(str(PEER),),
                                 reruns=(str(STEP.id), str(discovery.STEP.id)), after_s=None, unprintable=())
                   for collector in sorted(nodes or (node,), key=lambda item: item.key)
                   for command in ("show cdp neighbors detail", "show lldp neighbors detail"))
     return k.Unknown(reason=reason, detail=detail, evidence=evidence,
-                     candidates=candidates, next_evidence=needs)
+                     candidates=cast("tuple[k.EntityKey, ...]", candidates), next_evidence=needs)
 
 
 def _gap(point: _Input) -> k.Unknown | None:
@@ -82,25 +82,25 @@ def _gap(point: _Input) -> k.Unknown | None:
 def build_group(group: SyntheticGroup, store: FactStore) -> LinkResult:
     """Read the entire declared discovery matrix, validate it, then write once."""
     reader = bind_reader(store, step=STEP)
-    points: dict[k.EntityKey, _Input] = {}
+    points: dict[str, _Input] = {}
     for node in sorted(group.nodes, key=lambda item: item.key):
         for port in sorted(node.ports):
-            subject = endpoint(node, port)
+            subject = str(endpoint(node, port))
             points[subject] = _Input(node=node, port=port, subject=subject,
                                     device=_read(reader, discovery.DEVICE_ID, subject, str),
                                     remote=_read(reader, discovery.REMOTE_PORT, subject, str),
                                     bridge=_read(reader, discovery.BRIDGE, subject, bool))
     aliases = {node.discovery_id: node for node in group.nodes}
     k.require(len(aliases) == len(group.nodes), "ambiguous_discovery_identity")
-    targets: dict[k.EntityKey, k.EntityKey] = {}
-    incoming: dict[k.EntityKey, list[k.EntityKey]] = {}
+    targets: dict[str, str] = {}
+    incoming: dict[str, list[str]] = {}
     for subject, point in points.items():
         if isinstance(point.device, k.Known) and isinstance(point.remote, k.Known):
             other = aliases.get(point.device.value)
             if other is not None:
                 k.require(other.key != point.node.key, "self_discovery_claim")
                 if point.remote.value in other.ports:
-                    target = endpoint(other, point.remote.value)
+                    target = str(endpoint(other, point.remote.value))
                     targets[subject] = target
                     incoming.setdefault(target, []).append(subject)
     k.require(all(len(sources) == 1 for sources in incoming.values()), "contradictory_discovery_claims")
@@ -110,7 +110,7 @@ def build_group(group: SyntheticGroup, store: FactStore) -> LinkResult:
                 or isinstance(reverse.remote, k.Known) and reverse.remote.value != point.port):
             raise ValueError("asymmetric_discovery_claim")
     rows: list[LinkRow] = []
-    pairs: set[tuple[k.EntityKey, k.EntityKey]] = set()
+    pairs: set[tuple[str, str]] = set()
     for subject, point in points.items():
         evidence = group.declaration.evidence + point.node.declaration.evidence + point.refs
         gap = _gap(point)
@@ -147,8 +147,8 @@ def build_group(group: SyntheticGroup, store: FactStore) -> LinkResult:
                     peer = k.Known(value=str(target), basis=k.Basis.DERIVED, evidence=evidence, raw=None)
                     pair = (subject, target) if subject < target else (target, subject)
                     pairs.add(pair)
-        rows.append(LinkRow(node=point.node, port=point.port, subject=subject, peer=peer))
+        rows.append(LinkRow(node=point.node, port=point.port, subject=cast("k.EntityKey", subject), peer=peer))
     writer = bind_writer(store, step=STEP)
     for row in rows:
         writer.write(fact=PEER, subject=row.subject, value=row.peer)
-    return LinkResult(rows=tuple(rows), pairs=tuple(sorted(pairs)))
+    return LinkResult(rows=tuple(rows), pairs=cast("tuple[tuple[k.EntityKey, k.EntityKey], ...]", tuple(sorted(pairs))))

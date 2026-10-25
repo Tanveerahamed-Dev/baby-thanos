@@ -17,7 +17,7 @@ from atlas_brain.packs.l2.vlan_trunk import check
 P = "Gi1/0/1"
 
 
-def bundle(native=("10", "20"), allowed=("10,30", "10,30"), missing_b=False):
+def bundle(native=("10", "20"), allowed=("10,30", "10,30"), missing_b=False, extra_port=False):
     files, captures = {}, []
     for index, node in enumerate(("a", "b")):
         if missing_b and node == "b":
@@ -36,7 +36,8 @@ def bundle(native=("10", "20"), allowed=("10,30", "10,30"), missing_b=False):
             captures.append({"path": path, "node": node, "operation": operation,
                              "sha256": sha256(files[path]).hexdigest()})
     manifest = {"schema": SCHEMA, "semantic_group": "declared_synthetic", "group": "demo",
-                "nodes": [{"id": node, "discovery_id": "sw-" + node, "ports": [P]} for node in ("a", "b")],
+                "nodes": [{"id": node, "discovery_id": "sw-" + node,
+                           "ports": [P, "Gi1/0/2"] if extra_port and node == "a" else [P]} for node in ("a", "b")],
                 "captures": captures}
     return admit_members({**files, "p2.json": json.dumps(manifest).encode()})
 
@@ -204,3 +205,17 @@ def test_invalid_stored_payload_or_peer_contract_refuses(kind):
         return value
     with pytest.raises(ValueError, match="invalid_"):
         check.build_group(group, rewrite(group, store, change))
+
+
+def test_distinct_scalar_join_keys_keep_unresolved_and_paired_subjects_separate():
+    group = bundle(extra_port=True)
+    result = check.build_group(group, produce(group))
+    points = {point.subject: point for point in result.endpoints}
+    paired = [row for row in result.rows if row.right is not None]
+    unresolved = [row for row in result.rows if row.right is None]
+    assert result.denominator == (("declared_endpoints", 3), ("reciprocal_pairs", 1), ("unresolved_endpoints", 1))
+    assert len(paired) == len(unresolved) == 2
+    assert all(points[row.left].port == points[row.right].port == P for row in paired)
+    assert all(points[row.left].port == "Gi1/0/2" and row.state == "unknown" for row in unresolved)
+    assert set(row.left for row in unresolved).isdisjoint(
+        subject for row in paired for subject in (row.left, row.right))

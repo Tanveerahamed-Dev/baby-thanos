@@ -76,8 +76,9 @@ def _canonical(values: set[int]) -> str:
     return cast(str, value)
 
 
-def _comparison(left: Endpoint, right: Endpoint, fact: k.FactId, check: str) -> Comparison:
-    a, b = ((left.native, right.native) if fact == trunk.NATIVE else (left.allowed, right.allowed))
+def _comparison(left: Endpoint, right: Endpoint, fact: k.FactId, check: str,
+                a: k.Known[int] | k.Known[str] | k.Unknown,
+                b: k.Known[int] | k.Known[str] | k.Unknown) -> Comparison:
     evidence = tuple(k.FactRef(fact=identifier, subject=point.subject)
                      for identifier in (PEER, fact) for point in (left, right))
     needs = tuple(_need(node, trunk.OP, (str(fact),), (check,))
@@ -102,23 +103,26 @@ def _comparison(left: Endpoint, right: Endpoint, fact: k.FactId, check: str) -> 
 def build_group(group: SyntheticGroup, store: FactStore) -> CheckResult:
     """Read the entire matrix before validating or evaluating; never write facts."""
     reader = bind_reader(store, step=STEP)
-    matrix: list[tuple[Node, str, k.EntityKey, StoredState, StoredState, StoredState]] = []
+    # Scalar join IDs retain exact bytes; EntityKey is boundary branding only.
+    matrix: list[tuple[Node, str, str, StoredState, StoredState, StoredState]] = []
     for node in sorted(group.nodes, key=lambda node: node.key):
         for port in sorted(node.ports):
-            subject = endpoint(node, port)
-            matrix.append((node, port, subject, reader.read(fact=PEER, subject=subject),
-                           reader.read(fact=trunk.NATIVE, subject=subject),
-                           reader.read(fact=trunk.ALLOWED, subject=subject)))
-    points: dict[k.EntityKey, Endpoint] = {}
+            subject = str(endpoint(node, port))
+            key = cast("k.EntityKey", subject)
+            matrix.append((node, port, subject, reader.read(fact=PEER, subject=key),
+                           reader.read(fact=trunk.NATIVE, subject=key),
+                           reader.read(fact=trunk.ALLOWED, subject=key)))
+    points: dict[str, Endpoint] = {}
     for node, port, subject, peer, native, allowed in matrix:
         p, n, a = _state(peer, str), _state(native, int), _state(allowed, str)
         k.require(not isinstance(n, k.Known) or 1 <= n.value <= 4094, "invalid_native_fact")
         k.require(not isinstance(a, k.Known) or trunk.canonical_allowed(a.value) == a.value,
                   "invalid_allowed_fact")
-        points[subject] = Endpoint(node=node, port=port, subject=subject, peer=p, native=n, allowed=a)
+        points[subject] = Endpoint(node=node, port=port, subject=cast("k.EntityKey", subject),
+                                   peer=p, native=n, allowed=a)
     for point in points.values():
         if isinstance(point.peer, k.Known):
-            other = points.get(k.EntityKey(point.peer.value))
+            other = points.get(point.peer.value)
             k.require(point.peer.basis is k.Basis.DERIVED and other is not None
                       and other.node.key != point.node.key and isinstance(other.peer, k.Known)
                       and other.peer.value == point.subject, "invalid_reciprocal_peer")
@@ -131,16 +135,16 @@ def build_group(group: SyntheticGroup, store: FactStore) -> CheckResult:
             for check, fact in ((NATIVE_CHECK, trunk.NATIVE), (ALLOWED_CHECK, trunk.ALLOWED)):
                 needs = point.peer.next_evidence or (
                     _need(point.node, "show cdp neighbors detail", (str(PEER),), (check,)),)
-                rows.append(Comparison(check=check, left=subject, right=None, state="unknown",
+                rows.append(Comparison(check=check, left=point.subject, right=None, state="unknown",
                                        reason=point.peer.reason,
-                                       evidence=(k.FactRef(fact=PEER, subject=subject),
-                                                 k.FactRef(fact=fact, subject=subject)),
+                                       evidence=(k.FactRef(fact=PEER, subject=point.subject),
+                                                 k.FactRef(fact=fact, subject=point.subject)),
                                        next_evidence=needs))
         elif subject < point.peer.value:
             reciprocal_pairs += 1
-            other = points[k.EntityKey(point.peer.value)]
-            rows.extend((_comparison(point, other, trunk.NATIVE, NATIVE_CHECK),
-                         _comparison(point, other, trunk.ALLOWED, ALLOWED_CHECK)))
+            other = points[point.peer.value]
+            rows.extend((_comparison(point, other, trunk.NATIVE, NATIVE_CHECK, point.native, other.native),
+                         _comparison(point, other, trunk.ALLOWED, ALLOWED_CHECK, point.allowed, other.allowed)))
     needs = tuple(_need(node, trunk.OP, (str(trunk.ALLOWED), str(trunk.NATIVE)), CHECKS)
                   for node in sorted(group.nodes, key=lambda node: node.key))
     coverage = k.Unknown(reason=k.UnknownReason.DENOMINATOR_OPEN, detail="declared_synthetic_scope_only",
