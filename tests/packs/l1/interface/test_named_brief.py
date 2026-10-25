@@ -176,7 +176,11 @@ def test_named_cli_is_capture_scoped_deterministic_and_preserves_inputs(tmp_path
 
 
 @pytest.mark.parametrize("tail", [b"Gi1/0/6 is up, line protocol is up\n",
-                                  b"synthetic-a#show interfaces\n"])
+                                  b"synthetic-a#show interfaces\n",
+                                  NAME + b" is up, line protocol is up\n",
+                                  NAME + b" is down, line protocol is down\n",
+                                  NAME + b" is administratively down, line protocol is down\n",
+                                  NAME + b" is up\n"])
 def test_named_brief_mixed_command_refusal_preserves_outputs(tmp_path, tail):
     evidence, out = tmp_path / "evidence", tmp_path / "out"
     evidence.mkdir()
