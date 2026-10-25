@@ -82,6 +82,33 @@ RUNTIME_API["atlas_brain/evidence/archives.py"] = {
     "zipfile.ZipFile.open", "pathlib.Path.suffix",
 }
 RUNTIME_API["atlas_brain/kernel/population.py"] = {"dataclasses.InitVar"}
+# ADR-0013: M0 runner (PR 2) admissions, exact endpoints at their using path only.
+# Kept separate so the ADR-0002 global/AST/RUNTIME exact inventories stay byte-stable;
+# this adds no global grant and no capability to any path not listed here.
+RUNNER_API = {
+    "atlas_brain/runner/__init__.py": {
+        "subprocess.run", "sys.executable",
+    },
+    "atlas_brain/runner/cli.py": {
+        "subprocess.run", "sys.argv", "sys.executable", "sys.stderr",
+    },
+    "atlas_brain/runner/coordinator.py": {
+        "subprocess.run", "sys.executable",
+    },
+    "atlas_brain/runner/tripwire.py": {
+        "sys.addaudithook",
+        "socket.AF_INET", "socket.SOCK_STREAM", "socket.getaddrinfo", "socket.socket",
+        "socket.socket.close", "socket.socket.connect",
+        "http.client.HTTPConnection", "http.client.HTTPConnection.close",
+        "http.client.HTTPConnection.connect",
+        "urllib.request.urlopen",
+    },
+}
+
+
+def admitted_apis() -> frozenset[str]:
+    """Every API admitted by a map, for constructor/member inventory only."""
+    return frozenset(STDLIB_API | set().union(*SCOPED_API.values(), *RUNTIME_API.values(), *RUNNER_API.values()))
 
 
 def repository_path(path):
@@ -136,10 +163,8 @@ def origin_member(root, suffix):
         return root
     if root.startswith(RESULT_VALUE):
         endpoint = root[len(RESULT_VALUE):]
-        apis = STDLIB_API | set().union(*SCOPED_API.values(), *RUNTIME_API.values())
-        return endpoint + suffix if endpoint in constructor_members(frozenset(apis)) else root
-    apis = STDLIB_API | set().union(*SCOPED_API.values(), *RUNTIME_API.values())
-    endpoints = api_values(frozenset(apis))
+        return endpoint + suffix if endpoint in constructor_members(admitted_apis()) else root
+    endpoints = api_values(admitted_apis())
     if suffix and root in endpoints and not callable(endpoints[root]):
         return RESULT_VALUE + root
     return root + suffix
@@ -455,7 +480,7 @@ class ImportIndex:
         if name.startswith(RESULT_VALUE):
             callee = name[len(RESULT_VALUE):]
             roots = self.foreign_roots(callee, seen | {name}, callable_value=True)
-            admitted = STDLIB_API | set().union(*SCOPED_API.values(), *RUNTIME_API.values())
+            admitted = admitted_apis()
             endpoints = api_values(frozenset(admitted))
             if callee.startswith("atlas_brain."):
                 allowed = {api for api, target in endpoints.items() if callable(target)}
@@ -502,7 +527,7 @@ class ImportIndex:
                 callable_value=callable_value, evaluate_return=evaluate_return) if target is not None else set()
         if returned and not callable_value:
             # Only known class endpoints imply a returned instance, not primitive operations.
-            admitted = STDLIB_API | set().union(*SCOPED_API.values(), *RUNTIME_API.values())
+            admitted = admitted_apis()
             classes = constructor_members(frozenset(admitted))
             roots = {root for root in roots if root.startswith(CARRIER_RETURN) or root in classes}
         return roots
@@ -578,9 +603,9 @@ def constructor_members(apis):
 
 def source_refusals(source: str, sources=None, path="atlas_brain/probe.py") -> set[str]:
     tree = ast.parse(source)
-    apis = STDLIB_API | SCOPED_API.get(path, set()) | RUNTIME_API.get(path, set())
+    apis = STDLIB_API | SCOPED_API.get(path, set()) | RUNTIME_API.get(path, set()) | RUNNER_API.get(path, set())
     factories = constructor_members(frozenset(apis))
-    all_factories = constructor_members(frozenset(STDLIB_API | set().union(*SCOPED_API.values(), *RUNTIME_API.values())))
+    all_factories = constructor_members(admitted_apis())
     scoped_modules = {p.removesuffix(".py").replace("/", ".") for p in SCOPED_API}
     try:
         index = ImportIndex({path: source, **(sources or {})}, () if path in SCOPED_API else scoped_modules)
