@@ -1,6 +1,6 @@
-# ADR-0018: Declared cross-pack reads (proposal)
+# ADR-0018: Declared cross-pack reads
 
-Status: proposed
+Status: accepted
 
 Date: 2026-10-25
 
@@ -9,11 +9,14 @@ Date: 2026-10-25
 PLAN section 3 requires each consumer to read facts from their single owner,
 while section 5.1 prohibits every cross-pack read. Accepted ADR-0014 binds the
 reader API to declared inputs, and the generic model permits foreign reads.
-That capability does not decide whether pack code or only a separate correlation
-layer should consume them. This proposal chooses declaration-bound pack reads;
-owner acceptance is required. No runtime code or API grant changes.
+That capability alone did not choose between pack code and a separate correlation
+layer. On 2026-10-25 the delegated project lead selected declaration-bound pack
+reads under the user's explicit current-task decision authority. This records
+lead acceptance, not a claim that the repository owner personally selected this
+option. Independent technical review supplied evidence, not decision authority.
+No runtime code or API grant changes.
 
-## Proposed clarification
+## Decision
 
 1. A step may consume another pack's fact only through a reader bound to its
    explicit StepSpec.reads declaration. Producer-graph dependencies still
@@ -25,7 +28,7 @@ owner acceptance is required. No runtime code or API grant changes.
    not establish subject identity, capture membership, provenance or an estate
    population; those require their own admitted contracts.
 
-## Alternative
+## Alternative considered
 
 Retain pack isolation and allow foreign consumption only in separate correlation
 steps. That interpretation would need explicit enforcement and new refusal
@@ -42,6 +45,8 @@ proposal does not claim backing dictionaries are mechanically inaccessible.
 
 No engine source, fence inventory, dependency or production fact registration
 changes. No new node/link entity, capture grouping or discovery/VLAN parser is
-admitted. CF-01 remains a proposed decision until owner acceptance; tests alone
-do not close it. P1 public-format evidence and P2 identity/grouping remain open.
-This proposal neither establishes P1 exit nor starts or authorizes P2.
+admitted. CF-01's consumption-policy decision is accepted; integration closeout
+requires the merged decision, exact-head hosted checks and independent review.
+Tests support the decision but did not confer authority. P1 public-format
+evidence and P2 identity/grouping remain open. This decision neither establishes
+P1 exit nor starts or authorizes P2.
