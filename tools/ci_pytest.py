@@ -11,13 +11,25 @@ import pytest
 
 if __package__:
     from .ci_pytest_receipts import (
-        SCHEMA, ReceiptError, _ids, _metadata, _positive, _reports,
-        shard_for, verify_receipts,
+        SCHEMA,
+        ReceiptError,
+        _ids,
+        _metadata,
+        _positive,
+        _reports,
+        shard_for,
+        verify_receipts,
     )
 else:
     from ci_pytest_receipts import (
-        SCHEMA, ReceiptError, _ids, _metadata, _positive, _reports,
-        shard_for, verify_receipts,
+        SCHEMA,
+        ReceiptError,
+        _ids,
+        _metadata,
+        _positive,
+        _reports,
+        shard_for,
+        verify_receipts,
     )
 
 ROOT = Path(__file__).resolve().parents[1]
