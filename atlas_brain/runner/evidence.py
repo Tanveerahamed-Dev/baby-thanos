@@ -160,7 +160,9 @@ def _interface_kind(text: str) -> tuple[str, k.IntegrityState] | None:
                             and lines[index + 1].strip().casefold() == "% invalid input detected at '^' marker.")
         if not diagnostic_caret and any(re.fullmatch(pattern, line.strip().casefold(), re.ASCII) for pattern in contexts):
             raise RunnerRefused("evidence_unsupported_capture")
-    other = brief if command == "show interfaces" else detail
+    detail_context = (detail + r"|Sdwan-system-intf is (?:up|down|administratively down)"
+                      r"(?:, line protocol is.*)?")
+    other = brief if command == "show interfaces" else detail_context
     if (any(re.fullmatch(other, line.strip(), re.ASCII) for line in lines)
             or command == "show ip interface brief" and any(re.fullmatch(brief, line.strip(), re.ASCII) for line in lines[1:])):
         raise RunnerRefused("evidence_unsupported_capture")

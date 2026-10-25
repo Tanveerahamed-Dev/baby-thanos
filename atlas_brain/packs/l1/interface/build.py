@@ -62,6 +62,9 @@ def _rules(command: str) -> tuple[Rule, ...]:
     def row(identifier: str, pattern: str, fields: tuple[str, ...], state: str) -> Rule:
         return Rule(identifier, state, pattern, "record", state, "", fields)
     state = "table" if command == "show ip interface brief" else "start"
+    names: tuple[tuple[str, str], ...] = (("", _NAME),)
+    if state == "table":
+        names += (("_named", r"(?P<name>Sdwan-system-intf)"),)
     rules: list[Rule] = []
     if state == "table":
         rules.append(Rule("table_header", "start", _HEADER, "enter_state", state, "", ("header",)))
@@ -80,18 +83,21 @@ def _rules(command: str) -> tuple[Rule, ...]:
             row("missing_protocol", prefix, ("name", "status"), state),
         ))
     else:
-        prefix = (_NAME + _SPACE + r"(?P<address>[A-Za-z0-9.:-]++)" + _SPACE
-                  + r"(?P<valid>[A-Z]++)" + _SPACE + r"(?P<method>[A-Za-z]++)" + _SPACE)
         base = ("name", "address", "valid", "method", "status")
-        for identifier, status in (("admin", r"(?P<status>administratively down)"),
-                                   ("state", r"(?P<status>[a-z]++)")):
-            rules.append(row(identifier, prefix + status + _SPACE + r"(?P<oper>[^ \t]++)[ \t]*+",
-                             base + ("oper",), state))
-            rules.append(row(identifier + "_missing_oper", prefix + status + r"[ \t]*+", base, state))
-    rules.extend((
-        row("malformed_row", _NAME + r"(?P<unparsed>[ \t].*+)", ("name", "unparsed"), state),
-        row("name_only", _NAME, ("name",), state),
-    ))
+        for suffix, name in names:
+            prefix = (name + _SPACE + r"(?P<address>[A-Za-z0-9.:-]++)" + _SPACE
+                      + r"(?P<valid>[A-Z]++)" + _SPACE + r"(?P<method>[A-Za-z]++)" + _SPACE)
+            for identifier, status in (("admin", r"(?P<status>administratively down)"),
+                                       ("state", r"(?P<status>[a-z]++)")):
+                rules.append(row(identifier + suffix, prefix + status + _SPACE + r"(?P<oper>[^ \t]++)[ \t]*+",
+                                 base + ("oper",), state))
+                rules.append(row(identifier + "_missing_oper" + suffix,
+                                 prefix + status + r"[ \t]*+", base, state))
+    for suffix, name in names:
+        rules.extend((
+            row("malformed_row" + suffix, name + r"(?P<unparsed>[ \t].*+)", ("name", "unparsed"), state),
+            row("name_only" + suffix, name, ("name",), state),
+        ))
     return tuple(rules)
 
 
