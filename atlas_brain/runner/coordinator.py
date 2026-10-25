@@ -62,8 +62,6 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
         fact_lines.extend(lines)
     interface_present = any(capture.operation != "iosxe.show_version" for capture in captures)
     missing, missing_text = missing_interfaces()
-    if not interface_present:
-        fact_lines.append("l1.interface: " + missing_text)
     coordinator_denied = tripwire.probe()
     if coordinator_denied != tripwire.WITNESS_ATTEMPTS:
         raise RunnerRefused("egress_witness_failed")
@@ -79,6 +77,7 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
         f"egress denied: {total} (parent={parent_denied} coordinator={coordinator_denied} workers={worker_denied})",
         "determinism: sorted keys, no run timestamps, no host-root paths, no worker-count fields",
         "execution status: OK",
+        *(("l1.interface: " + missing_text,) if not interface_present else ()),
         "",
         "FACTS",
         *fact_lines,

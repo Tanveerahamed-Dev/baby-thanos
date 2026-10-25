@@ -5,12 +5,20 @@ from hashlib import sha256
 from typing import Literal
 
 from atlas_brain.evidence.capture import Capture
-from atlas_brain.evidence.parsekit.rules import Captured, ParseResult, Record, Rule, TokenMap, run_rules
+from atlas_brain.evidence.parsekit.rules import (
+    Captured,
+    ParseResult,
+    Record,
+    Rule,
+    TokenMap,
+    run_rules,
+)
 from atlas_brain.kernel import states as k
 from atlas_brain.model.specs import StepId, StepSpec
 from atlas_brain.model.store import FactStore, bind_writer
 
 CHECK = "l1.interface.admin_up_oper_down"
+VARIANT_SUPPORT = "allowlisted"
 _ADMIN, _OPER_FACT = k.FactId("l1.interface.admin"), k.FactId("l1.interface.oper")
 _STEP = StepSpec(id=StepId("l1.interface/parse"), pack=k.PackId("l1.interface"),
                  kind="parse_build", scope="device", reads=(), produces=(_ADMIN, _OPER_FACT),

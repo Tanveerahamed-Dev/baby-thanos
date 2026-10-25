@@ -38,6 +38,7 @@ P1 rows/findings live under `facts[capture_id]`; P0 fact values are unchanged.
 The summary says execution status to distinguish command success from health.
 
 Truth is measured synthetic/regression coverage, not device/train qualification.
+Support is explicitly labelled `variant_support: allowlisted` in each P1 result.
 Full-command public format-floor coverage remains a stated shortfall; no lab,
 holdout or verified claim is made. No new API grants or runtime dependencies.
 Existing ADRs, fence maps and inherited admission/inventory tests are unchanged.

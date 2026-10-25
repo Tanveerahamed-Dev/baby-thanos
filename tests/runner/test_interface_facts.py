@@ -113,6 +113,7 @@ def state_row(command, name, status, protocol):
 def interface_capture(record, identity):
     result = record["facts"][identity]
     assert result["pack"] == "l1.interface"
+    assert result["variant_support"] == "allowlisted"
     rows = result["interfaces"]
     assert isinstance(rows, list)
     assert all(row["name"]["state"] == "known" for row in rows)

@@ -94,7 +94,8 @@ def capture_facts(capture: Capture) -> tuple[dict[str, object], tuple[str, ...]]
         oper = item.oper.value if isinstance(item.oper, k.Known) else "unknown"
         request = " next_evidence=" + ",".join(need.operation for need in item.next_evidence) if item.next_evidence else ""
         lines.append(f"{capture.id} {interface_pack.CHECK}: {item.name.value} admin {admin} / oper {oper}: {item.verdict}{request}")
-    return {"pack": "l1.interface", "operation": capture.rendered, "parse": result.parse.quality,
+    return {"pack": "l1.interface", "variant_support": interface_pack.VARIANT_SUPPORT,
+            "operation": capture.rendered, "parse": result.parse.quality,
             "denominator": {"scope": "observed_in_capture", "count": result.observed},
             "coverage": coverage, "interfaces": interfaces}, tuple(lines)
 

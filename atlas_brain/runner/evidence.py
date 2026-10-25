@@ -65,11 +65,13 @@ def analyse_evidence(root: Path, *, budgets: Budgets | None = None) -> tuple[Cap
         if kind is None:
             _require_system_text(text)
         command, integrity = kind if kind is not None else ("show version", k.IntegrityState.COMPLETE)
+        operations = {"show version": "iosxe.show_version", "show interfaces": "iosxe.show_interfaces",
+                      "show ip interface brief": "iosxe.show_ip_interface_brief"}
         identity = sha256(name_bytes + b"\0" + raw).hexdigest()
         captures.append(Capture(
             id=k.CaptureId("cap:" + identity),
             source=k.EntityKey("node:file:" + sha256(name_bytes).hexdigest()),
-            operation="iosxe." + command.replace(" ", "_"), rendered=command, codec="utf-8", raw=raw,
+            operation=operations[command], rendered=command, codec="utf-8", raw=raw,
             # COMPLETE describes the supplied file, not a verified collection session.
             # Capture's legacy metadata bridge binds its whole-byte SHA and missing time.
             integrity=integrity, lines=text_lines(raw, "utf-8"),
