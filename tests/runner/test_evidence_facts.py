@@ -56,9 +56,9 @@ def assert_scalar_contract(value):
 
 
 @pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
-@pytest.mark.parametrize("prefix", [b"", "synthetic banner \u03bb\n".encode()])
-def test_cli_facts_have_exact_raw_spans_and_missing_clock_stays_unknown(tmp_path, newline, prefix):
-    raw = (prefix + SAMPLE).replace(b"\n", newline)
+@pytest.mark.parametrize("banner_suffix", [b"", " synthetic \u03bb".encode()])
+def test_cli_facts_have_exact_raw_spans_and_missing_clock_stays_unknown(tmp_path, newline, banner_suffix):
+    raw = SAMPLE.replace(b"17.09.04a", b"17.09.04a" + banner_suffix).replace(b"\n", newline)
     evidence = capture_dir(tmp_path, raw)
     out = tmp_path / "out"
     completed = cli(evidence, out)

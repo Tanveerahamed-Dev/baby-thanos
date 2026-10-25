@@ -76,24 +76,48 @@ def analyse_evidence(root: Path, *, budgets: Budgets | None = None) -> tuple[Cap
 
 
 def _require_system_text(text: str) -> None:
-    lines = text.splitlines()
+    lines = [line.removesuffix("\r") for line in text.split("\n") if line.strip()]
     if any(line.lstrip().startswith("%") or "Command authorization failed" in line for line in lines):
         raise RunnerRefused("evidence_capture_error")
     if any(marker in text.lower() for marker in ("--more--", "<--- more --->", "[truncated]", "--(more)--")):
         raise RunnerRefused("evidence_capture_incomplete")
-    if any(ord(char) < 32 and char not in "\t\r\n" or ord(char) == 127 for char in text):
+    if ("\r" in text.replace("\r\n", "") or any(
+            ord(char) < 32 and char not in "\t\r\n" or char in "\x7f\u0085\u2028\u2029" for char in text)):
         raise RunnerRefused("evidence_invalid_text")
-    banner = any(line.startswith("Cisco IOS XE Software") for line in lines)
+    if not lines:
+        raise RunnerRefused("evidence_unsupported_capture")
+    # Inspect one response envelope; the Capture always retains the original bytes.
+    prompt = r"[A-Za-z0-9_.:-]+[>#]"
+    opening = re.fullmatch("(" + prompt + r") ?show version", lines[0], re.ASCII)
+    if opening:
+        lines = lines[1:]
+    if lines and re.fullmatch(prompt, lines[-1], re.ASCII):
+        if opening and lines[-1] != opening[1]:
+            raise RunnerRefused("evidence_unsupported_capture")
+        lines = lines[:-1]
+    if not lines:
+        raise RunnerRefused("evidence_unsupported_capture")
     patterns = (
         r"[A-Za-z0-9_.-]+ uptime is .+",
         r'System image file is "[^"]+"',
         r"Last reload reason: .+",
     )
+    contexts = (
+        r"[a-z0-9_.:-]+(?:\([^)]*\))?[>#].*",
+        r"(?:building configuration|current configuration|banner(?:[ \t]|$)|(?:do[ \t]+)?sh(?:ow|o)?[ \t]).*",
+        r"(?:cisco (?:nexus operating system|ios[- ]xr)|nx-os software|arista networks eos|junos software).*",
+    )
+    for line in lines:
+        # A hostname such as "show" in an exact uptime record is not a command.
+        if not any(re.fullmatch(pattern, line, re.ASCII) for pattern in patterns):
+            if any(re.fullmatch(pattern, line.strip().casefold(), re.ASCII) for pattern in contexts):
+                raise RunnerRefused("evidence_unsupported_capture")
+    banner = r"Cisco IOS XE Software(?:[, \t].*)?"
+    if any(line.lstrip().casefold().startswith("cisco ios xe software") for line in lines[1:]):
+        raise RunnerRefused("evidence_unsupported_capture")
     records = all(any(re.fullmatch(pattern, line, re.ASCII) for line in lines) for pattern in patterns)
     fragment = records and all(
-        not line.strip() or any(re.fullmatch(pattern, line, re.ASCII) for pattern in patterns)
-        or re.fullmatch(r"[A-Za-z0-9_.:-]+[>#](?: ?show version)?", line, re.ASCII)
-        for line in lines
+        any(re.fullmatch(pattern, line, re.ASCII) for pattern in patterns) for line in lines
     )
-    if not (banner or fragment):
+    if not (re.fullmatch(banner, lines[0], re.ASCII) or fragment):
         raise RunnerRefused("evidence_unsupported_capture")

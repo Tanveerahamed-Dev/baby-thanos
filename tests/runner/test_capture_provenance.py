@@ -99,6 +99,20 @@ CONTEXT_REFUSALS = [
                  id="mixed-eos-response"),
     pytest.param(SAMPLE + b"JUNOS Software Release [22.1]\n",
                  id="mixed-junos-response"),
+    pytest.param(BANNER + b"BANNER MOTD ^C\n" + FRAGMENT + b"^C\n",
+                 id="uppercase-banner-directive-in-body"),
+    pytest.param(BANNER + b"ShOw RuNnInG-CoNfIg\n" + FRAGMENT,
+                 id="mixedcase-command-in-body"),
+    pytest.param(BANNER + b"sh run\n" + FRAGMENT,
+                 id="abbreviated-sh-command-in-body"),
+    pytest.param(BANNER + b"sho run\n" + FRAGMENT,
+                 id="abbreviated-sho-command-in-body"),
+    pytest.param(BANNER + b"do sh run\n" + FRAGMENT,
+                 id="do-abbreviated-command-in-body"),
+    pytest.param(SAMPLE + b"   " + BANNER,
+                 id="indented-second-platform-banner"),
+    pytest.param(SAMPLE + b"cIsCo iOs xE sOfTwArE, Version 17.09.04a\n",
+                 id="mixedcase-second-platform-banner"),
 ]
 
 
@@ -156,6 +170,30 @@ def test_existing_error_and_pager_refusals_precede_context_refusal(tmp_path, mar
                  id="prompt-wrapped-fragment"),
     pytest.param(SAMPLE + b"sw-a#\n", id="raw-response-terminal-prompt"),
     pytest.param(FRAGMENT + b"sw-a#\n", id="fragment-terminal-prompt"),
+    # Generated grammar example, not a captured device fixture.
+    pytest.param(
+        BANNER
+        + b"Cisco IOS Software [Synthetic], Synthetic Switch Software, Version 17.09.04a\n"
+        + b"Copyright (c) 2000-2026 Synthetic Example Authors\n"
+        + b"Technical Support: https://example.invalid/support\n"
+        + b"ROM: IOS-XE ROMMON\n"
+        + FRAGMENT
+        + b"License Level: synthetic-lab\n"
+        + b"Next reload license Level: synthetic-lab\n"
+        + b"cisco SYNTHETIC-TEST chassis with 1024K bytes of memory.\n"
+        + b"Configuration register is 0x102\n",
+        id="full-synthetic-response-with-descriptive-lines",
+    ),
+    *[
+        pytest.param(
+            header + FRAGMENT.replace(b"sw-a uptime", hostname + b" uptime"),
+            id=f"hostname-{hostname.decode('ascii')}-{'headered' if header else 'headerless'}",
+        )
+        for hostname in (
+            b"banner", b"show", b"Arista-switch", b"NX-OS-switch", b"JUNOS", b"Building"
+        )
+        for header in (BANNER, b"")
+    ],
 ])
 def test_valid_single_response_twins_preserve_known_values_and_raw_provenance(
         tmp_path, raw, newline):
