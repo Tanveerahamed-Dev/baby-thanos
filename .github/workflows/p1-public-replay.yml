@@ -1,0 +1,29 @@
+name: Public P1 replay
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions: {contents: read}
+jobs:
+  public-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env: {EXPECTED_HEAD: "${{ github.event.pull_request.head.sha || github.sha }}", PYTHONDONTWRITEBYTECODE: '1', UV_NO_CACHE: 'true'}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {ref: "${{ github.event.pull_request.head.sha || github.sha }}", persist-credentials: false}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with: {version: '0.13.1', enable-cache: false}
+      - run: uv sync --locked
+      - run: uv run --no-sync pytest -q tests/test_p1_public_replay.py
+      - name: Replay held sources and publish closed aggregate only
+        shell: bash
+        run: |
+          if uv run --no-sync python -B tools/p1_public_replay.py run >"$RUNNER_TEMP/p1-run.log" 2>&1 &&
+             uv run --no-sync python -B tools/p1_public_replay.py publish >"$RUNNER_TEMP/p1-public.json" 2>"$RUNNER_TEMP/p1-publish.log"; then
+            cat "$RUNNER_TEMP/p1-public.json"
+          else
+            printf '%s\n' 'Public P1 replay refused; quarantined diagnostics held.'
+            exit 1
+          fi
