@@ -34,7 +34,9 @@ class Status(StrEnum):
 
 _STATUS = TokenMap.closed({"up": Status.UP, "down": Status.DOWN,
                            "administratively down": Status.ADMIN_DOWN})
-_OPER = TokenMap.closed({"up": Status.UP, "down": Status.DOWN})
+_OPER = TokenMap.closed({"up": Status.UP, "down": Status.DOWN,
+                         "up , Autostate Enabled": Status.UP,
+                         "down , Autostate Enabled": Status.DOWN})
 _NAME = r"(?P<name>[A-Za-z][A-Za-z-]*+[0-9][A-Za-z0-9./:-]*+)"
 _SPACE = r"[ \t]++"
 _HEADER = r"(?P<header>Interface[ \t]++IP-Address[ \t]++OK\?[ \t]++Method[ \t]++Status[ \t]++Protocol)[ \t]*+"
@@ -76,6 +78,7 @@ def _rules(command: str) -> tuple[Rule, ...]:
             row("separator_" + phase, r"(?P<separator>[ \t]*+)", ("separator",), phase),
         ))
     if command == "show interfaces":
+        rules.append(row("bare_command", command, (), state))
         prefix = _NAME + r" is (?P<status>[^,]++)"
         rules.extend((
             row("interface", prefix + r", line protocol is (?P<oper>.*+)", ("name", "status", "oper"), state),
