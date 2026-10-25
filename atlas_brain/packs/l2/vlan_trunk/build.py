@@ -209,6 +209,8 @@ def build_node(group: SyntheticGroup, node: Node, store: FactStore) -> TrunkResu
             native = allowed = unknown(k.UnknownReason.SUBJECT_ABSENT_FROM_CAPTURE, "trunk_port_not_printed")
         else:
             fields = dict(base[0].fields)
+            if not selected:
+                raise ValueError("trunk_capture_state")
             capture = selected[0]
             context = (_ref(capture.raw, capture.id, base[0].span),) + declaration
             if (fields["status"].value != Status.TRUNKING
