@@ -1,6 +1,7 @@
 """Coordinator and worker roles: explicit-spawn scheduler that writes the result bytes."""
 import json
 import re
+import stat
 import subprocess
 import sys
 from hashlib import sha256
@@ -10,7 +11,8 @@ from typing import cast
 from atlas_brain.contract.canonical import canonical
 
 from . import tripwire
-from .records import RunnerRefused
+from .evidence import analyse_evidence, require_evidence
+from .records import RunnerRefused, system_facts
 
 SCHEMA = "atlas-brain.runner-manifest/1"
 STEPS = tuple(f"witness/{index:02d}" for index in range(8))
@@ -28,45 +30,55 @@ def run_worker(steps: tuple[str, ...]) -> None:
         print(json.dumps({"denied": denied, "step": step}, sort_keys=True))
 
 
-def require_evidence(root: Path) -> None:
-    """Refuse a missing or non-directory evidence path with a stable code."""
-    if not root.is_dir():
-        raise RunnerRefused("evidence_dir_missing")
-
-
-def summarise_evidence(root: Path) -> tuple[int, str]:
-    """Admit the folder; return a path-free deterministic digest of its names and bytes."""
-    require_evidence(root)
-    members = sorted(root.rglob("*"), key=lambda item: item.as_posix())
-    files = [member for member in members if member.is_file()]
-    entries = [{"path": member.relative_to(root).as_posix(), "sha256": sha256(member.read_bytes()).hexdigest()}
-               for member in files]
-    return len(files), sha256(canonical(entries)).hexdigest()
-
-
 def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
     """Coordinator role: run the plan, collect workers, write SUMMARY.txt and MANIFEST.json."""
     if workers < 1:
         raise RunnerRefused("invalid_workers")
-    files, evidence_digest = summarise_evidence(evidence)
+    require_evidence(evidence)
+    try:
+        source, destination = Path.resolve(evidence), Path.resolve(out)
+    except OSError as error:
+        raise RunnerRefused("evidence_output_unreadable") from error
+    if Path.is_relative_to(source, destination) or Path.is_relative_to(destination, source):
+        raise RunnerRefused("evidence_output_overlap")
+    for name in ("SUMMARY.txt", "MANIFEST.json"):
+        try:
+            info = Path.lstat(out / name)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise RunnerRefused("output_unwritable") from error
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink > 1:
+            raise RunnerRefused("output_unsafe_member")
+    captures = analyse_evidence(evidence)
+    files = len(captures)
+    entries = [{"capture": str(capture.id), "sha256": capture.bytes_sha256} for capture in captures]
+    evidence_digest = sha256(canonical(sorted(entries, key=lambda entry: entry["capture"]))).hexdigest()
+    facts: dict[str, object] = {}
+    fact_lines: list[str] = []
+    for capture in sorted(captures, key=lambda capture: capture.id):
+        projected, lines = system_facts(capture)
+        facts[str(capture.id)] = projected
+        fact_lines.extend(lines)
     coordinator_denied = tripwire.probe()
     if coordinator_denied != tripwire.WITNESS_ATTEMPTS:
         raise RunnerRefused("egress_witness_failed")
     results = _spawn_workers(workers)
     worker_denied = sum(denied for _, denied in results)
     total = parent_denied + coordinator_denied + worker_denied
-    out.mkdir(parents=True, exist_ok=True)
     summary = "\n".join((
-        "BABY THANOS RUNNER - M0 WALKING SKELETON",
+        "BABY THANOS RUNNER - P0 SYSTEM FACTS",
         f"schema: {SCHEMA}",
         f"evidence: files={files} digest={evidence_digest}",
         f"steps: {len(results)}",
         f"witness: {tripwire.WITNESS_ATTEMPTS} denied egress attempts per step",
         f"egress denied: {total} (parent={parent_denied} coordinator={coordinator_denied} workers={worker_denied})",
-        "determinism: sorted keys, no timestamps, no addresses, no worker-count fields",
+        "determinism: sorted keys, no run timestamps, no host-root paths, no worker-count fields",
         "status: OK",
+        "",
+        "FACTS",
+        *fact_lines,
     )) + "\n"
-    (out / "SUMMARY.txt").write_text(summary, encoding="utf-8")
     record = {
         "schema": SCHEMA,
         "evidence": {"digest": evidence_digest, "files": files},
@@ -74,8 +86,14 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
         "egress": {"parent_denied": parent_denied, "coordinator_denied": coordinator_denied,
                    "worker_denied": worker_denied, "denied": total},
         "steps": [{"denied": denied, "id": step} for step, denied in results],
+        "facts": facts,
     }
-    (out / "MANIFEST.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "SUMMARY.txt").write_text(summary, encoding="utf-8", newline="\n")
+        (out / "MANIFEST.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    except OSError as error:
+        raise RunnerRefused("output_unwritable") from error
     return total
 
 

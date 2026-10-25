@@ -16,8 +16,8 @@ ROLES = ("parent", "coordinator", "worker")
 FLAGS = frozenset({"--evidence", "--out", "--workers", "--role", "--steps", "--parent-denied"})
 USAGE = """usage: python -m atlas_brain.runner --evidence DIR --out DIR [--workers N]
 
-Run the offline runner skeleton: admit an evidence folder, execute the built-in
-deterministic witness steps in an explicit worker pool, and write SUMMARY.txt plus
+Analyse raw IOS-XE show-version captures, execute the built-in deterministic
+witness steps in an explicit worker pool, and write SUMMARY.txt plus
 MANIFEST.json under --out. Egress is denied and counted; output bytes do not depend
 on the run or on the worker count.
 """

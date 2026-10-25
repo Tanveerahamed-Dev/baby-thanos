@@ -18,7 +18,9 @@ def build_capture(capture: Capture) -> SystemFields:
     if capture.error is not None and capture.integrity is not k.IntegrityState.ERROR:
         raise ValueError("capture_error_integrity_mismatch")
     observed = extract_fields(capture.raw, capture.id, integrity=capture.integrity)
-    if isinstance(observed.uptime, k.Unknown):
+    if capture.raw and capture.integrity is k.IntegrityState.COMPLETE and isinstance(capture.collected_utc, k.Unknown):
+        boot = capture.collected_utc
+    elif isinstance(observed.uptime, k.Unknown):
         boot = observed.uptime
     elif isinstance(capture.collected_utc, k.Unknown):
         boot = capture.collected_utc

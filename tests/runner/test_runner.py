@@ -23,9 +23,14 @@ def run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
 def evidence_folder(tmp_path: Path) -> Path:
     root = tmp_path / "evidence"
     root.mkdir()
-    (root / "show-version.txt").write_text("Cisco IOS XE Software, Version 17.09.04a\n", encoding="utf-8")
-    (root / "show-interfaces.txt").write_text(
-        "GigabitEthernet0/0 is up, line protocol is down\n", encoding="utf-8")
+    raw = (
+        b"Cisco IOS XE Software, Version 17.09.04a\n"
+        b"sw-a uptime is 1 day, 2 hours, 3 minutes\n"
+        b'System image file is "bootflash:packages.conf"\n'
+        b"Last reload reason: PowerOn\n"
+    )
+    (root / "show-version.txt").write_bytes(raw)
+    (root / "sw-b-show-version.txt").write_bytes(raw.replace(b"sw-a", b"sw-b"))
     return root
 
 
@@ -48,6 +53,9 @@ def test_two_runs_over_same_evidence_are_byte_identical(tmp_path):
     assert sorted(path.name for path in first.iterdir()) == [MANIFEST, SUMMARY]
     digest = read_manifest(first)["evidence"]
     assert isinstance(digest, dict) and len(str(digest["digest"])) == 64
+    facts = read_manifest(first)["facts"]
+    assert len(facts) == 2
+    assert all(capture["image"]["state"] == "known" for capture in facts.values())
     assert b"egress denied: 40" in (first / SUMMARY).read_bytes()
 
 
@@ -117,6 +125,7 @@ def test_worker_count_does_not_change_output_bytes(tmp_path):
     assert run_cli("--evidence", str(evidence), "--out", str(one), "--workers", "1").returncode == 0
     assert run_cli("--evidence", str(evidence), "--out", str(four), "--workers", "4").returncode == 0
     assert read_outputs(one) == read_outputs(four)
+    assert len(read_manifest(one)["facts"]) == 2
 
 
 def test_python_api_returns_manifest_result(tmp_path):
