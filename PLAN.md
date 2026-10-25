@@ -239,8 +239,9 @@ runner        CLI/API, scheduler, worker pool, egress tripwire, ASCII summary
   facts, no checks.
 - **Protocol pack** — one `domain.pack` id: the command forms it parses, the facts and subjects it
   owns, its expected-set partitions (denominators), its checks over `problem | ok | unknown |
-  not_applicable`, and the correlation edges it declares. No pack reads another pack's facts; no
-  pack writes outside its declared ids.
+  not_applicable`, and the correlation edges it declares. Foreign facts may be consumed only through
+  a `FactReader` bound to explicit `StepSpec.reads`; no consumer re-derives or writes another owner's
+  facts, and no pack writes outside its declared outputs (see proposed ADR-0018).
 - **Fact spec / step** — typed, frozen, slotted; one writer, strict readers; declared read/write
   edges in a deterministic step graph (cycles refused).
 - **Check** — a single verdict constructor; `ok` needs positive proof on every input; an empty or
