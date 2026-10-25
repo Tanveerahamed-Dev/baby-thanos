@@ -217,5 +217,5 @@ def test_distinct_scalar_join_keys_keep_unresolved_and_paired_subjects_separate(
     assert len(paired) == len(unresolved) == 2
     assert all(points[row.left].port == points[row.right].port == P for row in paired)
     assert all(points[row.left].port == "Gi1/0/2" and row.state == "unknown" for row in unresolved)
-    assert set(row.left for row in unresolved).isdisjoint(
+    assert {row.left for row in unresolved}.isdisjoint(
         subject for row in paired for subject in (row.left, row.right))
