@@ -61,15 +61,20 @@ def analyse_evidence(root: Path, *, budgets: Budgets | None = None) -> tuple[Cap
             text = raw.decode("utf-8")
         except UnicodeError as error:
             raise RunnerRefused("evidence_invalid_encoding") from error
-        _require_system_text(text)
+        kind = _interface_kind(text)
+        if kind is None:
+            _require_system_text(text)
+        command, integrity = kind if kind is not None else ("show version", k.IntegrityState.COMPLETE)
+        operations = {"show version": "iosxe.show_version", "show interfaces": "iosxe.show_interfaces",
+                      "show ip interface brief": "iosxe.show_ip_interface_brief"}
         identity = sha256(name_bytes + b"\0" + raw).hexdigest()
         captures.append(Capture(
             id=k.CaptureId("cap:" + identity),
             source=k.EntityKey("node:file:" + sha256(name_bytes).hexdigest()),
-            operation="iosxe.show_version", rendered="show version", codec="utf-8", raw=raw,
+            operation=operations[command], rendered=command, codec="utf-8", raw=raw,
             # COMPLETE describes the supplied file, not a verified collection session.
             # Capture's legacy metadata bridge binds its whole-byte SHA and missing time.
-            integrity=k.IntegrityState.COMPLETE, lines=text_lines(raw, "utf-8"),
+            integrity=integrity, lines=text_lines(raw, "utf-8"),
             read_scope=k.ReadScope.UNKNOWN, view=k.ViewConsistency.UNKNOWN,
         ))
     return tuple(captures)
@@ -122,3 +127,46 @@ def _require_system_text(text: str) -> None:
     )
     if not (re.fullmatch(banner, lines[0], re.ASCII) or fragment):
         raise RunnerRefused("evidence_unsupported_capture")
+
+
+def _interface_kind(text: str) -> tuple[str, k.IntegrityState] | None:
+    lines = [line.removesuffix("\r") for line in text.split("\n") if line.strip()]
+    prompt = r"[A-Za-z0-9_.:-]+[>#]"
+    opening = re.fullmatch("(" + prompt + r") ?(show interfaces|show ip interface brief)", lines[0], re.ASCII) if lines else None
+    brief = r"Interface[ \t]+IP-Address[ \t]+OK\?[ \t]+Method[ \t]+Status[ \t]+Protocol[ \t]*"
+    detail = r"[A-Za-z][A-Za-z-]*[0-9][A-Za-z0-9./:-]* is (?:up|down|administratively down)(?:, line protocol is.*)?"
+    command = (opening[2] if opening else "show ip interface brief" if lines and re.fullmatch(brief, lines[0], re.ASCII)
+               else "show interfaces" if lines and re.fullmatch(detail, lines[0], re.ASCII) else "")
+    if not command:
+        return None
+    if ("\r" in text.replace("\r\n", "") or any(
+            ord(char) < 32 and char not in "\t\r\n" or char in "\x7f\u0085\u2028\u2029" for char in text)):
+        raise RunnerRefused("evidence_invalid_text")
+    if opening:
+        lines = lines[1:]
+    if lines and re.fullmatch(prompt, lines[-1], re.ASCII):
+        if opening and lines[-1] != opening[1]:
+            raise RunnerRefused("evidence_unsupported_capture")
+        lines = lines[:-1]
+    contexts = (
+        r"(?:end|!|\^c?)",
+        r"[a-z0-9_.:-]+(?:\([^)]*\))?[>#].*",
+        r"(?:building configuration|current configuration|banner(?:[ \t]|$)|(?:do[ \t]+)?sh(?:ow|o)?[ \t]).*",
+        r"(?:cisco (?:ios|nexus operating system)|nx-os software|arista networks eos|junos software).*",
+        r"(?:[a-z0-9_.-]+ uptime is |system image file is |last reload reason:).*",
+    )
+    for index, line in enumerate(lines):
+        diagnostic_caret = (opening is not None and line.strip() == "^" and index + 1 < len(lines)
+                            and lines[index + 1].strip().casefold() == "% invalid input detected at '^' marker.")
+        if not diagnostic_caret and any(re.fullmatch(pattern, line.strip().casefold(), re.ASCII) for pattern in contexts):
+            raise RunnerRefused("evidence_unsupported_capture")
+    other = brief if command == "show interfaces" else detail
+    if (any(re.fullmatch(other, line.strip(), re.ASCII) for line in lines)
+            or command == "show ip interface brief" and any(re.fullmatch(brief, line.strip(), re.ASCII) for line in lines[1:])):
+        raise RunnerRefused("evidence_unsupported_capture")
+    integrity = k.IntegrityState.COMPLETE if lines else k.IntegrityState.EMPTY
+    if any(line.lstrip().startswith("%") or line.strip().casefold() in ("command authorization failed", "command authorization failed.") for line in lines):
+        integrity = k.IntegrityState.ERROR
+    elif any(line.strip().casefold() in ("[truncated]", "<output truncated>", "--more--", "<--- more --->", "--(more)--") for line in lines):
+        integrity = k.IntegrityState.TRUNCATED
+    return command, integrity

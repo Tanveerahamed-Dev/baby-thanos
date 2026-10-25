@@ -12,7 +12,7 @@ from atlas_brain.contract.canonical import canonical
 
 from . import tripwire
 from .evidence import analyse_evidence, require_evidence
-from .records import RunnerRefused, system_facts
+from .records import RunnerRefused, capture_facts, missing_interfaces
 
 SCHEMA = "atlas-brain.runner-manifest/1"
 STEPS = tuple(f"witness/{index:02d}" for index in range(8))
@@ -57,9 +57,11 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
     facts: dict[str, object] = {}
     fact_lines: list[str] = []
     for capture in sorted(captures, key=lambda capture: capture.id):
-        projected, lines = system_facts(capture)
+        projected, lines = capture_facts(capture)
         facts[str(capture.id)] = projected
         fact_lines.extend(lines)
+    interface_present = any(capture.operation != "iosxe.show_version" for capture in captures)
+    missing, missing_text = missing_interfaces()
     coordinator_denied = tripwire.probe()
     if coordinator_denied != tripwire.WITNESS_ATTEMPTS:
         raise RunnerRefused("egress_witness_failed")
@@ -67,14 +69,15 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
     worker_denied = sum(denied for _, denied in results)
     total = parent_denied + coordinator_denied + worker_denied
     summary = "\n".join((
-        "BABY THANOS RUNNER - P0 SYSTEM FACTS",
+        "BABY THANOS RUNNER - P1 INTERFACE ANSWER" if interface_present else "BABY THANOS RUNNER - P0 SYSTEM FACTS",
         f"schema: {SCHEMA}",
         f"evidence: files={files} digest={evidence_digest}",
         f"steps: {len(results)}",
         f"witness: {tripwire.WITNESS_ATTEMPTS} denied egress attempts per step",
         f"egress denied: {total} (parent={parent_denied} coordinator={coordinator_denied} workers={worker_denied})",
         "determinism: sorted keys, no run timestamps, no host-root paths, no worker-count fields",
-        "status: OK",
+        "execution status: OK",
+        *(("l1.interface: " + missing_text,) if not interface_present else ()),
         "",
         "FACTS",
         *fact_lines,
@@ -88,6 +91,8 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
         "steps": [{"denied": denied, "id": step} for step, denied in results],
         "facts": facts,
     }
+    if not interface_present:
+        record["interface_coverage"] = missing
     try:
         out.mkdir(parents=True, exist_ok=True)
         (out / "SUMMARY.txt").write_text(summary, encoding="utf-8", newline="\n")

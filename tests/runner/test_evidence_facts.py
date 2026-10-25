@@ -222,7 +222,7 @@ def test_python_api_propagates_refusal_without_success_artifacts(tmp_path):
 @pytest.mark.parametrize("raw,code", [
     (b"", "evidence_capture_empty"),
     (b" \r\n\t", "evidence_capture_empty"),
-    (b"GigabitEthernet0/0 is up, line protocol is down\n", "evidence_unsupported_capture"),
+    (b"OSPF neighbor table\n", "evidence_unsupported_capture"),
     (SAMPLE + b"\xff\n", "evidence_invalid_encoding"),
     (SAMPLE + b"% Invalid input detected at '^' marker.\n", "evidence_capture_error"),
     (SAMPLE + b"--More--", "evidence_capture_incomplete"),
