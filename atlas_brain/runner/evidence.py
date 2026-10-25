@@ -155,15 +155,18 @@ def _interface_kind(text: str) -> tuple[str, k.IntegrityState] | None:
         r"(?:cisco (?:ios|nexus operating system)|nx-os software|arista networks eos|junos software).*",
         r"(?:[a-z0-9_.-]+ uptime is |system image file is |last reload reason:).*",
     )
-    if any(re.fullmatch(pattern, line.strip().casefold(), re.ASCII) for line in lines for pattern in contexts):
-        raise RunnerRefused("evidence_unsupported_capture")
+    for index, line in enumerate(lines):
+        diagnostic_caret = (opening is not None and line.strip() == "^" and index + 1 < len(lines)
+                            and lines[index + 1].strip().casefold() == "% invalid input detected at '^' marker.")
+        if not diagnostic_caret and any(re.fullmatch(pattern, line.strip().casefold(), re.ASCII) for pattern in contexts):
+            raise RunnerRefused("evidence_unsupported_capture")
     other = brief if command == "show interfaces" else detail
     if (any(re.fullmatch(other, line.strip(), re.ASCII) for line in lines)
             or command == "show ip interface brief" and any(re.fullmatch(brief, line.strip(), re.ASCII) for line in lines[1:])):
         raise RunnerRefused("evidence_unsupported_capture")
     integrity = k.IntegrityState.COMPLETE if lines else k.IntegrityState.EMPTY
-    if any(line.lstrip().startswith("%") or "command authorization failed" in line.casefold() for line in lines):
+    if any(line.lstrip().startswith("%") or line.strip().casefold() in ("command authorization failed", "command authorization failed.") for line in lines):
         integrity = k.IntegrityState.ERROR
-    elif any(marker in text.casefold() for marker in ("[truncated]", "<output truncated>", "--more--", "<--- more --->", "--(more)--")):
+    elif any(line.strip().casefold() in ("[truncated]", "<output truncated>", "--more--", "<--- more --->", "--(more)--") for line in lines):
         integrity = k.IntegrityState.TRUNCATED
     return command, integrity

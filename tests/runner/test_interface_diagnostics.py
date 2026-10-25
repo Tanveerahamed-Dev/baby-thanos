@@ -277,6 +277,14 @@ REFUSED_CONTEXTS = [
         id="caret-before-diagnostic-in-description",
     ),
     pytest.param(
+        response("show interfaces", b"   ^\nDescription: unrelated text\n" + INVALID_INPUT),
+        id="caret-separated-from-error-by-nonblank-body",
+    ),
+    pytest.param(
+        response("show interfaces", INVALID_INPUT + b"   ^\n"),
+        id="error-before-caret-is-not-paired",
+    ),
+    pytest.param(
         response("show interfaces", b"   ^C\n" + INVALID_INPUT),
         id="caret-c-is-not-error-pointer",
     ),
@@ -319,4 +327,42 @@ def test_caret_exception_keeps_context_refusal_atomic(tmp_path, newline, invalid
     assert completed.stderr == "runner refused: evidence_unsupported_capture\n"
     assert output_bytes(out) == prior
     assert sorted(path.name for path in out.iterdir()) == sorted(OUTPUT_NAMES)
+    assert_inputs_unchanged(evidence, members)
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+@pytest.mark.parametrize("literal", [
+    pytest.param(b"Command authorization failed", id="authorization-text"),
+    pytest.param(b"[truncated]", id="truncation-text"),
+])
+def test_description_literals_preserve_reverse_mismatch(tmp_path, newline, literal):
+    raw = response(
+        "show interfaces",
+        b"Gi1/0/5 is administratively down, line protocol is up\n"
+        + b"  Description: " + literal + b"\n",
+    ).replace(b"\n", newline)
+    name = "reverse.txt"
+    members = {name: raw}
+    evidence = write_evidence(tmp_path, members)
+    out = tmp_path / "out"
+    completed = cli(evidence, out)
+    assert completed.returncode == 0, (completed.stdout, completed.stderr)
+    result = interface_result(read_manifest(out), name, raw, "show interfaces", 1)
+    assert result["parse"] == "partial"
+    assert result["coverage"]["reason"] == "denominator_open"
+    row, = result["interfaces"]
+    identity = capture_id(name, raw)
+    for field, value, token in (
+        ("name", "Gi1/0/5", b"Gi1/0/5"),
+        ("admin", "down", b"administratively down"),
+        ("oper", "up", b"up"),
+    ):
+        assert row[field]["state"] == "known"
+        assert row[field]["value"] == value
+        first, *_ = row[field]["evidence"]
+        assert first["locator"] == "bytes"
+        assert_reference(first, identity, raw, token)
+    assert row["check"]["id"] == CHECK
+    assert row["check"]["state"] == "problem"
+    assert row["check"]["next_evidence"]
     assert_inputs_unchanged(evidence, members)
