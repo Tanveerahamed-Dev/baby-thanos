@@ -8,6 +8,7 @@ from atlas_brain.kernel import states as k
 from atlas_brain.kernel.states import digest, require
 from atlas_brain.packs.l1.interface import build as interface_pack
 from atlas_brain.packs.platform.system.build import build_capture
+from atlas_brain.packs.platform.system.parsers.show_version import Unit
 
 EXIT_OK = 0
 EXIT_REFUSED = 2
@@ -27,7 +28,10 @@ def next_evidence(needs: tuple[k.EvidenceNeed, ...]) -> list[dict[str, object]]:
              "reruns": need.reruns} for need in needs]
 
 
-def fact_record[T](capture: Capture | None, fact: k.Known[T] | k.Unknown) -> tuple[dict[str, object], str]:
+type ProjectedFact = k.Known[str] | k.Known[tuple[tuple[int, Unit], ...]] | k.Unknown
+
+
+def fact_record(capture: Capture | None, fact: ProjectedFact) -> tuple[dict[str, object], str]:
     evidence: list[dict[str, str | int]] = []
     locations: list[str] = []
     for ref in fact.evidence:
