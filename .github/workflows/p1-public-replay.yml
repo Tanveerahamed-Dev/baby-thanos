@@ -1,9 +1,5 @@
 name: Public P1 replay
-on:
-  pull_request:
-  workflow_dispatch:
-  push:
-    branches: [main]
+on: {pull_request: {}, workflow_dispatch: {}, push: {branches: [main]}}
 permissions: {contents: read}
 jobs:
   public-replay:

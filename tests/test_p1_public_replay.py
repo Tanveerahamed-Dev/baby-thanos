@@ -3,7 +3,9 @@ import hashlib
 import io
 import json
 from types import SimpleNamespace
+
 import pytest
+
 from tools import p1_public_replay as study
 
 HEAD, OTHER = "a" * 40, "b" * 40

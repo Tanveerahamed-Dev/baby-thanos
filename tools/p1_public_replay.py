@@ -8,6 +8,7 @@ import tempfile
 from hashlib import sha256
 from pathlib import Path
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
+
 try:
     from .privacy import scan
 except ImportError:
