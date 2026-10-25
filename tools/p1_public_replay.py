@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 from hashlib import sha256
+from itertools import pairwise
 from pathlib import Path
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
@@ -68,6 +69,94 @@ def fetch_source(profile):
     need(sha256(raw).hexdigest() == profile[4])
     return raw
 
+def actionable(value, operation):
+    expected = [{"node": "node:file:" + sha256(b"public.txt").hexdigest(), "operation": operation,
+                 "resolves": ["l1.interface.admin", "l1.interface.oper"],
+                 "reruns": ["l1.interface.admin_up_oper_down"]}]
+    need(equal(value, expected))
+
+def grounded_name(fact, raw):
+    value = fact.get("value")
+    need(fact["state"] == "known" and type(value) is str and equal(fact.get("basis"), "observed"))
+    matches = [(ref["start"], ref["end"]) for ref in fact["evidence"] if ref["locator"] == "bytes"
+               and raw[ref["start"]:ref["end"]] == value.encode("utf-8")]
+    need(len(matches) == 1 and "reason" not in fact)
+    return matches[0]
+
+def ground_rows(rows, raw, quality, operation):
+    admin_tokens = {b"up": "up", b"administratively down": "down"}
+    oper_tokens = {b"up": "up", b"down": "down",
+                   b"up , Autostate Enabled": "up", b"down , Autostate Enabled": "down"}
+    result = {"grounding": True, "grounded_rows": 0, "admin_up_oper_down": 0, "admin_down_oper_up": 0,
+              "unknown_with_next_evidence": 0, "problem_with_next_evidence": 0}
+    census, offset = {}, 0
+    family = rb"[A-Za-z][A-Za-z-]*[0-9][A-Za-z0-9./:-]*" + (rb"|Sdwan-system-intf" if operation == "show ip interface brief" else b"")
+    for physical in raw.split(b"\n"):
+        line = physical.removesuffix(b"\r")
+        matched = re.match(rb"(?:" + family + rb")(?=[ \t]|$)", line)
+        if matched:
+            need(matched[0] not in census)
+            census[matched[0]] = offset, offset + len(line)
+        offset += len(physical) + 1
+    need(len(census) == len(rows))
+    for row in rows:
+        name_start, name_end = grounded_name(row["name"], raw)
+        name = raw[name_start:name_end]
+        context = census.pop(name, None)
+        need(context is not None)
+        start, end = context
+        need((name_start, name_end) == (start, start + len(name)))
+        for key in ("admin", "oper"):
+            need(sum(ref["locator"] == "bytes" and (ref["start"], ref["end"]) == context
+                     for ref in row[key]["evidence"]) == 1)
+        line = raw[start:end]
+        pattern = (rb"(?P<name>[^ \t]+) is (?P<admin>[^,]+)(?:, line protocol is(?: (?P<oper>.*))?)?"
+                   if operation == "show interfaces" else
+                   rb"(?P<name>[^ \t]+)[ \t]+[A-Za-z0-9.:-]+[ \t]+[A-Z]+[ \t]+[A-Za-z]+[ \t]+"
+                   rb"(?P<admin>administratively down|[a-z]+)(?:[ \t]+(?P<oper>[^ \t]+))?[ \t]*")
+        matched = re.fullmatch(pattern, line) or re.fullmatch(rb"(?P<name>[^ \t]+)(?:[ \t].*)?", line)
+        need(b"\r" not in line and matched is not None and matched.span("name") == (0, name_end - start))
+        fields, reasons, positions = [], [], [(name_start, name_end)]
+        for key, tokens in (("admin", admin_tokens), ("oper", oper_tokens)):
+            literal = matched.groupdict().get(key)
+            value = tokens.get(literal)
+            fact = row[key]
+            if literal is not None:
+                first, last = matched.span(key)
+                span = start + first, start + last
+                need(sum(ref["locator"] == "bytes" and (ref["start"], ref["end"]) == span
+                         for ref in fact["evidence"]) == 1)
+                positions.append(span)
+            reason = ("not_observable" if key == "admin" and literal == b"down" else "parse_partial") if value is None else None
+            if value is None:
+                need(fact["state"] == "unknown" and equal(fact.get("reason"), reason)
+                     and "value" not in fact and "basis" not in fact)
+            else:
+                need(fact["state"] == "known" and equal(fact.get("value"), value)
+                     and equal(fact.get("basis"), "observed") and "reason" not in fact)
+            fields.append(value)
+            reasons.append(reason)
+        need(all(left[1] <= right[0] for left, right in pairwise(positions)))
+        admin, oper = fields
+        expected = ("unknown" if admin is None or oper is None else "problem" if admin != oper
+                    else "ok" if quality == "complete" else "unknown")
+        check = row["check"]
+        reason = reasons[0] or reasons[1] or ("parse_partial" if expected == "unknown" else None)
+        need(check["state"] == expected and (equal(check.get("reason"), reason) if reason else "reason" not in check))
+        if expected != "ok":
+            actionable(check["next_evidence"], operation)
+        result["grounded_rows"] += 1
+        result["admin_up_oper_down"] += int(admin == "up" and oper == "down")
+        result["admin_down_oper_up"] += int(admin == "down" and oper == "up")
+        result["unknown_with_next_evidence"] += int(expected == "unknown")
+        result["problem_with_next_evidence"] += int(expected == "problem")
+    need(not census)
+    need(result["grounded_rows"] == len(rows))
+    need(result["grounded_rows"] == sum(result[key] for key in
+         ("admin_up_oper_down", "admin_down_oper_up", "unknown_with_next_evidence"))
+         + sum(row["check"]["state"] == "ok" for row in rows))
+    return result
+
 def summary(manifest, raw, operation):
     need(type(raw) is bytes and type(operation) is str and operation in ("show interfaces", "show ip interface brief"))
     need(type(manifest) is dict and set(manifest) == {"schema", "evidence", "plan", "egress", "steps", "facts"})
@@ -94,6 +183,7 @@ def summary(manifest, raw, operation):
     need(type(denominator["count"]) is int and denominator["count"] >= 0 and denominator["count"] == len(rows))
     coverage = pack["coverage"]
     need(type(coverage) is dict and equal(coverage.get("state"), "unknown"))
+    need(equal(coverage.get("reason"), "denominator_open"))
     verdicts = {"ok": 0, "problem": 0, "unknown": 0}
     projected = [coverage]
     for row in rows:
@@ -119,7 +209,11 @@ def summary(manifest, raw, operation):
                 need(type(start) is int and type(end) is int and 0 <= start < end <= len(raw))
                 excerpt = raw[start:end]
             need(type(ref["sha256"]) is str and ref["sha256"] == sha256(excerpt).hexdigest())
-    return {"captures": 1, "parse": pack["parse"], "observed": len(rows), "coverage": "unknown", "verdicts": verdicts}
+    for fact in projected:
+        if fact["state"] == "unknown":
+            actionable(fact.get("next_evidence"), operation)
+    return {"captures": 1, "parse": pack["parse"], "observed": len(rows), "coverage": "unknown",
+            "verdicts": verdicts, **ground_rows(rows, raw, pack["parse"], operation)}
 
 def report(commit):
     profiles = []
@@ -127,10 +221,12 @@ def report(commit):
         profiles.append({"profile": name, "source_path": PREFIX + path, "git_blob": blob,
                          "bytes": size, "sha256": digest, "operation": operation, "captures": 1,
                          "parse": parse, "observed": count, "coverage": "unknown",
-                         "verdicts": {"ok": ok, "problem": problem, "unknown": unknown}})
-    return {"schema": "atlas-brain.p1-public-replay/1", "engine_commit": commit, "source_repository": REPO, "source_commit": PIN, "source_license": "Apache-2.0",
+                         "verdicts": {"ok": ok, "problem": problem, "unknown": unknown}, "grounding": True,
+                         "grounded_rows": count, "admin_up_oper_down": problem, "admin_down_oper_up": 0,
+                         "unknown_with_next_evidence": unknown, "problem_with_next_evidence": problem})
+    return {"schema": "atlas-brain.p1-public-replay/2", "engine_commit": commit, "source_repository": REPO, "source_commit": PIN, "source_license": "Apache-2.0",
             "origin": "unknown", "model": "unknown", "train": "unknown", "capture_authenticity": "unknown", "raw_republication": "held",
-            "format_floor": False, "phase_exit": False, "truth": "not_measured",
+            "format_floor": False, "phase_exit": "not_evaluated", "truth": "not_measured",
             "workers": [1, 4, 4], "byte_identical": True, "input_unchanged": True, "profiles": profiles}
 
 def screen(value, commit):
@@ -169,7 +265,8 @@ def replay(profile, directory, raw):
         need(bounded(capture, profile[3]) == raw)
         outputs.append((bounded(out / "MANIFEST.json"), bounded(out / "SUMMARY.txt")))
     need(outputs[0] == outputs[1] == outputs[2])
-    expected = {key: report("0" * 40)["profiles"][PROFILES.index(profile)][key] for key in ("captures", "parse", "observed", "coverage", "verdicts")}
+    expected = {key: report("0" * 40)["profiles"][PROFILES.index(profile)][key] for key in ("captures", "parse", "observed", "coverage", "verdicts", "grounding", "grounded_rows",
+               "admin_up_oper_down", "admin_down_oper_up", "unknown_with_next_evidence", "problem_with_next_evidence")}
     need(equal(summary(load(outputs[0][0]), raw, profile[5]), expected))
 
 def main():
