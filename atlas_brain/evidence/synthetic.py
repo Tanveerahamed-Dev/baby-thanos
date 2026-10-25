@@ -5,7 +5,13 @@ from hashlib import sha256
 from typing import cast
 
 from atlas_brain.contract.canonical import canonical
-from atlas_brain.evidence.admission import AdmissionRefused, member_names, record, strict_json, string
+from atlas_brain.evidence.admission import (
+    AdmissionRefused,
+    member_names,
+    record,
+    strict_json,
+    string,
+)
 from atlas_brain.evidence.capture import Capture
 from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
