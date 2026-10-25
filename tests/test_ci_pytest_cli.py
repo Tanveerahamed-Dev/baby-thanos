@@ -86,7 +86,7 @@ PLANTS = [
     "valid", "wrong-head", "selector", "silent-deselection",
     "module-skip", "precollection-hook", "precollection-list",
     "precollection-directory", "dirty-source", "source-change",
-    "failed-subtest", "skipped-subtest", "xfail",
+    "failed-subtest", "skipped-subtest", "xfail", "xpass",
 ]
 
 
@@ -149,10 +149,11 @@ def test_run_receipt_gauntlet(isolated_repo, plant):
             "                pytest.skip('planted subtest omission')\n"
             "            assert value == 0",
         ), encoding="utf-8")
-    elif plant == "xfail":
+    elif plant in ("xfail", "xpass"):
+        expected = "False" if plant == "xfail" else "True"
         probe.write_text(
-            PROBE + "\nimport pytest\n@pytest.mark.xfail(reason='planted')\n"
-            "def test_xfail():\n    assert False\n", encoding="utf-8",
+            PROBE + "\nimport pytest\n@pytest.mark.xfail(reason='planted', strict=False)\n"
+            f"def test_expected_failure():\n    assert {expected}\n", encoding="utf-8",
         )
     head = _commit(root)
     if plant == "dirty-source":
@@ -172,6 +173,10 @@ def test_run_receipt_gauntlet(isolated_repo, plant):
         assert result.returncode != 0, result.stdout + result.stderr
         if path.exists():
             receipt = json.loads(path.read_text(encoding="utf-8"))
+            if plant in ("xfail", "xpass"):
+                assert any(row.startswith("xfail_or_xpass:") for row in receipt["failed_reports"])
+            if plant == "skipped-subtest":
+                assert any(row.startswith("skipped_subtest:") for row in receipt["failed_reports"])
             with pytest.raises(ReceiptError):
                 _verify([receipt], count=1, head=head)
 
@@ -215,6 +220,9 @@ def test_verify_directory_gauntlet(isolated_repo):
             path.rename(child / "wrong.json")
         assert _verify_cli(root, directory, head).returncode != 0
     for result in ("failure", "cancelled", "skipped"):
+        directory, _, _ = _artifact(root, head, "jobs-" + result)
+        good = _verify_cli(root, directory, head)
+        assert good.returncode == 0, good.stdout + good.stderr
         assert _verify_cli(root, directory, head, result).returncode != 0
 
 
