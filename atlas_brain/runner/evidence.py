@@ -109,9 +109,9 @@ def _require_system_text(text: str) -> None:
     )
     for line in lines:
         # A hostname such as "show" in an exact uptime record is not a command.
-        if not any(re.fullmatch(pattern, line, re.ASCII) for pattern in patterns):
-            if any(re.fullmatch(pattern, line.strip().casefold(), re.ASCII) for pattern in contexts):
-                raise RunnerRefused("evidence_unsupported_capture")
+        if (not any(re.fullmatch(pattern, line, re.ASCII) for pattern in patterns)
+                and any(re.fullmatch(pattern, line.strip().casefold(), re.ASCII) for pattern in contexts)):
+            raise RunnerRefused("evidence_unsupported_capture")
     banner = r"Cisco IOS XE Software(?:[, \t].*)?"
     if any(line.lstrip().casefold().startswith("cisco ios xe software") for line in lines[1:]):
         raise RunnerRefused("evidence_unsupported_capture")
