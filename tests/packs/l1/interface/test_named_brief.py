@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from hashlib import sha256
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -76,7 +77,7 @@ def test_exact_brief_name_states_and_byte_custody(newline, prompt, status, oper,
     assert result.coverage.next_evidence and (row.next_evidence or verdict == "ok")
     spans = [account.span for account in result.parse.lines]
     assert spans[0].start == 0 and spans[-1].end == len(raw)
-    assert all(left.end == right.start for left, right in zip(spans, spans[1:]))
+    assert all(left.end == right.start for left, right in pairwise(spans))
 
 
 @pytest.mark.parametrize("suffix", [
