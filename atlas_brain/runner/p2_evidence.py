@@ -154,11 +154,12 @@ def _resolve(group: SyntheticGroup, reader: FactReader, evidence: tuple[k.Eviden
     records: dict[bytes, dict[str, object]] = {}
     subjects = {endpoint(node, port) for node in group.nodes for port in node.ports}
     for ref in evidence:
+        projected: dict[str, object]
         if isinstance(ref, k.EvidenceRef):
             projected = _capture(group, ref)
         elif isinstance(ref, k.RegistryRef):
             projected = _registry(group, ref)
-        elif isinstance(ref, k.FactRef):
+        elif type(ref) is k.FactRef:
             _need(ref.subject in subjects, "fact_subject")
             _need(ref not in chain, "fact_cycle")
             try:
