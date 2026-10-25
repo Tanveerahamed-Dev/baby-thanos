@@ -1,6 +1,7 @@
 """Bounded raw CLI-folder admission; file identity never supplies device facts."""
 import re
 import stat
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from atlas_brain.evidence.admission import (
     folder_members,
 )
 from atlas_brain.evidence.capture import Capture
+from atlas_brain.evidence.synthetic import SyntheticGroup, admit_members
 from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
 
@@ -31,7 +33,21 @@ def require_evidence(root: Path) -> None:
         raise RunnerRefused("evidence_unreadable") from error
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EvidenceInput:
+    captures: tuple[Capture, ...]
+    group: SyntheticGroup | None
+
+
 def analyse_evidence(root: Path, *, budgets: Budgets | None = None) -> tuple[Capture, ...]:
+    """Preserve the raw-capture API; grouped input requires its declaration context."""
+    admitted = analyse_input(root, budgets=budgets)
+    if admitted.group is not None:
+        raise RunnerRefused("evidence_group_context_required")
+    return admitted.captures
+
+
+def analyse_input(root: Path, *, budgets: Budgets | None = None) -> EvidenceInput:
     """Admit the whole folder before returning captures; never silently skip a member."""
     require_evidence(root)
     limits = budgets if budgets is not None else Budgets(
@@ -49,6 +65,14 @@ def analyse_evidence(root: Path, *, budgets: Budgets | None = None) -> tuple[Cap
         raise RunnerRefused("evidence_empty")
     if sum(len(raw) for raw in members.values()) > limits.bundle_bytes:
         raise RunnerRefused("evidence_budget_exceeded")
+    if "p2.json" in members:
+        try:
+            group = admit_members(members)
+        except AdmissionRefused as error:
+            raise RunnerRefused("evidence_" + str(error)) from error
+        except BudgetExceeded as error:
+            raise RunnerRefused("evidence_budget_exceeded") from error
+        return EvidenceInput(captures=group.captures, group=group)
     captures: list[Capture] = []
     for name, raw in sorted(members.items()):
         try:
@@ -77,7 +101,7 @@ def analyse_evidence(root: Path, *, budgets: Budgets | None = None) -> tuple[Cap
             integrity=integrity, lines=text_lines(raw, "utf-8"),
             read_scope=k.ReadScope.UNKNOWN, view=k.ViewConsistency.UNKNOWN,
         ))
-    return tuple(captures)
+    return EvidenceInput(captures=tuple(captures), group=None)
 
 
 def _require_system_text(text: str) -> None:
