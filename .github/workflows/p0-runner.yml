@@ -1,0 +1,65 @@
+name: P0 runner evidence
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  p0-runner:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.13.1'
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv run --no-sync pytest -q -rs tests/runner
+      - name: Compare repeated demo bytes and retain evidence
+        shell: bash
+        run: |
+          uv run --no-sync python - <<'PY'
+          import json
+          import subprocess
+          import sys
+          from hashlib import sha256
+          from pathlib import Path
+          root = Path(".ci-evidence/p0-demo")
+          evidence = root / "captures"
+          evidence.mkdir(parents=True)
+          raw = (b"sw-a uptime is 1 day, 2 hours, 3 minutes\n"
+                 b'System image file is "bootflash:packages.conf"\n'
+                 b"Last reload reason: PowerOn\n")
+          (evidence / "show-version.txt").write_bytes(raw)
+          outputs = []
+          for index, workers in enumerate((1, 4, 4)):
+              out = root / f"out-{index}"
+              subprocess.run([sys.executable, "-m", "atlas_brain.runner",
+                              "--evidence", str(evidence), "--out", str(out),
+                              "--workers", str(workers)], check=True)
+              outputs.append({name: (out / name).read_bytes()
+                              for name in ("SUMMARY.txt", "MANIFEST.json")})
+          assert outputs[0] == outputs[1] == outputs[2]
+          assert (evidence / "show-version.txt").read_bytes() == raw
+          digests = {name: sha256(raw).hexdigest() for name, raw in outputs[0].items()}
+          receipt = json.dumps(digests, sort_keys=True) + "\n"
+          (root / "DIGESTS.json").write_text(receipt, encoding="ascii", newline="\n")
+          print(outputs[0]["SUMMARY.txt"].decode("ascii"))
+          print("P0_DIGESTS " + receipt, end="")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p0-demo-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .ci-evidence/p0-demo/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
