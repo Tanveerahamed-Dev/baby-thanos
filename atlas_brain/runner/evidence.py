@@ -131,18 +131,21 @@ def _require_system_text(text: str) -> None:
 
 def _interface_kind(text: str) -> tuple[str, k.IntegrityState] | None:
     lines = [line.removesuffix("\r") for line in text.split("\n") if line.strip()]
+    raw_first = lines[0] if lines else ""  # Retained lines have not been stripped.
     prompt = r"[A-Za-z0-9_.:-]+[>#]"
     opening = re.fullmatch("(" + prompt + r") ?(show interfaces|show ip interface brief)", lines[0], re.ASCII) if lines else None
     brief = r"Interface[ \t]+IP-Address[ \t]+OK\?[ \t]+Method[ \t]+Status[ \t]+Protocol[ \t]*"
     detail = r"[A-Za-z][A-Za-z-]*[0-9][A-Za-z0-9./:-]* is (?:up|down|administratively down)(?:, line protocol is.*)?"
+    bare = (len(lines) > 1 and raw_first == "show interfaces"
+            and re.fullmatch(detail, lines[1], re.ASCII) is not None)
     command = (opening[2] if opening else "show ip interface brief" if lines and re.fullmatch(brief, lines[0], re.ASCII)
-               else "show interfaces" if lines and re.fullmatch(detail, lines[0], re.ASCII) else "")
+               else "show interfaces" if bare or lines and re.fullmatch(detail, lines[0], re.ASCII) else "")
     if not command:
         return None
     if ("\r" in text.replace("\r\n", "") or any(
             ord(char) < 32 and char not in "\t\r\n" or char in "\x7f\u0085\u2028\u2029" for char in text)):
         raise RunnerRefused("evidence_invalid_text")
-    if opening:
+    if opening or bare:
         lines = lines[1:]
     if lines and re.fullmatch(prompt, lines[-1], re.ASCII):
         if opening and lines[-1] != opening[1]:
