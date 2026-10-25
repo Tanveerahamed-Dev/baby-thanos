@@ -8,8 +8,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from test_ci_pytest import ATTEMPT, COUNT, FIFO_REASON, NODES, RUN_ID, ReceiptError, _receipts, _verify
+from test_ci_pytest import (
+    ATTEMPT,
+    COUNT,
+    FIFO_REASON,
+    NODES,
+    RUN_ID,
+    ReceiptError,
+    _receipts,
+    _verify,
+)
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 
