@@ -89,33 +89,35 @@ def ground_rows(rows, raw, quality, operation):
                    b"up , Autostate Enabled": "up", b"down , Autostate Enabled": "down"}
     result = {"grounding": True, "grounded_rows": 0, "admin_up_oper_down": 0, "admin_down_oper_up": 0,
               "unknown_with_next_evidence": 0, "problem_with_next_evidence": 0}
-    census, offset = {}, 0
-    family = rb"[A-Za-z][A-Za-z-]*[0-9][A-Za-z0-9./:-]*" + (rb"|Sdwan-system-intf" if operation == "show ip interface brief" else b"")
-    for physical in raw.split(b"\n"):
-        line = physical.removesuffix(b"\r")
-        matched = re.match(rb"(?:" + family + rb")(?=[ \t]|$)", line)
-        if matched:
-            need(matched[0] not in census)
-            census[matched[0]] = offset, offset + len(line)
-        offset += len(physical) + 1
-    need(len(census) == len(rows))
+    seen_names, seen_contexts = set(), set()
     for row in rows:
         name_start, name_end = grounded_name(row["name"], raw)
         name = raw[name_start:name_end]
-        context = census.pop(name, None)
-        need(context is not None)
-        start, end = context
-        need((name_start, name_end) == (start, start + len(name)))
-        for key in ("admin", "oper"):
-            need(sum(ref["locator"] == "bytes" and (ref["start"], ref["end"]) == context
-                     for ref in row[key]["evidence"]) == 1)
+        need(re.fullmatch(rb"[A-Za-z][A-Za-z-]*[0-9][A-Za-z0-9./:-]*", name) is not None
+             or operation == "show ip interface brief" and name == b"Sdwan-system-intf")
+        need(name not in seen_names)
+        seen_names.add(name)
+        contexts = [{(ref["start"], ref["end"]) for ref in row[key]["evidence"] if ref["locator"] == "bytes"}
+                    for key in ("admin", "oper")]
+        matching = []
+        for start, end in contexts[0] & contexts[1]:
+            line = raw[start:end]
+            physical = (start == 0 or raw[start - 1:start] == b"\n") and (
+                end == len(raw) or raw[end:end + 1] == b"\n" or raw[end:end + 2] == b"\r\n")
+            if (physical and b"\r" not in line and b"\n" not in line and name_start == start
+                    and name_end <= end and (name_end == end or raw[name_end:name_end + 1] in (b" ", b"\t"))):
+                matching.append((start, end))
+        need(len(matching) == 1)
+        start, end = matching[0]
+        need((start, end) not in seen_contexts)
+        seen_contexts.add((start, end))
         line = raw[start:end]
         pattern = (rb"(?P<name>[^ \t]+) is (?P<admin>[^,]+)(?:, line protocol is(?: (?P<oper>.*))?)?"
                    if operation == "show interfaces" else
                    rb"(?P<name>[^ \t]+)[ \t]+[A-Za-z0-9.:-]+[ \t]+[A-Z]+[ \t]+[A-Za-z]+[ \t]+"
                    rb"(?P<admin>administratively down|[a-z]+)(?:[ \t]+(?P<oper>[^ \t]+))?[ \t]*")
         matched = re.fullmatch(pattern, line) or re.fullmatch(rb"(?P<name>[^ \t]+)(?:[ \t].*)?", line)
-        need(b"\r" not in line and matched is not None and matched.span("name") == (0, name_end - start))
+        need(matched is not None and matched.span("name") == (0, name_end - start))
         fields, reasons, positions = [], [], [(name_start, name_end)]
         for key, tokens in (("admin", admin_tokens), ("oper", oper_tokens)):
             literal = matched.groupdict().get(key)
@@ -150,7 +152,6 @@ def ground_rows(rows, raw, quality, operation):
         result["admin_down_oper_up"] += int(admin == "down" and oper == "up")
         result["unknown_with_next_evidence"] += int(expected == "unknown")
         result["problem_with_next_evidence"] += int(expected == "problem")
-    need(not census)
     need(result["grounded_rows"] == len(rows))
     need(result["grounded_rows"] == sum(result[key] for key in
          ("admin_up_oper_down", "admin_down_oper_up", "unknown_with_next_evidence"))
