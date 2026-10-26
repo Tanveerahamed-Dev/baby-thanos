@@ -162,8 +162,7 @@ def test_every_declared_read_precedes_writer_binding_and_facts_have_one_owner(mo
     group, store = case(adjacencies=2)
     assert settle.TYPES == {spec.id: bool if spec.value_type == "boolean" else int if spec.value_type == "integer" else str for spec in s.FACTS}
     expected, reads = 2 * 2 + 2 * len(group.samples) * 2 * len(s.IDS), []
-    original_reader, original_writer = settle.bind_reader, settle.bind_writer
-    delegate = original_reader(store, step=s.SETTLE)
+    original_reader, original_writer, delegate = settle.bind_reader, settle.bind_writer, settle.bind_reader(store, step=s.SETTLE)
     class Counted:
         def read(self, **kwargs):
             reads.append((kwargs["fact"], kwargs["subject"]))
@@ -175,8 +174,7 @@ def test_every_declared_read_precedes_writer_binding_and_facts_have_one_owner(mo
     monkeypatch.setattr(settle, "bind_writer", writer)
     rows = settle.build_group(group, store).rows
     assert len(rows) == 2 and len({subject for fact, subject in reads if fact != link.PEER}) == 8
-    step = StepSpec(id="l3.ospf/test_projection", pack=s.PACK, kind="derive", scope="estate",
-                    reads=s.SETTLE.produces, produces=(), evaluator="l3.ospf.test_projection")
+    step = StepSpec(id="l3.ospf/test_projection", pack=s.PACK, kind="derive", scope="estate", reads=s.SETTLE.produces, produces=(), evaluator="l3.ospf.test_projection")
     handle = bind_reader(store, step=step)
     assert all(handle.read(fact=s.CONTEXT, subject=row.subject) == row.context for row in rows)
     monkeypatch.setattr(settle, "bind_reader", original_reader)
@@ -202,8 +200,7 @@ def test_late_invalid_owner_contract_prevents_every_settlement_write(monkeypatch
 def test_printed_vrf_unknown_is_not_filled_and_missing_peer_propagates():
     group, store = case()
     row = settle.build_group(group, store).rows[0]
-    original = bind_reader(store, step=s.SETTLE).read(fact=s.VRF,
-        subject=sample_subject(group.adjacencies[0], group.adjacencies[0].left, group.samples[0]))
+    original = bind_reader(store, step=s.SETTLE).read(fact=s.VRF, subject=sample_subject(group.adjacencies[0], group.adjacencies[0].left, group.samples[0]))
     assert row.context.value is True and original.reason is k.UnknownReason.FIELD_NOT_PRINTED
     row = result(peer=lambda value: gap(value.evidence, k.UnknownReason.PEER_NOT_COLLECTED))
     assert row.context.reason is row.persistent.reason is k.UnknownReason.PEER_NOT_COLLECTED
@@ -217,8 +214,7 @@ def test_late_output_conflicts_leave_all_owners_and_values_unchanged(foreign):
     writer = bind_writer(store, step=step)
     if not foreign:
         adjacency = group.adjacencies[-1]
-        writer.write(fact=s.CONTEXT, subject=adjacency_subject(adjacency),
-                     value=k.Known(value=True, basis=k.Basis.DERIVED, raw=None, evidence=adjacency.declaration.evidence))
+        writer.write(fact=s.CONTEXT, subject=adjacency_subject(adjacency), value=k.Known(value=True, basis=k.Basis.DERIVED, raw=None, evidence=adjacency.declaration.evidence))
     before = (dict(store.owners), dict(store.values))
     with pytest.raises(ValueError, match="ospf_settle_owner" if foreign else "ospf_settle_duplicate_write"):
         settle.build_group(group, store)
