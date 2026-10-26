@@ -5,7 +5,12 @@ from hashlib import sha256
 import pytest
 
 from atlas_brain.contract.canonical import canonical
-from atlas_brain.evidence.synthetic import CONFIG_SCHEMA, SCHEMA, admit_members, endpoint
+from atlas_brain.evidence.synthetic import (
+    CONFIG_SCHEMA,
+    SCHEMA,
+    admit_members,
+    endpoint,
+)
 from atlas_brain.kernel import states as k
 from atlas_brain.model.specs import StepId, StepSpec
 from atlas_brain.model.steps import order_steps
