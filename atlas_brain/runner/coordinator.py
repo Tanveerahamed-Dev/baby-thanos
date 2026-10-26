@@ -52,19 +52,34 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
         if not stat.S_ISREG(info.st_mode) or info.st_nlink > 1:
             raise RunnerRefused("output_unsafe_member")
     admitted = analyse_input(evidence)
-    if admitted.p3 is not None:
-        raise RunnerRefused("p3_activation_pending")
+    p3_group = admitted.p3
     captures, group = admitted.captures, admitted.group
-    files = len(captures) + int(group is not None)
+    files = len(captures) + (2 if p3_group is not None else int(group is not None))
     entries = [{"capture": str(capture.id), "sha256": capture.bytes_sha256} for capture in captures]
     digest_input: object = sorted(entries, key=lambda entry: entry["capture"])
-    if group is not None:
+    if p3_group is not None:
+        digest_input = {"captures": digest_input, "registry_sha256": sha256(p3_group.raw).hexdigest(),
+                        "base_registry_sha256": sha256(p3_group.base.raw).hexdigest()}
+    elif group is not None:
         digest_input = {"captures": digest_input, "registry_sha256": sha256(group.raw).hexdigest()}
     evidence_digest = sha256(canonical(digest_input)).hexdigest()
     facts: dict[str, object] = {}
     fact_lines: list[str] = []
     p2: dict[str, object] | None = None
-    if group is None:
+    p3: dict[str, object] | None = None
+    if p3_group is not None:
+        from .p3 import analyse_group as analyse_p3_group
+        try:
+            p3, lines = analyse_p3_group(p3_group)
+        except RunnerRefused:
+            raise
+        except ValueError as error:
+            code = str(error)
+            if re.fullmatch(r"[a-z][a-z0-9_]*", code, re.ASCII) is None:
+                code = "analysis_failed"
+            raise RunnerRefused("p3_" + code) from error
+        fact_lines.extend(lines)
+    elif group is None:
         for capture in sorted(captures, key=lambda capture: capture.id):
             projected, lines = capture_facts(capture)
             facts[str(capture.id)] = projected
@@ -82,7 +97,9 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
         fact_lines.extend(lines)
     interface_present = any(capture.operation in (
         "iosxe.show_interfaces", "iosxe.show_ip_interface_brief") for capture in captures)
-    schema = SCHEMA if group is None else "atlas-brain.runner-manifest/2"
+    legacy_interface_missing = p3_group is None and not interface_present
+    schema = ("atlas-brain.runner-manifest/3" if p3_group is not None else
+              SCHEMA if group is None else "atlas-brain.runner-manifest/2")
     missing, missing_text = missing_interfaces()
     coordinator_denied = tripwire.probe()
     if coordinator_denied != tripwire.WITNESS_ATTEMPTS:
@@ -91,6 +108,7 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
     worker_denied = sum(denied for _, denied in results)
     total = parent_denied + coordinator_denied + worker_denied
     summary = "\n".join((
+        "BABY THANOS RUNNER - P3 CONDITIONAL MTU / OSPF CANDIDATE" if p3_group is not None else
         "BABY THANOS RUNNER - P2 DECLARED SYNTHETIC TWO ENDS" if group is not None else
         "BABY THANOS RUNNER - P1 INTERFACE ANSWER" if interface_present else "BABY THANOS RUNNER - P0 SYSTEM FACTS",
         f"schema: {schema}",
@@ -100,7 +118,7 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
         f"egress denied: {total} (parent={parent_denied} coordinator={coordinator_denied} workers={worker_denied})",
         "determinism: sorted keys, no run timestamps, no host-root paths, no worker-count fields",
         "execution status: OK",
-        *(("l1.interface: " + missing_text,) if not interface_present else ()),
+        *(("l1.interface: " + missing_text,) if legacy_interface_missing else ()),
         "",
         "FACTS",
         *fact_lines,
@@ -114,12 +132,17 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
         "steps": [{"denied": denied, "id": step} for step, denied in results],
         "facts": facts,
     }
-    if not interface_present:
+    if legacy_interface_missing:
         record["interface_coverage"] = missing
     if p2 is not None and group is not None:
         record["p2"] = p2
         record["evidence"] = {"digest": evidence_digest, "files": files,
                               "captures": len(captures), "registry_sha256": sha256(group.raw).hexdigest()}
+    if p3 is not None and p3_group is not None:
+        record["p3"] = p3
+        record["evidence"] = {"digest": evidence_digest, "files": files, "captures": len(captures),
+                              "registry_sha256": sha256(p3_group.raw).hexdigest(),
+                              "base_registry_sha256": sha256(p3_group.base.raw).hexdigest()}
     try:
         out.mkdir(parents=True, exist_ok=True)
         (out / "SUMMARY.txt").write_text(summary, encoding="utf-8", newline="\n")
