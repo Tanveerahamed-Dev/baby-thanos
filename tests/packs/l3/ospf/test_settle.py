@@ -145,14 +145,14 @@ def test_peer_gaps_scope_guards_and_local_processes_are_independent():
     row = result(peer=lambda value: replace(value, value="interface:other"))
     assert row.context.reason is k.UnknownReason.JOIN_UNPROVEN and row.span.value == 120000000
     for fact, value in ((s.NETWORK, "BROADCAST"), (s.ROLE, "DR"), (s.VRF, "other")):
-        row = result(plant=lambda a, t, p, f, v: k.Known(value=value, basis=k.Basis.OBSERVED, raw=None, evidence=v.evidence) if f == fact else v)
+        row = result(plant=lambda a, t, p, f, v, fact=fact, value=value: k.Known(value=value, basis=k.Basis.OBSERVED, raw=None, evidence=v.evidence) if f == fact else v)
         assert row.context.reason is k.UnknownReason.NOT_OBSERVABLE
 
 
 def test_required_gaps_propagate_but_unknown_ignore_never_gates_persistence():
     for reason in (k.UnknownReason.NOT_COLLECTED, k.UnknownReason.CAPTURE_ERROR, k.UnknownReason.PARSE_PARTIAL):
         for fact in (s.STATE, s.PROCESS, s.VRF):
-            row = result(plant=lambda a, t, p, f, v: gap(v.evidence, reason) if f == fact else v)
+            row = result(plant=lambda a, t, p, f, v, fact=fact, reason=reason: gap(v.evidence, reason) if f == fact else v)
             assert row.persistent.reason is reason
     row = result(starts=(0,), plant=lambda a, t, p, f, v:
                  gap(v.evidence, k.UnknownReason.NOT_COLLECTED) if f == s.PROCESS else v)
