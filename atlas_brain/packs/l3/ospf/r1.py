@@ -85,7 +85,7 @@ def _finding(adjacency: Adjacency, hops: list[Hop], receiver: k.EntityKey | None
 def build_group(group: P3Group, store: FactStore) -> Result:
     """Read every declared input first; correlation never stores a fact or reparses."""
     reader = bind_reader(store, step=STEP)
-    matrices = []
+    matrices: list[tuple[Adjacency, tuple[StoredState, ...], tuple[tuple[tuple[StoredState, StoredState], ...], ...]]] = []
     for adjacency in sorted(group.adjacencies, key=lambda a: a.id):
         key = adjacency_subject(adjacency)
         settled = tuple(reader.read(fact=fact, subject=key) for fact in (specs.CONTEXT, specs.PERSISTENT, specs.SPAN))
