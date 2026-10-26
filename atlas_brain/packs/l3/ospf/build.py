@@ -19,13 +19,19 @@ from atlas_brain.packs.l3.ospf import sample_support as support
 from atlas_brain.packs.l3.ospf import specs as s
 
 type Kind = Literal["text", "integer", "boolean"]
-_FIELDS: dict[str, tuple[tuple[str, k.FactId, Kind], ...]] = {
-    neighbor.OP: (("state", s.STATE, "text"), ("role", s.ROLE, "text"),
-                  ("neighbor_id", s.NEIGHBOR_ID, "text"), ("address", s.NEIGHBOR_ADDRESS, "text")),
-    interface.OP: (("router_id", s.ROUTER_ID, "text"), ("address", s.ADDRESS, "text"),
-                   ("process", s.PROCESS, "integer"), ("area", s.AREA, "integer"),
-                   ("network_type", s.NETWORK, "text"), ("vrf", s.VRF, "text")),
-    ignore.OP: (("mtu_ignore", s.IGNORE, "boolean"),),
+_FIELDS: dict[str, tuple[tuple[str, Kind], ...]] = {
+    neighbor.OP: (("state", "text"), ("role", "text"), ("neighbor_id", "text"), ("address", "text")),
+    interface.OP: (("router_id", "text"), ("address", "text"), ("process", "integer"),
+                   ("area", "integer"), ("network_type", "text"), ("vrf", "text")),
+    ignore.OP: (("mtu_ignore", "boolean"),),
+}
+_IDS = {
+    (neighbor.OP, "state"): s.STATE, (neighbor.OP, "role"): s.ROLE,
+    (neighbor.OP, "neighbor_id"): s.NEIGHBOR_ID, (neighbor.OP, "address"): s.NEIGHBOR_ADDRESS,
+    (interface.OP, "router_id"): s.ROUTER_ID, (interface.OP, "address"): s.ADDRESS,
+    (interface.OP, "process"): s.PROCESS, (interface.OP, "area"): s.AREA,
+    (interface.OP, "network_type"): s.NETWORK, (interface.OP, "vrf"): s.VRF,
+    (ignore.OP, "mtu_ignore"): s.IGNORE,
 }
 
 
@@ -104,7 +110,8 @@ def _observations(context: support.Context, point: Endpoint,
                 row = rows[0]
                 fields = dict(row.fields)
                 spans = support.witnesses(capture, row)
-        for name, identifier, kind in definitions:
+        for name, kind in definitions:
+            identifier = _IDS[operation, name]
             field = fields.get(name)
             gap = reason or (k.UnknownReason.FIELD_NOT_PRINTED if field is None else None)
             if gap is not None:
