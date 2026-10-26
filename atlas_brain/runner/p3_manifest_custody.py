@@ -50,6 +50,15 @@ def _text(value: object) -> str:
     return cast(str, value)
 
 
+def _ipv4(value: object) -> str:
+    token = _text(value)
+    parts = token.split(".")
+    _need(len(parts) == 4 and all(
+        1 <= len(part) <= 3 and part.isascii() and part.isdigit()
+        and int(part) <= 255 and str(int(part)) == part for part in parts))
+    return token
+
+
 def _identifier(value: object) -> str:
     value = _text(value)
     _need(re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value, re.ASCII) is not None)
@@ -111,9 +120,11 @@ class _Custody:
         point = _row(value, {"node", "port", "process", "router_id", "address", "vrf"})
         node = _identifier(point["node"])
         _need(node in self.node_keys and type(point["process"]) is int and 1 <= point["process"] <= 65535)
+        router_id, address = _ipv4(point["router_id"]), _ipv4(point["address"])
+        vrf = _text(point["vrf"])
+        _need(vrf == "default")
         self.participants.add(self.node_keys[node])
-        return (self.node_keys[node], _text(point["port"]), point["process"],
-                _text(point["router_id"]), _text(point["address"]), _text(point["vrf"]))
+        return self.node_keys[node], _text(point["port"]), point["process"], router_id, address, vrf
 
     def needs(self, value: object) -> None:
         for need in _rows(value, _NEED):
