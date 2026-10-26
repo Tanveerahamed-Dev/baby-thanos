@@ -1,6 +1,9 @@
 """RFC 8785 bytes for the contract's integer-only I-JSON subset."""
 import json
+import re
 from typing import cast
+
+ASCII_SCALAR = re.compile(r"[\x00-\x7e]*")
 
 
 def canonical(value: object) -> bytes:
@@ -11,7 +14,7 @@ def _encode(value: object) -> str:
     if type(value) not in (type(None), bool, int, str, list, tuple, dict):
         raise TypeError("non_json_type")
     if isinstance(value, (type(None), bool, str)):
-        if isinstance(value, str) and (not value.isascii() or "\x7f" in value):
+        if isinstance(value, str) and not ASCII_SCALAR.fullmatch(value):
             return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         return json.dumps(value)
     if isinstance(value, int):
