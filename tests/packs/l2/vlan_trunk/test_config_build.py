@@ -6,7 +6,13 @@ from hashlib import sha256
 import pytest
 
 from atlas_brain.evidence.admission import AdmissionRefused
-from atlas_brain.evidence.synthetic import CONFIG_COMMAND, CONFIG_OPERATION, CONFIG_SCHEMA, admit_members, endpoint
+from atlas_brain.evidence.synthetic import (
+    CONFIG_COMMAND,
+    CONFIG_OPERATION,
+    CONFIG_SCHEMA,
+    admit_members,
+    endpoint,
+)
 from atlas_brain.kernel import states as k
 from atlas_brain.model.specs import StepId, StepSpec
 from atlas_brain.model.store import FactStore, bind_reader
