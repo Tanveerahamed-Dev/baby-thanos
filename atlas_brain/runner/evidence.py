@@ -12,6 +12,8 @@ from atlas_brain.evidence.admission import (
     folder_members,
 )
 from atlas_brain.evidence.capture import Capture
+from atlas_brain.evidence.p3_admission import admit_members as admit_p3
+from atlas_brain.evidence.p3_records import P3Group
 from atlas_brain.evidence.synthetic import SyntheticGroup, admit_members
 from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
@@ -37,12 +39,13 @@ def require_evidence(root: Path) -> None:
 class EvidenceInput:
     captures: tuple[Capture, ...]
     group: SyntheticGroup | None
+    p3: P3Group | None = None
 
 
 def analyse_evidence(root: Path, *, budgets: Budgets | None = None) -> tuple[Capture, ...]:
     """Preserve the raw-capture API; grouped input requires its declaration context."""
     admitted = analyse_input(root, budgets=budgets)
-    if admitted.group is not None:
+    if admitted.group is not None or admitted.p3 is not None:
         raise RunnerRefused("evidence_group_context_required")
     return admitted.captures
 
@@ -65,6 +68,15 @@ def analyse_input(root: Path, *, budgets: Budgets | None = None) -> EvidenceInpu
         raise RunnerRefused("evidence_empty")
     if sum(len(raw) for raw in members.values()) > limits.bundle_bytes:
         raise RunnerRefused("evidence_budget_exceeded")
+    if "p3.json" in members:
+        try:
+            p3 = admit_p3(members)
+        except AdmissionRefused as error:
+            raise RunnerRefused("evidence_" + str(error)) from error
+        except BudgetExceeded as error:
+            raise RunnerRefused("evidence_budget_exceeded") from error
+        p3_captures = p3.base.captures + tuple(capture for sample in p3.samples for capture in sample.captures)
+        return EvidenceInput(captures=tuple(sorted(p3_captures, key=lambda capture: str(capture.id))), group=None, p3=p3)
     if "p2.json" in members:
         try:
             group = admit_members(members)

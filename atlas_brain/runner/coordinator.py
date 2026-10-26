@@ -52,6 +52,8 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
         if not stat.S_ISREG(info.st_mode) or info.st_nlink > 1:
             raise RunnerRefused("output_unsafe_member")
     admitted = analyse_input(evidence)
+    if admitted.p3 is not None:
+        raise RunnerRefused("p3_activation_pending")
     captures, group = admitted.captures, admitted.group
     files = len(captures) + int(group is not None)
     entries = [{"capture": str(capture.id), "sha256": capture.bytes_sha256} for capture in captures]
