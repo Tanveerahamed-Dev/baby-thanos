@@ -23,6 +23,38 @@ jobs:
           version: '0.13.1'
           enable-cache: false
       - run: uv sync --locked
+      - name: Temporary exact-head P3 decoder profile
+        env:
+          P3_PROFILE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          uv run --no-sync python - <<'PY'
+          import cProfile
+          import json
+          import os
+          import pstats
+          import subprocess
+          from hashlib import sha256
+          from atlas_brain.contract.canonical import canonical
+          from atlas_brain.evidence.p3_admission import admit_members
+          from atlas_brain.runner.p3 import analyse_group
+          from atlas_brain.runner.p3_manifest import validate
+          from tools.p3_cases import members
+          reviewed = os.environ['P3_PROFILE_SHA']
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert os.environ.get('GITHUB_ACTIONS') == 'true' and actual == reviewed and len(reviewed) == 40
+          files = members(canonical, 'supported')
+          payload, _ = analyse_group(admit_members(files))
+          entries = sorted(({'capture': c['id'], 'sha256': c['sha256']} for c in payload['captures']), key=lambda c: c['capture'])
+          pins = {key: payload[key] for key in ('registry_sha256', 'base_registry_sha256')}
+          digest = sha256(canonical({'captures': entries, **pins})).hexdigest()
+          evidence = {**pins, 'digest': digest, 'files': len(files), 'captures': len(entries)}
+          print('P3_PROFILE_SUBJECT ' + json.dumps({'head': reviewed, 'case': 'supported', 'captures': len(entries), 'input_digest': digest, 'scope': 'diagnostic_only'}, sort_keys=True), flush=True)
+          profile = cProfile.Profile()
+          profile.runcall(validate, payload, evidence)
+          pstats.Stats(profile).strip_dirs().sort_stats('cumulative').print_stats(35)
+          print('P3_PROFILE_END ' + reviewed, flush=True)
+          PY
       - run: uv run --no-sync pytest -q -rs tests/runner
       - name: Compare repeated demo bytes and retain evidence
         shell: bash
