@@ -25,8 +25,11 @@ IDS = tuple(sorted((DEVICE_ID, REMOTE_PORT, BRIDGE)))
 STEP = StepSpec(id=StepId("l2.discovery/parse"), pack=k.PackId("l2.discovery"),
                 kind="parse_build", scope="device", reads=(), produces=IDS,
                 evaluator="l2.discovery.build_node")
-FACTS = tuple(FactSpec(id=fact, pack=STEP.pack, subject="interface",
-                      value_type="boolean" if fact == BRIDGE else "text", step=STEP.id) for fact in IDS)
+FACTS = (
+    FactSpec(id=BRIDGE, pack=STEP.pack, subject="interface", value_type="boolean", step=STEP.id),
+    FactSpec(id=DEVICE_ID, pack=STEP.pack, subject="interface", value_type="text", step=STEP.id),
+    FactSpec(id=REMOTE_PORT, pack=STEP.pack, subject="interface", value_type="text", step=STEP.id),
+)
 OPERATIONS = {"iosxe.show_cdp_neighbors_detail": "show cdp neighbors detail",
               "iosxe.show_lldp_neighbors_detail": "show lldp neighbors detail"}
 
