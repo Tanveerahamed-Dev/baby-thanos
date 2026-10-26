@@ -19,7 +19,10 @@ USAGE = """usage: python -m atlas_brain.runner --evidence DIR --out DIR [--worke
 Analyse raw IOS-XE show-version/interface captures (P0/P1), or a declared
 synthetic P2 p2.json group: schema 1 discovery/trunk observations, or schema 2
 running-config with bounded static inheritance. Configured intent and observed
-state remain separate. Execute deterministic witness steps and write SUMMARY.txt
+state remain separate. A P3 p3.json sidecar adds declared collection rounds and
+conditional MTU/OSPF cause candidates with visible unknown hops; supplied collector
+windows are not authenticated clocks or proof of continuous adjacency state.
+Execute deterministic witness steps and write SUMMARY.txt
 plus MANIFEST.json under --out. Egress is denied and counted; identical inputs
 give identical output bytes across worker counts.
 """

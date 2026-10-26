@@ -3,7 +3,8 @@
 **Atlas Brain — CCIE Enterprise Infrastructure edition.** A read-only, offline, deterministic Cisco
 network analysis engine.
 
-Status: **P1 — capture-scoped interface answers plus system-field analysis.**
+Analysis modes: **P1 capture-scoped answers; P2 declared two-end comparisons; P3 conditional MTU/OSPF candidates.**
+P2/P3 are bounded generated CLI allowlists, with explicit synthetic scope and evidence gaps.
 
 ## What this is
 
@@ -67,6 +68,47 @@ Counts cover observed names per capture, with no cross-file device or alias join
 Support is measured on synthetic regressions, not qualified across devices/trains;
 unmodelled detail lines keep healthy captures partial/unknown. See
 [ADR-0017](docs/adr/0017-interface-answer.md).
+
+## Declared P2 and P3 analysis
+
+A P2 `p2.json` registry declares nodes, exact ports and capture hashes. Schema 1
+accepts discovery/trunk observations; schema 2 adds bounded static configuration
+inheritance. Configured intent remains separate from observed state.
+
+P3 adds `p3.json`, bound to the exact `p2.json` hash. Its baseline contains only
+CDP/LLDP captures. The sidecar declares adjacency endpoints and collection rounds;
+MTU, OSPF state and control values come from the supplied CLI bytes. Initial scope
+is explicitly declared default-VRF, point-to-point OSPFv2. It is not inferred from
+omitted VRF output. Supported thin forms are:
+
+- `show interfaces` for interface MTU, and `show ip interface` for IP MTU.
+- `show ip ospf neighbor` and `show ip ospf interface` for observed adjacency context.
+- `show running-config all` for explicit `ip ospf mtu-ignore` or
+  `no ip ospf mtu-ignore` statements. Omission stays unknown.
+
+```powershell
+uv run python -m atlas_brain.runner --evidence p3-captures --out p3-output --workers 4
+```
+
+The runner writes outer `atlas-brain.runner-manifest/3` with inner
+`atlas-brain.p3-demo/1`, plus a summary of the chain and its stopping hop.
+A supported candidate requires reciprocal/context-consistent observations, an
+IP MTU mismatch with a stable receiving endpoint, matching EXSTART or EXCHANGE
+samples, and explicit disabled `mtu-ignore` on that receiver. Every declared round
+is checked. Collector windows use integer Unix microseconds on one supplied clock;
+the guaranteed first-to-last separation must be at least 120 seconds.
+
+One complete round yields `unknown(single_sample)`. Disagreeing untimed states conflict;
+missing MTU stops at the `ip_mtu` hop. Enabled receiver `mtu-ignore` is positive
+counter-evidence. The result is a conditional candidate, not proof of continuous
+adjacency state, an authenticated clock or a unique cause. No missing MTU becomes
+1500, and interface MTU never replaces IP MTU.
+
+The existing Linux/Windows runner workflow runs the hosted-only
+`uv run python -m tools.p3_demo`. Its `P3_RECEIPT` log line and
+`p3/DIGESTS.json` artifact bind the reviewed commit and five generated cases to
+manifest, summary, result and catalogue digests. These receipts report synthetic
+regression scope; they do not qualify device platforms or software trains.
 
 ## Provenance and licence
 
