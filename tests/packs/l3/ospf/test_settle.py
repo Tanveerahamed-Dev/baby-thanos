@@ -23,35 +23,31 @@ def gap(proof, reason=k.UnknownReason.PARSE_PARTIAL):
 def case(starts=(0, 120000000), *, timed=True, plant=None, peer=None, adjacencies=1):
     ports = [f"Gi1/0/{i + 1}" for i in range(adjacencies)]
     files = {n + ".txt": ("Device ID: sw-" + other + "\n").encode() for n, other in (("a", "b"), ("b", "a"))}
-    base = {"schema": "atlas-brain.synthetic-p2/1", "semantic_group": "declared_synthetic", "group": "demo",
+    files["p2.json"] = canonical({"schema": "atlas-brain.synthetic-p2/1", "semantic_group": "declared_synthetic", "group": "demo",
         "nodes": [{"id": n, "discovery_id": "sw-" + n, "ports": ports} for n in ("a", "b")],
         "captures": [{"path": n + ".txt", "node": n, "operation": "iosxe.show_cdp_neighbors_detail",
-                      "sha256": sha256(files[n + ".txt"]).hexdigest()} for n in ("a", "b")]}
-    files["p2.json"] = canonical(base)
+                      "sha256": sha256(files[n + ".txt"]).hexdigest()} for n in ("a", "b")]})
     def point(n, index):
         return {"node": n, "port": ports[index], "process": 1 if n == "a" else 2,
                 "router_id": "192.0.2." + ("1" if n == "a" else "2"),
                 "address": "198.51.100." + str(index * 2 + (1 if n == "a" else 2)), "vrf": "default"}
     manifest = {"schema": SCHEMA, "semantic_group": "declared_synthetic",
         "base_sha256": sha256(files["p2.json"]).hexdigest(),
-        "adjacencies": [{"id": f"adj{i}", "domain": "demo", "area": 0,
-                        "left": point("a", i), "right": point("b", i)} for i in range(adjacencies)], "samples": []}
+        "adjacencies": [{"id": f"adj{i}", "domain": "demo", "area": 0, "left": point("a", i),
+                        "right": point("b", i)} for i in range(adjacencies)], "samples": []}
     for index, start in enumerate(starts):
         refs = []
         for node in ("a", "b"):
             path = f"round{index}-{node}.txt"
             files[path] = b"Neighbor ID Pri State Dead Time Address Interface\n"
-            refs.append({"path": path, "node": node, "operation": "iosxe.show_ip_ospf_neighbor",
-                         "sha256": sha256(files[path]).hexdigest()})
+            refs.append({"path": path, "node": node, "operation": "iosxe.show_ip_ospf_neighbor", "sha256": sha256(files[path]).hexdigest()})
         time = {"unit": "unix_us", "clock": "collector:test", "earliest": start, "latest": start, "bound": "collector_recorded"}
         manifest["samples"].append({"id": f"round{len(starts) - index:02d}", "time": time if timed else None, "captures": refs})
-    group = admit_members({**files, "p3.json": canonical(manifest)})
-    store = FactStore()
+    group, store = admit_members({**files, "p3.json": canonical(manifest)}), FactStore()
     links, writer = bind_writer(store, step=link.STEP), bind_writer(store, step=s.STEP)
     for adjacency in group.adjacencies:
         for point, other in ((adjacency.left, adjacency.right), (adjacency.right, adjacency.left)):
-            proof = adjacency.declaration.evidence + point.node.declaration.evidence
-            value = k.Known(value=str(endpoint(other.node, other.port)), basis=k.Basis.DERIVED, raw=None, evidence=proof)
+            value = k.Known(value=str(endpoint(other.node, other.port)), basis=k.Basis.DERIVED, raw=None, evidence=adjacency.declaration.evidence + point.node.declaration.evidence)
             links.write(fact=link.PEER, subject=endpoint(point.node, point.port),
                         value=peer(value) if peer is not None else value)
             for sample in group.samples:
@@ -76,8 +72,7 @@ def case(starts=(0, 120000000), *, timed=True, plant=None, peer=None, adjacencie
 
 
 def result(**kwargs):
-    group, store = case(**kwargs)
-    return settle.build_group(group, store).rows[0]
+    return settle.build_group(*case(**kwargs)).rows[0]
 
 
 @pytest.mark.parametrize("separation,positive", [(119999999, False), (120000000, True)])
@@ -165,6 +160,7 @@ def test_required_gaps_propagate_but_unknown_ignore_never_gates_persistence():
 
 def test_every_declared_read_precedes_writer_binding_and_facts_have_one_owner(monkeypatch):
     group, store = case(adjacencies=2)
+    assert settle.TYPES == {spec.id: bool if spec.value_type == "boolean" else int if spec.value_type == "integer" else str for spec in s.FACTS}
     expected, reads = 2 * 2 + 2 * len(group.samples) * 2 * len(s.IDS), []
     original_reader, original_writer = settle.bind_reader, settle.bind_writer
     delegate = original_reader(store, step=s.SETTLE)
