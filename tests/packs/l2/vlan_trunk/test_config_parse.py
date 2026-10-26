@@ -38,6 +38,8 @@ def test_sections_fields_and_exhaustive_accounting_retain_original_bytes(ending)
     node, capture = fixture(raw)
     doc = parser.parse_capture(capture, node)
     assert doc.capture is capture and doc.reason is None and doc.parse.quality == "complete"
+    ends = [dict(record.fields)["end"] for record in doc.parse.records if record.rule_id.startswith("end_")]
+    assert len(ends) == 1 and raw[ends[0].span.start:ends[0].span.end] == b"end"
     assert b"".join(raw[line.span.start:line.span.end] for line in doc.parse.lines) == raw
     section, = doc.sections
     assert section.kind == "interface" and section.name.raw == P
