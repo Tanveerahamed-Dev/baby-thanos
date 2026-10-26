@@ -11,7 +11,9 @@ def _encode(value: object) -> str:
     if type(value) not in (type(None), bool, int, str, list, tuple, dict):
         raise TypeError("non_json_type")
     if isinstance(value, (type(None), bool, str)):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if isinstance(value, str) and (not value.isascii() or "\x7f" in value):
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return json.dumps(value)
     if isinstance(value, int):
         if value not in range(-9007199254740991, 9007199254740992):
             raise ValueError("integer_out_of_range")
