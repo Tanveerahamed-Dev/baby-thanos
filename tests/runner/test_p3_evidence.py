@@ -188,23 +188,16 @@ def test_baseline_fact_delegation_keeps_bytes():
     assert resolve_evidence(group, reader(baseline), (peer,)) == p2_evidence.resolve_evidence(group.base, reader(baseline), (peer,))
 
 
-def test_baseline_fact_ids_and_p3_fact_ids_cannot_cross_subject_kinds():
+@pytest.mark.parametrize("fact,kind,value", [(ospf.STATE, "base", "x"), ("l1.link.peer", "sample", "x"),
+    (ospf.STATE, "adjacency", True), (l2_mtu.MTU, "adjacency", True), (l3_mtu.MTU, "adjacency", True),
+    (ospf.PERSISTENT, "sample", True), (ospf.SPAN, "sample", True)])
+def test_fact_ids_cannot_cross_base_sample_or_adjacency_subject_kinds(fact, kind, value):
     group = bundle()
-    base_subject = endpoint(group.base.nodes[0], "Gi1/0/1")
-    for ref in (k.FactRef(fact=ospf.STATE, subject=base_subject),
-                k.FactRef(fact="l1.link.peer", subject=subject(group))):
-        with pytest.raises(RunnerRefused, match="p3_evidence_fact_subject"):
-            resolve_evidence(group, reader(((ref, known("x", witness(group))),)), (ref,))
-
-
-@pytest.mark.parametrize("fact,on_adjacency", [(ospf.STATE, True), (l2_mtu.MTU, True),
-    (l3_mtu.MTU, True), (ospf.PERSISTENT, False), (ospf.SPAN, False)])
-def test_owner_sample_and_settled_fact_kinds_cannot_be_crossed(fact, on_adjacency):
-    group = bundle()
-    target = adjacency_subject(group.adjacencies[0]) if on_adjacency else subject(group)
+    target = (endpoint(group.base.nodes[0], "Gi1/0/1") if kind == "base" else
+              adjacency_subject(group.adjacencies[0]) if kind == "adjacency" else subject(group))
     ref = k.FactRef(fact=fact, subject=target)
     with pytest.raises(RunnerRefused, match="p3_evidence_fact_subject"):
-        resolve_evidence(group, reader(((ref, known(True, witness(group))),)), (ref,))
+        resolve_evidence(group, reader(((ref, known(value, witness(group))),)), (ref,))
 
 
 @pytest.mark.parametrize("fact,value", [(ospf.PERSISTENT, True), (ospf.SPAN, 120000000)])
@@ -260,3 +253,13 @@ def test_recursive_fact_edges_stay_within_the_immediate_parent_context(plant):
     else:
         with pytest.raises(RunnerRefused, match="parent_relevance"):
             resolve_evidence(group, reader(entries), (parent,))
+
+
+@pytest.mark.parametrize("fact", [ospf.STATE, "l2.discovery.unregistered"])
+def test_delegated_p2_subtree_cannot_launder_foreign_fact_ids_on_base_subjects(fact):
+    group = bundle()
+    base = endpoint(group.base.nodes[0], "Gi1/0/1")
+    peer, child = k.FactRef(fact="l1.link.peer", subject=base), k.FactRef(fact=fact, subject=base)
+    entries = ((peer, known("peer", child)), (child, known("EXSTART", witness(group, baseline=True))))
+    with pytest.raises(RunnerRefused, match="p3_evidence_fact_subject"):
+        resolve_evidence(group, reader(entries), (peer,))

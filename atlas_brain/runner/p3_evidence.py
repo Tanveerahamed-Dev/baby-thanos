@@ -22,13 +22,14 @@ def _need(condition: bool, code: str) -> None:
         raise RunnerRefused("p3_evidence_" + code)
 
 
-def _bounded(records: list[dict[str, object]], depth: int) -> None:
+def _bounded(records: list[dict[str, object]], depth: int, subjects: set[k.EntityKey]) -> None:
     """A delegated P2 subtree still shares the caller's total depth budget."""
     for row in records:
         if row["kind"] == "fact":
             _need(depth < 32, "fact_depth")
+            _need(row["fact"] in p2.FACT_IDS and row["subject"] in subjects, "fact_subject")
             state = cast(dict[str, object], row["state"])
-            _bounded(cast(list[dict[str, object]], state["evidence"]), depth + 1)
+            _bounded(cast(list[dict[str, object]], state["evidence"]), depth + 1, subjects)
 
 
 class _Projector:
@@ -97,7 +98,7 @@ class _Projector:
                 if ref.subject in self.base_subjects:
                     _need(ref.fact in p2.FACT_IDS, "fact_subject")
                     delegated = p2_evidence.resolve_evidence(self.group.base, self.reader, (ref,))
-                    _bounded(delegated, len(chain))
+                    _bounded(delegated, len(chain), self.base_subjects)
                     projected = delegated[0]
                 else:
                     _need(ref.fact in SAMPLE_FACTS and ref.subject in self.sample_subjects
