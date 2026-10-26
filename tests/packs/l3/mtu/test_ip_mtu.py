@@ -119,3 +119,11 @@ def test_eof_without_final_newline_preserves_record_ids_fields_and_exact_spans()
             assert raw[field.span.start:field.span.end] == field.raw.encode()
     assert row.spans == (header.span, mtu.span)
     assert b"".join(raw[line.span.start:line.span.end] for line in result.parse.lines) == raw
+
+
+@pytest.mark.parametrize("indent", [b"", b"  ", b"\t"])
+def test_mtu_data_keyword_is_not_an_undeclared_interface(indent):
+    raw = BODY.replace(b"  MTU is ", indent + b"MTU is ")
+    result = parser.parse_capture(capture(raw), (P,))
+    assert result.reason is None and result.rows[0].reason is None
+    assert dict(result.rows[0].fields)[parser.FIELD].raw == "9000"
