@@ -176,3 +176,11 @@ def test_unmatched_local_mentions_refuse_before_any_fact_write(operation, raw):
         discovery.build_node(group, node, store)
     with pytest.raises(ValueError, match="missing_fact:"):
         read(store).read(fact=discovery.DEVICE_ID, subject=endpoint(node, "Gi1/0/1"))
+
+
+def test_catalogue_fact_contracts_match_declared_outputs():
+    assert tuple(spec.id for spec in discovery.FACTS) == discovery.IDS == discovery.STEP.produces
+    assert tuple((spec.id, spec.value_type) for spec in discovery.FACTS) == (
+        (discovery.BRIDGE, "boolean"), (discovery.DEVICE_ID, "text"), (discovery.REMOTE_PORT, "text"))
+    assert all(spec.pack == discovery.STEP.pack and spec.subject == "interface"
+               and spec.step == discovery.STEP.id for spec in discovery.FACTS)
