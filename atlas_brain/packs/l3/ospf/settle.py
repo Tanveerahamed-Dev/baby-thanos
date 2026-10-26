@@ -53,6 +53,10 @@ class _Read:
         return self.values[fact]
 
 
+def _token(state: StoredState) -> object | None:
+    return state.value if isinstance(state, k.Known) else None
+
+
 def _valid(state: StoredState, expected: type[object], basis: k.Basis) -> None:
     k.require(type(state) in (k.Known, k.Unknown), "ospf_settle_state")
     if isinstance(state, k.Known):
@@ -106,8 +110,8 @@ def _persistent(context: k.Known[bool] | k.Unknown, rows: tuple[_Read, ...],
                 needs: tuple[k.EvidenceNeed, ...]) -> k.Known[bool] | k.Unknown:
     if isinstance(context, k.Unknown):
         return timeline.unknown(context.reason, context.detail, proof, needs, context)
-    states = tuple(row.get(s.STATE) for row in rows)
-    known = {state.value for state in states if isinstance(state, k.Known)}
+    states = tuple(value for row in rows for fact, value in row.values.items() if fact == s.STATE)
+    known = {_token(state) for state in states if isinstance(state, k.Known)}
     if len(known) > 1:
         return timeline.unknown(k.UnknownReason.CONFLICTING_EVIDENCE, "sample_states_disagree", proof, needs)
     gap = next((state for state in states if isinstance(state, k.Unknown)), None)
@@ -146,10 +150,10 @@ def build_group(group: P3Group, store: FactStore) -> Result:
             for fact, state in row.values.items():
                 basis = k.Basis.DECLARED if fact in DECLARED else k.Basis.CONFIGURED if fact == s.IGNORE else k.Basis.OBSERVED
                 _valid(state, TYPES[fact], basis)
-            state = row.get(s.STATE)
-            k.require(not isinstance(state, k.Known) or state.value in STATES, "ospf_settle_state_value")
-            role = row.get(s.ROLE)
-            k.require(not isinstance(role, k.Known) or role.value in ("-", "DR", "BDR", "DROTHER"), "ospf_settle_role_value")
+            state = next(value for fact, value in row.values.items() if fact == s.STATE)
+            k.require(not isinstance(state, k.Known) or _token(state) in STATES, "ospf_settle_state_value")
+            role = next(value for fact, value in row.values.items() if fact == s.ROLE)
+            k.require(not isinstance(role, k.Known) or _token(role) in ("-", "DR", "BDR", "DROTHER"), "ospf_settle_role_value")
         proof = (group.base.declaration.evidence + adjacency.declaration.evidence
                  + adjacency.left.node.declaration.evidence + adjacency.right.node.declaration.evidence
                  + tuple(k.FactRef(fact=PEER, subject=endpoint(point.node, point.port))
