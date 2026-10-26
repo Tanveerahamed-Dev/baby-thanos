@@ -167,5 +167,5 @@ def build_group(group: P3Group, store: FactStore) -> Result:
     writer = bind_writer(store, step=s.SETTLE)
     for row in results:
         for fact, value in ((s.CONTEXT, row.context), (s.PERSISTENT, row.persistent), (s.SPAN, row.span)):
-            writer.write(fact=fact, subject=row.subject, value=value)
+            writer.write(fact=fact, subject=row.subject, value=cast(StoredState, value))
     return Result(rows=tuple(results))
