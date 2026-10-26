@@ -25,10 +25,25 @@ def run(evidence: Path, out: Path, workers: int = 4) -> RunResult:
     if not isinstance(payload, dict):
         raise RunnerRefused("invalid_manifest")
     record = cast(dict[str, object], payload)
-    if (set(record) - {"interface_coverage"} != {"schema", "evidence", "plan", "egress", "steps", "facts"}
+    schema = record.get("schema")
+    required = {"schema", "evidence", "plan", "egress", "steps", "facts"}
+    if schema == "atlas-brain.runner-manifest/2":
+        required.add("p2")
+    elif schema != "atlas-brain.runner-manifest/1":
+        raise RunnerRefused("invalid_manifest")
+    if (set(record) - {"interface_coverage"} != required
             or not isinstance(record["facts"], dict)
             or "interface_coverage" in record and not isinstance(record["interface_coverage"], dict)):
         raise RunnerRefused("invalid_manifest")
+    if schema == "atlas-brain.runner-manifest/2":
+        payload = record["p2"]
+        if not isinstance(payload, dict):
+            raise RunnerRefused("invalid_manifest")
+        p2 = cast(dict[str, object], payload)
+        if (p2.get("schema") != "atlas-brain.p2-demo/1"
+                or not isinstance(p2.get("findings"), list) or not isinstance(p2.get("endpoints"), list)
+                or not isinstance(p2.get("denominator"), dict)):
+            raise RunnerRefused("invalid_manifest")
     evidence_fields, egress_fields = record["evidence"], record["egress"]
     step_receipts = record["steps"]
     if not isinstance(evidence_fields, dict) or not isinstance(egress_fields, dict) or not isinstance(step_receipts, list):
@@ -36,7 +51,7 @@ def run(evidence: Path, out: Path, workers: int = 4) -> RunResult:
     fields = cast(dict[str, object], evidence_fields)
     egress = cast(dict[str, object], egress_fields)
     files, evidence_digest, denied = fields["files"], fields["digest"], egress["denied"]
-    if not isinstance(files, int) or not isinstance(evidence_digest, str) or not isinstance(denied, int):
+    if type(files) is not int or not isinstance(evidence_digest, str) or type(denied) is not int:
         raise RunnerRefused("invalid_manifest")
     return RunResult(out=out, evidence_files=files, evidence_digest=evidence_digest,
                      steps=len(cast(list[object], step_receipts)), egress_denied=denied)

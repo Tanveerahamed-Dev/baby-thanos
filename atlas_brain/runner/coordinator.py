@@ -11,7 +11,8 @@ from typing import cast
 from atlas_brain.contract.canonical import canonical
 
 from . import tripwire
-from .evidence import analyse_evidence, require_evidence
+from .evidence import analyse_input, require_evidence
+from .p2 import analyse_group
 from .records import RunnerRefused, capture_facts, missing_interfaces
 
 SCHEMA = "atlas-brain.runner-manifest/1"
@@ -50,17 +51,36 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
             raise RunnerRefused("output_unwritable") from error
         if not stat.S_ISREG(info.st_mode) or info.st_nlink > 1:
             raise RunnerRefused("output_unsafe_member")
-    captures = analyse_evidence(evidence)
-    files = len(captures)
+    admitted = analyse_input(evidence)
+    captures, group = admitted.captures, admitted.group
+    files = len(captures) + int(group is not None)
     entries = [{"capture": str(capture.id), "sha256": capture.bytes_sha256} for capture in captures]
-    evidence_digest = sha256(canonical(sorted(entries, key=lambda entry: entry["capture"]))).hexdigest()
+    digest_input: object = sorted(entries, key=lambda entry: entry["capture"])
+    if group is not None:
+        digest_input = {"captures": digest_input, "registry_sha256": sha256(group.raw).hexdigest()}
+    evidence_digest = sha256(canonical(digest_input)).hexdigest()
     facts: dict[str, object] = {}
     fact_lines: list[str] = []
-    for capture in sorted(captures, key=lambda capture: capture.id):
-        projected, lines = capture_facts(capture)
-        facts[str(capture.id)] = projected
+    p2: dict[str, object] | None = None
+    if group is None:
+        for capture in sorted(captures, key=lambda capture: capture.id):
+            projected, lines = capture_facts(capture)
+            facts[str(capture.id)] = projected
+            fact_lines.extend(lines)
+    else:
+        try:
+            p2, lines = analyse_group(group)
+        except RunnerRefused:
+            raise
+        except ValueError as error:
+            code = str(error)
+            if re.fullmatch(r"[a-z][a-z0-9_]*", code, re.ASCII) is None:
+                code = "analysis_failed"
+            raise RunnerRefused("p2_" + code) from error
         fact_lines.extend(lines)
-    interface_present = any(capture.operation != "iosxe.show_version" for capture in captures)
+    interface_present = any(capture.operation in (
+        "iosxe.show_interfaces", "iosxe.show_ip_interface_brief") for capture in captures)
+    schema = SCHEMA if group is None else "atlas-brain.runner-manifest/2"
     missing, missing_text = missing_interfaces()
     coordinator_denied = tripwire.probe()
     if coordinator_denied != tripwire.WITNESS_ATTEMPTS:
@@ -69,8 +89,9 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
     worker_denied = sum(denied for _, denied in results)
     total = parent_denied + coordinator_denied + worker_denied
     summary = "\n".join((
+        "BABY THANOS RUNNER - P2 DECLARED SYNTHETIC TWO ENDS" if group is not None else
         "BABY THANOS RUNNER - P1 INTERFACE ANSWER" if interface_present else "BABY THANOS RUNNER - P0 SYSTEM FACTS",
-        f"schema: {SCHEMA}",
+        f"schema: {schema}",
         f"evidence: files={files} digest={evidence_digest}",
         f"steps: {len(results)}",
         f"witness: {tripwire.WITNESS_ATTEMPTS} denied egress attempts per step",
@@ -83,7 +104,7 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
         *fact_lines,
     )) + "\n"
     record = {
-        "schema": SCHEMA,
+        "schema": schema,
         "evidence": {"digest": evidence_digest, "files": files},
         "plan": {"steps": len(results), "witness_attempts": tripwire.WITNESS_ATTEMPTS},
         "egress": {"parent_denied": parent_denied, "coordinator_denied": coordinator_denied,
@@ -93,6 +114,10 @@ def run(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
     }
     if not interface_present:
         record["interface_coverage"] = missing
+    if p2 is not None and group is not None:
+        record["p2"] = p2
+        record["evidence"] = {"digest": evidence_digest, "files": files,
+                              "captures": len(captures), "registry_sha256": sha256(group.raw).hexdigest()}
     try:
         out.mkdir(parents=True, exist_ok=True)
         (out / "SUMMARY.txt").write_text(summary, encoding="utf-8", newline="\n")
