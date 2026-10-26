@@ -28,14 +28,14 @@ def test_current_projections_and_unknown_denominators_are_accepted(case):
 
 @pytest.fixture(scope="module")
 def valid():
-    return record()
+    return canonical(record())
 
 
 @pytest.mark.parametrize("plant", ["schema", "interpretation", "scope", "timing", "coverage", "denominator",
                                   "population", "sample_fact", "settled_fact", "candidate", "healthy", "float",
                                   "digest", "registry", "files", "duplicate_capture", "extra"])
 def test_malformed_manifest_cannot_claim_current_p3_contract(valid, plant):
-    payload, metadata = json.loads(canonical(valid))
+    payload, metadata = json.loads(valid)
     if plant in ("schema", "interpretation", "scope", "timing"):
         payload[plant] = "unverified"
     elif plant == "coverage":
@@ -71,7 +71,7 @@ def test_malformed_manifest_cannot_claim_current_p3_contract(valid, plant):
 @pytest.mark.parametrize("plant", ["candidate_only", "hop_order", "false_premise", "ip_mtu_boolean",
                                   "process_text", "ignore_integer", "clock_basis", "unknown_reason", "extra_state_key"])
 def test_valid_looking_shape_laundering_is_rejected(valid, plant):
-    payload, metadata = json.loads(canonical(valid))
+    payload, metadata = json.loads(valid)
     finding = payload["findings"][0]
     facts = payload["samples"][0]["endpoints"][0]["facts"]
     if plant == "candidate_only":
@@ -136,7 +136,7 @@ def test_not_applicable_reason_namespace_is_closed():
     "extra_registry", "extra_capture_proof", "extra_fact_proof", "extra_need",
 ])
 def test_projected_custody_labels_subjects_and_closed_rows_cannot_be_forged(valid, plant):
-    payload, metadata = json.loads(canonical(valid))
+    payload, metadata = json.loads(valid)
     sample, finding = payload["samples"][0], payload["findings"][0]
     capture = next(row for row in payload["captures"] if row["sample"] == sample["id"] and row["source"] == "node:demo:a")
     targets = {"node": payload["nodes"][0], "base": payload["endpoints"][0], "sample": sample,
