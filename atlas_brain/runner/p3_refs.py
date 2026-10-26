@@ -65,13 +65,13 @@ class RefResolver:
         self.points: dict[str, Endpoint] = {}
         self.base_ids = {str(c.id) for c in group.base.captures}
         try:
-            self._registry()
+            self.validate_registry()
         except RunnerRefused:
             raise
         except (ValueError, TypeError, UnicodeError, KeyError, AttributeError) as error:
             raise RunnerRefused("p3_evidence_registry") from error
 
-    def _registry(self) -> None:
+    def validate_registry(self) -> None:
         group = self.group
         raw = record(strict_json(group.raw), ("schema", "semantic_group", "base_sha256", "adjacencies", "samples"))
         digest, base_digest = sha256(group.raw).hexdigest(), sha256(group.base.raw).hexdigest()
@@ -146,13 +146,13 @@ class RefResolver:
             _need(type(ref) is k.EvidenceRef, "reference")
             if str(ref.capture) in self.base_ids:
                 return p2_evidence.resolve_evidence(self.group.base, self.reader, (ref,))[0]
-            return self._capture(ref)
+            return self.capture_ref(ref)
         except RunnerRefused:
             raise
         except (ValueError, TypeError, UnicodeError, KeyError, AttributeError) as error:
             raise RunnerRefused("p3_evidence_reference") from error
 
-    def _capture(self, ref: k.EvidenceRef) -> dict[str, object]:
+    def capture_ref(self, ref: k.EvidenceRef) -> dict[str, object]:
         _need(str(ref.capture) in self.captures, "missing_capture")
         sample, capture, row = self.captures[str(ref.capture)]
         point = next((p for p in self.points.values() if p.node.id == row["node"]), None)
