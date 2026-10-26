@@ -9,7 +9,11 @@ from atlas_brain.model.store import FactStore, StoredState, bind_reader
 from atlas_brain.packs.l1.link.build import PEER
 from atlas_brain.packs.l2.vlan_trunk import build as observed
 from atlas_brain.packs.l2.vlan_trunk import config_build as config
-from atlas_brain.packs.l2.vlan_trunk.check import Comparison, _canonical, _vlans
+from atlas_brain.packs.l2.vlan_trunk.check import (
+    Comparison,
+    canonical_vlan_set,
+    vlan_members,
+)
 
 NATIVE_CHECK = "l2.vlan_trunk.configured_native_mismatch"
 ALLOWED_CHECK = "l2.vlan_trunk.configured_allowed_asymmetry"
@@ -74,8 +78,8 @@ def _comparison(left: Endpoint, right: Endpoint, fact: k.FactId, identifier: str
     elif isinstance(a, k.Known) and isinstance(b, k.Known) and a.value != b.value:
         state, reason = "problem", None
         if fact == config.ALLOWED:
-            av, bv = _vlans(cast(str, a.value)), _vlans(cast(str, b.value))
-            left_only, right_only = _canonical(av - bv), _canonical(bv - av)
+            av, bv = vlan_members(cast(str, a.value)), vlan_members(cast(str, b.value))
+            left_only, right_only = canonical_vlan_set(av - bv), canonical_vlan_set(bv - av)
     return Comparison(check=identifier, left=left.subject, right=right.subject, state=state, reason=reason,
                       evidence=refs, next_evidence=needs, left_only=left_only, right_only=right_only)
 
