@@ -17,6 +17,9 @@ from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
 
 SCHEMA = "atlas-brain.synthetic-p2/1"
+CONFIG_SCHEMA = "atlas-brain.synthetic-p2/2"
+CONFIG_OPERATION = "iosxe.show_running_config"
+CONFIG_COMMAND = "show running-config"
 OPERATIONS = {"iosxe.show_cdp_neighbors_detail": "show cdp neighbors detail",
               "iosxe.show_interfaces_trunk": "show interfaces trunk",
               "iosxe.show_lldp_neighbors_detail": "show lldp neighbors detail"}
@@ -44,6 +47,7 @@ class SyntheticGroup:
     captures: tuple[Capture, ...]
     raw: bytes
     declaration: k.Known[str]
+    schema: str = SCHEMA
 
 
 def _need(condition: bool, code: str) -> None:
@@ -62,10 +66,35 @@ def _matches(pattern: str, value: str) -> bool:
     return re.fullmatch(pattern, value, re.ASCII) is not None
 
 
+def operation_map(schema: str) -> dict[str, str]:
+    _need(schema in (SCHEMA, CONFIG_SCHEMA), "synthetic_schema")
+    return OPERATIONS | ({CONFIG_OPERATION: CONFIG_COMMAND} if schema == CONFIG_SCHEMA else {})
+
+
 def endpoint(node: Node, exact_port: str) -> k.EntityKey:
     """Only a declared exact name can supply a synthetic interface subject."""
     _need(exact_port in node.ports, "synthetic_undeclared_port")
     return k.EntityKey("interface:" + sha256(canonical((node.key, exact_port))).hexdigest())
+
+
+def _config_integrity(lines: list[str], *, failed: bool, truncated: bool) -> k.IntegrityState:
+    """Recognize only the v2 config envelope; the owning parser accounts for its body."""
+    if lines and lines[0] == CONFIG_COMMAND:
+        lines = lines[1:]
+    guards = (r"[a-z0-9_.:-]+(?:\([^)]*\))?[>#].*",
+              r"(?:do[ \t]+)?sh(?:ow|o)?[ \t].*", r"banner(?:[ \t]|$).*")
+    _need(not any(_matches(pattern, line.strip().casefold()) for line in lines for pattern in guards),
+          "synthetic_mixed_context")
+    if failed:
+        return k.IntegrityState.ERROR
+    if truncated:
+        return k.IntegrityState.TRUNCATED
+    if not lines:
+        return k.IntegrityState.EMPTY
+    header = (r"Building configuration\.\.\.|Current configuration[ \t]*:[ \t]*[0-9]+ bytes"
+              r"|(?:version|hostname|interface|template|default|port-profile|macro)[ \t]+[^\r\n]+|!|end")
+    _need(_matches(header, lines[0]), "synthetic_unsupported_capture")
+    return k.IntegrityState.COMPLETE
 
 
 def _integrity(raw: bytes, operation: str) -> k.IntegrityState:
@@ -80,12 +109,15 @@ def _integrity(raw: bytes, operation: str) -> k.IntegrityState:
     failed = any(line.lstrip().startswith("%") or "command authorization failed" in line.casefold() for line in lines)
     truncated = any(marker in text.casefold() for marker in ("--more--", "<--- more --->", "--(more)--", "[truncated]", "<output truncated>"))
     prompt = r"[A-Za-z0-9_.:-]+[>#]"
-    opening = re.fullmatch("(" + prompt + ") ?" + OPERATIONS[operation], lines[0], re.ASCII) if lines else None
+    command = CONFIG_COMMAND if operation == CONFIG_OPERATION else OPERATIONS[operation]
+    opening = re.fullmatch("(" + prompt + ") ?" + command, lines[0], re.ASCII) if lines else None
     if opening:
         lines = lines[1:]
     if lines and _matches(prompt, lines[-1]):
         _need(opening is None or lines[-1] == opening[1], "synthetic_mixed_context")
         lines = lines[:-1]
+    if operation == CONFIG_OPERATION:
+        return _config_integrity(lines, failed=failed, truncated=truncated)
     contexts = (r"[a-z0-9_.:-]+(?:\([^)]*\))?[>#].*", r"(?:end|!|\^c?)",
                 r"(?:building configuration|current configuration|banner(?:[ \t]|$)|(?:do[ \t]+)?sh(?:ow|o)?[ \t]).*",
                 r"(?:hostname|interface|router|vlan)[ \t].*")
@@ -112,7 +144,8 @@ def admit_members(members: dict[str, bytes]) -> SyntheticGroup:
     member_names(list(members))
     raw = members["p2.json"]
     manifest = record(strict_json(raw), ("schema", "semantic_group", "group", "nodes", "captures"))
-    _need(string(manifest, "schema") == SCHEMA, "synthetic_schema")
+    schema = string(manifest, "schema")
+    operations = operation_map(schema)
     _need(string(manifest, "semantic_group") == "declared_synthetic", "synthetic_semantic_group")
     group = string(manifest, "group")
     _need(_matches(_SAFE, group), "synthetic_group_id")
@@ -150,21 +183,23 @@ def admit_members(members: dict[str, bytes]) -> SyntheticGroup:
         row = record(value, ("path", "node", "operation", "sha256"))
         path, node, operation, expected = (string(row, f) for f in ("path", "node", "operation", "sha256"))
         member_names([path])
-        _need(node in identifiers and operation in OPERATIONS, "synthetic_capture_reference")
+        _need(node in identifiers and operation in operations, "synthetic_capture_reference")
         _need(path != "p2.json" and path not in paths and (node, operation) not in references,
               "synthetic_duplicate_reference")
         _need(path in members and _matches(r"[0-9a-f]{64}", expected), "synthetic_capture_hash")
         content = members[path]
         _need(sha256(content).hexdigest() == expected, "synthetic_capture_hash")
         integrity = _integrity(content, operation)
-        identity = sha256(canonical((SCHEMA, group, digest, path, node, operation, expected))).hexdigest()
+        identity = sha256(canonical((schema, group, digest, path, node, operation, expected))).hexdigest()
         captures.append(Capture(id=k.CaptureId("cap:" + identity), source=declared_nodes[node].key,
-                                operation=operation, rendered=OPERATIONS[operation], codec="utf-8",
+                                operation=operation, rendered=operations[operation], codec="utf-8",
                                 raw=content, integrity=integrity, lines=text_lines(content, "utf-8"),
                                 read_scope=k.ReadScope.UNKNOWN, view=k.ViewConsistency.UNKNOWN))
         paths.add(path)
         references.add((node, operation))
+    _need(schema == SCHEMA or any(operation == CONFIG_OPERATION for _, operation in references),
+          "synthetic_config_required")
     _need(set(members) == paths | {"p2.json"}, "synthetic_unlisted_member")
     return SyntheticGroup(id=group, nodes=tuple(sorted(nodes, key=lambda node: node.id)),
                           captures=tuple(sorted(captures, key=lambda capture: capture.id)), raw=raw,
-                          declaration=declaration("groups", group, "/group"))
+                          declaration=declaration("groups", group, "/group"), schema=schema)
