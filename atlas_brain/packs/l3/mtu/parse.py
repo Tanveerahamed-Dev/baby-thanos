@@ -3,7 +3,13 @@ from dataclasses import dataclass
 
 from atlas_brain.evidence.capture import Capture
 from atlas_brain.evidence.parsekit.patterns import compile_pattern
-from atlas_brain.evidence.parsekit.rules import Captured, ParseResult, Record, Rule, run_rules
+from atlas_brain.evidence.parsekit.rules import (
+    Captured,
+    ParseResult,
+    Record,
+    Rule,
+    run_rules,
+)
 from atlas_brain.kernel import states as k
 
 OP, COMMAND = "iosxe.show_ip_interface", "show ip interface"
