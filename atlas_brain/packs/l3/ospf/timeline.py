@@ -63,7 +63,7 @@ def measure(rounds: tuple[RoundTimes, ...], *, evidence: tuple[k.Evidence, ...],
     if len(intervals) == 1:
         return unknown(k.UnknownReason.SINGLE_SAMPLE, "second_collection_round_required", evidence, needs)
     intervals.sort(key=lambda item: (item[1], item[2]))
-    if any(later[1] <= earlier[2] for earlier, later in zip(intervals, intervals[1:])):
+    if any(intervals[index + 1][1] <= intervals[index][2] for index in range(len(intervals) - 1)):
         return unknown(k.UnknownReason.NON_ATOMIC_VIEW, "collector_intervals_overlap", evidence, needs)
     return k.Known(value=intervals[-1][1] - intervals[0][2], basis=k.Basis.DERIVED,
                    raw=None, evidence=evidence)

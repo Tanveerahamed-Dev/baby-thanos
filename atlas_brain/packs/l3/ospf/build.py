@@ -135,8 +135,6 @@ def _times(context: support.Context, point: Endpoint,
                 raise ValueError("ospf_unbounded_sample_time")
             return {identifier: _known(value, k.Basis.DECLARED, proof, None)
                     for identifier, value in ((s.CLOCK, collected.clock), (s.EARLIEST, earliest), (s.LATEST, latest))}
-    if reason is None:
-        raise ValueError("ospf_sample_time_state")
     return {identifier: _unknown(reason, proof, point.node, neighbor.OP, identifier)
             for identifier in (s.CLOCK, s.EARLIEST, s.LATEST)}
 
