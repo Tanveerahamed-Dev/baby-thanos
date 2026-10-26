@@ -39,8 +39,9 @@ def _need(condition: bool, code: str) -> None:
 
 def _parse_all(group: SyntheticGroup, store: FactStore) -> dict[str, ParseResult]:
     owners = {operation: str(discovery.STEP.id) for operation in discovery.OPERATIONS}
-    _need(trunk.OP not in owners and config_build.OP not in owners and trunk.OP != config_build.OP, "ambiguous_parser")
-    owners[trunk.OP], owners[config_build.OP] = str(trunk.STEP.id), str(config_build.STEP.id)
+    trunk_operation, config_operation = str(trunk.OP), str(config_build.OP)
+    _need(trunk_operation not in owners and config_operation not in owners and trunk_operation != config_operation, "ambiguous_parser")
+    owners[trunk_operation], owners[config_operation] = str(trunk.STEP.id), str(config_build.STEP.id)
     expected = {str(capture.id): capture for capture in group.captures}
     _need(len(expected) == len(group.captures), "duplicate_capture")
     nodes = {node.key for node in group.nodes}

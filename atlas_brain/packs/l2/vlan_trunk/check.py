@@ -76,6 +76,16 @@ def _canonical(values: set[int]) -> str:
     return cast(str, value)
 
 
+def vlan_members(value: str) -> set[int]:
+    """Expand a canonical owned VLAN set; callers validate canonical input first."""
+    return _vlans(value)
+
+
+def canonical_vlan_set(values: set[int]) -> str:
+    """Project a set difference through the existing owner canonicalization."""
+    return _canonical(values)
+
+
 def _comparison(left: Endpoint, right: Endpoint, fact: k.FactId, check: str,
                 a: k.Known[int] | k.Known[str] | k.Unknown,
                 b: k.Known[int] | k.Known[str] | k.Unknown) -> Comparison:
