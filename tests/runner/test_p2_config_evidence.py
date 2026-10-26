@@ -36,7 +36,7 @@ def bundle(schema=CONFIG_SCHEMA):
 
 def reader(store=None):
     step = StepSpec(id=StepId("l2.vlan_trunk/config_project_test"), pack=k.PackId("l2.vlan_trunk"),
-                    kind="derive", scope="estate", reads=IDS, produces=(), evaluator="config.proof.test")
+                    kind="derive", scope="estate", reads=IDS, produces=(), evaluator="l2.vlan_trunk.config.proof_test")
     return bind_reader(store if store is not None else FactStore(), step=step)
 
 
@@ -135,7 +135,7 @@ def test_config_fact_chain_uses_declared_reader_and_original_leaf_proof():
     group, store = bundle(), FactStore()
     subject = endpoint(group.nodes[0], P)
     step = StepSpec(id=StepId("l2.vlan_trunk/parse_config"), pack=k.PackId("l2.vlan_trunk"),
-                    kind="parse_build", scope="device", reads=(), produces=IDS, evaluator="config.test")
+                    kind="parse_build", scope="device", reads=(), produces=IDS, evaluator="l2.vlan_trunk.config.test")
     state = k.Known(value=10, basis=k.Basis.CONFIGURED, raw="10",
                     evidence=(field(group),) + group.nodes[0].declaration.evidence)
     bind_writer(store, step=step).write(fact=IDS[2], subject=subject, value=state)
