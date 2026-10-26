@@ -16,10 +16,11 @@ ROLES = ("parent", "coordinator", "worker")
 FLAGS = frozenset({"--evidence", "--out", "--workers", "--role", "--steps", "--parent-denied"})
 USAGE = """usage: python -m atlas_brain.runner --evidence DIR --out DIR [--workers N]
 
-Analyse raw IOS-XE show-version captures, execute the built-in deterministic
-witness steps in an explicit worker pool, and write SUMMARY.txt plus
-MANIFEST.json under --out. Egress is denied and counted; output bytes do not depend
-on the run or on the worker count.
+Analyse raw IOS-XE show-version/interface captures (P0/P1), or a declared
+synthetic P2 p2.json group with bound discovery and trunk captures. Execute
+deterministic witness steps in an explicit worker pool and write SUMMARY.txt plus
+MANIFEST.json under --out. Egress is denied and counted; identical inputs give
+identical output bytes across worker counts.
 """
 
 
