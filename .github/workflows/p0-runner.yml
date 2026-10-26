@@ -93,6 +93,8 @@ jobs:
           PY
       - name: Demonstrate declared synthetic P2 mismatch with both ends cited
         run: uv run --no-sync python -m tools.p2_demo
+      - name: Demonstrate configured P2 intent with direct and inherited statements
+        run: uv run --no-sync python -m tools.p2_config_demo
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
