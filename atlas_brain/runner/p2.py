@@ -1,6 +1,7 @@
 """Pure declared-synthetic P2 analysis; no filesystem or current-link qualification."""
 import json
 from hashlib import sha256
+from typing import cast
 
 from atlas_brain.evidence.parsekit.rules import ParseResult
 from atlas_brain.evidence.synthetic import OPERATIONS, SyntheticGroup
@@ -73,10 +74,10 @@ def _finding(group: SyntheticGroup, reader: FactReader, row: check.Comparison,
         result["left_only"] = row.left_only
     if row.right_only is not None:
         result["right_only"] = row.right_only
-    fact = trunk.NATIVE if row.check == check.NATIVE_CHECK else trunk.ALLOWED
-    description = left.node.id + "/" + left.port + "=" + _show(reader.read(fact=fact, subject=left.subject))
+    fact = str(trunk.NATIVE if row.check == check.NATIVE_CHECK else trunk.ALLOWED)
+    description = left.node.id + "/" + left.port + "=" + _show(reader.read(fact=cast("k.FactId", fact), subject=left.subject))
     if right is not None:
-        description += " vs " + right.node.id + "/" + right.port + "=" + _show(reader.read(fact=fact, subject=right.subject))
+        description += " vs " + right.node.id + "/" + right.port + "=" + _show(reader.read(fact=cast("k.FactId", fact), subject=right.subject))
     reason = " reason=" + str(row.reason) if row.reason is not None else ""
     line = row.check + " " + description + ": " + row.state + reason
     return result, line + " evidence=" + json.dumps(evidence, ensure_ascii=True, sort_keys=True)
@@ -120,11 +121,11 @@ def analyse_group(group: SyntheticGroup) -> tuple[dict[str, object], tuple[str, 
                          "collected_utc": project_fact(group, reader, collected),
                          "evidence": resolve_evidence(group, reader, capture.integrity_evidence)})
     nodes = [{"id": node.id, "key": str(node.key), "discovery_id": node.discovery_id,
-              "ports": list(node.ports), "declaration": project_fact(group, reader, node.declaration)}
+              "ports": list(node.ports), "declaration": project_fact(group, reader, cast("StoredState", node.declaration))}
              for node in sorted(group.nodes, key=lambda node: node.id)]
     payload: dict[str, object] = {
         "schema": SCHEMA, "group": {"id": group.id, "semantic_group": "declared_synthetic",
-                                   "declaration": project_fact(group, reader, group.declaration)},
+                                   "declaration": project_fact(group, reader, cast("StoredState", group.declaration))},
         "variant_support": "allowlisted", "registry_sha256": sha256(group.raw).hexdigest(),
         "nodes": nodes, "endpoints": endpoint_records, "findings": findings,
         "coverage": project_fact(group, reader, result.coverage), "denominator": dict(result.denominator),
