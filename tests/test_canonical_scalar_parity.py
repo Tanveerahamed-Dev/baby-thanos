@@ -116,7 +116,7 @@ def test_refusal_guards_run_before_any_scalar_dumps(
 
 
 @pytest.mark.parametrize("value", [
-    "\ud800", "\udfff", "x\ud800y", ["\udfff"],
+    chr(0xD800), chr(0xDFFF), "x\ud800y", ["\udfff"],
     {"valid": "\ud800"}, {"\udfff": "valid"}, {"nested": {"\ud800": None}},
 ])
 def test_surrogate_refusal_matches_fresh_encoding(value):
