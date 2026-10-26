@@ -29,12 +29,19 @@ def run(evidence: Path, out: Path, workers: int = 4) -> RunResult:
     required = {"schema", "evidence", "plan", "egress", "steps", "facts"}
     if schema == "atlas-brain.runner-manifest/2":
         required.add("p2")
+    elif schema == "atlas-brain.runner-manifest/3":
+        required.add("p3")
     elif schema != "atlas-brain.runner-manifest/1":
         raise RunnerRefused("invalid_manifest")
     if (set(record) - {"interface_coverage"} != required
             or not isinstance(record["facts"], dict)
             or "interface_coverage" in record and not isinstance(record["interface_coverage"], dict)):
         raise RunnerRefused("invalid_manifest")
+    if schema == "atlas-brain.runner-manifest/3":
+        from .p3_manifest import validate
+        if record["facts"] != {} or "interface_coverage" in record:
+            raise RunnerRefused("invalid_manifest")
+        validate(record["p3"], record["evidence"])
     if schema == "atlas-brain.runner-manifest/2":
         payload = record["p2"]
         if not isinstance(payload, dict):
