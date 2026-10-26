@@ -79,6 +79,8 @@ class _Custody:
         self.registry: dict[tuple[str, str], Row] = {}
         self.indices: dict[str, set[int]] = {}
         self.facts: dict[tuple[str, str], Row] = {}
+        self.registry_bytes: dict[tuple[str, str], bytes] = {}
+        self.fact_bytes: dict[tuple[str, str], bytes] = {}
         self.captures: dict[str, Row] = {}
         self.node_keys: dict[str, str] = {}
         self.participants: set[str] = set()
@@ -154,7 +156,11 @@ class _Custody:
             if proof.get("kind") == "registry":
                 _row(proof, _REG)
                 key = _text(proof["table"]), _text(proof["row_id"])
-                _need(key in self.registry and _same(proof, self.registry[key]))
+                _need(key in self.registry)
+                incoming_registry = canonical(proof)
+                if key not in self.registry_bytes:
+                    self.registry_bytes[key] = canonical(self.registry[key])
+                _need(incoming_registry == self.registry_bytes[key])
             elif proof.get("kind") == "capture":
                 identity = _text(proof.get("capture"))
                 _need(identity in self.captures)
@@ -171,7 +177,11 @@ class _Custody:
             elif proof.get("kind") == "fact":
                 _row(proof, {"kind", "fact", "subject", "state"})
                 key = _text(proof["fact"]), _text(proof["subject"])
-                _need(key in self.facts and key not in chain and _same(proof["state"], self.facts[key]))
+                _need(key in self.facts and key not in chain)
+                incoming_state = canonical(proof["state"])
+                if key not in self.fact_bytes:
+                    self.fact_bytes[key] = canonical(self.facts[key])
+                _need(incoming_state == self.fact_bytes[key])
                 self.state(proof["state"], chain + (key,))
             else:
                 raise RunnerRefused("invalid_manifest")
@@ -314,6 +324,11 @@ class _Custody:
                 matches = [_hash("interface:", key) for key, scope in scopes[adjacency].items()
                     if subjects == {_hash("ospf_sample:", contexts[adjacency] + (scope, sample)) for sample in sample_ids}]
                 _need(len(matches) == 1 and finding["receiving_endpoint"] == matches[0])
+        # Encodings live for this invocation only; reject changed expected objects.
+        for registry_key, encoded_registry in self.registry_bytes.items():
+            _need(canonical(self.registry[registry_key]) == encoded_registry)
+        for fact_key, encoded_fact in self.fact_bytes.items():
+            _need(canonical(self.facts[fact_key]) == encoded_fact)
 
 
 def validate(payload: object) -> None:
