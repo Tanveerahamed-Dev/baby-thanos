@@ -40,9 +40,23 @@ def run(evidence: Path, out: Path, workers: int = 4) -> RunResult:
         if not isinstance(payload, dict):
             raise RunnerRefused("invalid_manifest")
         p2 = cast(dict[str, object], payload)
-        if (p2.get("schema") != "atlas-brain.p2-demo/1"
+        inner_schema = p2.get("schema")
+        if (inner_schema not in ("atlas-brain.p2-demo/1", "atlas-brain.p2-demo/2")
                 or not isinstance(p2.get("findings"), list) or not isinstance(p2.get("endpoints"), list)
                 or not isinstance(p2.get("denominator"), dict)):
+            raise RunnerRefused("invalid_manifest")
+        if inner_schema == "atlas-brain.p2-demo/2":
+            value = p2.get("configuration")
+            if not isinstance(value, dict):
+                raise RunnerRefused("invalid_manifest")
+            configuration = cast(dict[str, object], value)
+            if (configuration.get("basis") != "configured"
+                    or configuration.get("interpretation") != "supplied_statements_only"
+                    or configuration.get("comparison") != "configuration_only_no_cross_basis_inference"
+                    or not isinstance(configuration.get("coverage"), dict)
+                    or not isinstance(configuration.get("denominator"), dict)):
+                raise RunnerRefused("invalid_manifest")
+        elif "configuration" in p2:
             raise RunnerRefused("invalid_manifest")
     evidence_fields, egress_fields = record["evidence"], record["egress"]
     step_receipts = record["steps"]
