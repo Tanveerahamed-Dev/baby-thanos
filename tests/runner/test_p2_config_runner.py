@@ -179,13 +179,15 @@ def test_public_configured_cli_determinism_api_parity_and_decoder_refusals(tmp_p
     malformed.mkdir()
     with monkeypatch.context() as patch:
         patch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""))
-        for fault in ("missing", "nonmapping", "basis", "interpretation", "comparison", "denominator", "coverage", "inner3", "demo1"):
+        for fault in ("missing", "nonmapping", "basis", "interpretation", "comparison", "denominator", "coverage", "inner3", "demo1", "extra_configuration"):
             record = json.loads(outputs[0]["MANIFEST.json"])
             payload = record["p2"]
             if fault == "missing":
                 payload.pop("configuration")
             elif fault == "nonmapping":
                 payload["configuration"] = []
+            elif fault == "extra_configuration":
+                payload["configuration"]["winner"] = "observed"
             elif fault in ("inner3", "demo1"):
                 payload["schema"] = "atlas-brain.p2-demo/" + ("3" if fault == "inner3" else "1")
             else:

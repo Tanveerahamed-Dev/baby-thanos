@@ -50,7 +50,8 @@ def run(evidence: Path, out: Path, workers: int = 4) -> RunResult:
             if not isinstance(value, dict):
                 raise RunnerRefused("invalid_manifest")
             configuration = cast(dict[str, object], value)
-            if (configuration.get("basis") != "configured"
+            if (set(configuration) != {"basis", "interpretation", "comparison", "coverage", "denominator"}
+                    or configuration.get("basis") != "configured"
                     or configuration.get("interpretation") != "supplied_statements_only"
                     or configuration.get("comparison") != "configuration_only_no_cross_basis_inference"
                     or not isinstance(configuration.get("coverage"), dict)
