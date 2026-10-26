@@ -110,7 +110,7 @@ class _Custody:
     def scope(self, value: object) -> tuple[object, ...]:
         point = _row(value, {"node", "port", "process", "router_id", "address", "vrf"})
         node = _identifier(point["node"])
-        _need(node in self.node_keys and type(point["process"]) is int and 1 <= cast(int, point["process"]) <= 65535)
+        _need(node in self.node_keys and type(point["process"]) is int and 1 <= point["process"] <= 65535)
         self.participants.add(self.node_keys[node])
         return (self.node_keys[node], _text(point["port"]), point["process"],
                 _text(point["router_id"]), _text(point["address"]), _text(point["vrf"]))
@@ -120,7 +120,7 @@ class _Custody:
             operation = _text(need["operation"])
             _need(operation in _COMMANDS and need["rendered"] == _COMMANDS[operation] and need["params"] == [])
             _need(need["node"] in (tuple(self.node_keys.values()) if operation in _BASE else tuple(self.participants)))
-            _need(need["after_s"] is None or type(need["after_s"]) is int and cast(int, need["after_s"]) >= 0)
+            _need(need["after_s"] is None or type(need["after_s"]) is int and need["after_s"] >= 0)
             for field in ("resolves", "reruns", "unprintable"):
                 _need(type(need[field]) is list)
                 items = [_text(item) for item in cast(list[object], need[field])]
@@ -195,7 +195,7 @@ class _Custody:
             identifier = _identifier(adjacency["id"])
             value = _row(self.declaration(adjacency["declaration"], "adjacencies", identifier, digest),
                          {"id", "domain", "area", "left", "right"})
-            _need(value["id"] == identifier and type(value["area"]) is int and 0 <= cast(int, value["area"]) <= 4294967295)
+            _need(value["id"] == identifier and type(value["area"]) is int and 0 <= value["area"] <= 4294967295)
             left, right = self.scope(value["left"]), self.scope(value["right"])
             context = (SCHEMA, identifier, _identifier(value["domain"]), value["area"], left, right)
             _need(identifier not in contexts and adjacency["subject"] == _hash("ospf_adjacency:", context))
@@ -215,7 +215,7 @@ class _Custody:
                 _need(time["unit"] == "unix_us" and time["bound"] == "collector_recorded"
                       and re.fullmatch(r"collector:[A-Za-z0-9_.:/-]{1,64}", _text(time["clock"]), re.ASCII) is not None
                       and type(time["earliest"]) is int and type(time["latest"]) is int
-                      and 0 <= cast(int, time["earliest"]) <= cast(int, time["latest"]) <= 9007199254740991)
+                      and 0 <= time["earliest"] <= time["latest"] <= 9007199254740991)
             pairs: set[tuple[str, str]] = set()
             for ref in _rows(value["captures"], {"path", "node", "operation", "sha256"}):
                 pair = _identifier(ref["node"]), _text(ref["operation"])
@@ -233,8 +233,8 @@ class _Custody:
                 self.register(point)
         for family, count in (("nodes", len(nodes)), ("adjacencies", len(adjacencies)), ("samples", len(samples))):
             _need(self.indices.get(family, set()) == set(range(count)))
-        seen: set[str]
-        paths, seen, baseline = ["p2.json", "p3.json"], set(), 0
+        seen: set[str] = set()
+        paths, baseline = ["p2.json", "p3.json"], 0
         baseline_pairs: set[tuple[str, str]] = set()
         for capture in _rows(payload.get("captures"), _SHAPES["capture"]):
             identity = _text(capture["id"])
