@@ -91,7 +91,10 @@ jobs:
           print(outputs[0]["SUMMARY.txt"].decode("ascii"))
           print("P1_DIGESTS " + json.dumps({name: sha256(raw).hexdigest() for name, raw in outputs[0].items()}, sort_keys=True))
           PY
+      - name: Demonstrate declared synthetic P2 mismatch with both ends cited
+        run: uv run --no-sync python -m tools.p2_demo
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
         with:
           name: p0-demo-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
           path: .ci-evidence/p0-demo/
