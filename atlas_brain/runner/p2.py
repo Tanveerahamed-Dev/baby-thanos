@@ -4,7 +4,7 @@ from hashlib import sha256
 from typing import cast
 
 from atlas_brain.evidence.parsekit.rules import ParseResult
-from atlas_brain.evidence.synthetic import OPERATIONS, SyntheticGroup
+from atlas_brain.evidence.synthetic import CONFIG_SCHEMA, OPERATIONS, SyntheticGroup
 from atlas_brain.kernel import states as k
 from atlas_brain.model.catalogue import build_catalogue, catalogue_digest
 from atlas_brain.model.specs import StepId, StepSpec
@@ -85,6 +85,9 @@ def _finding(group: SyntheticGroup, reader: FactReader, row: check.Comparison,
 
 def analyse_group(group: SyntheticGroup) -> tuple[dict[str, object], tuple[str, ...]]:
     """Run every node parser before either estate builder; project through a reader."""
+    if group.schema == CONFIG_SCHEMA:
+        from atlas_brain.runner.p2_config import analyse_group as analyse_config_group
+        return analyse_config_group(group)
     steps = order_steps(STEPS)
     digest = catalogue_digest(build_catalogue(entity_kinds=link.KINDS,
         facts=discovery.FACTS + trunk.FACTS + link.FACTS, relations=link.RELATIONS, steps=steps))
