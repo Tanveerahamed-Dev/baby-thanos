@@ -6,7 +6,6 @@ from atlas_brain.evidence.p3_records import (
     Adjacency,
     Endpoint,
     P3Group,
-    Sample,
     adjacency_subject,
     sample_subject,
 )
@@ -21,6 +20,12 @@ MINIMUM_SEPARATION_US = 120000000
 TIME = (s.CLOCK, s.EARLIEST, s.LATEST)
 DECLARED = (s.ADJACENCY, s.INTERFACE) + TIME
 STATES = ("DOWN", "ATTEMPT", "INIT", "2WAY", "EXSTART", "EXCHANGE", "LOADING", "FULL")
+TYPES: dict[k.FactId, type[object]] = {
+    s.STATE: str, s.ROLE: str, s.NEIGHBOR_ID: str, s.NEIGHBOR_ADDRESS: str,
+    s.ROUTER_ID: str, s.ADDRESS: str, s.NETWORK: str, s.VRF: str,
+    s.CLOCK: str, s.ADJACENCY: str, s.INTERFACE: str,
+    s.PROCESS: int, s.AREA: int, s.EARLIEST: int, s.LATEST: int, s.IGNORE: bool,
+}
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -39,14 +44,13 @@ class Result:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Read:
-    sample: Sample
     point: Endpoint
     subject: k.EntityKey
-    values: tuple[StoredState, ...]
+    values: dict[k.FactId, StoredState]
 
     def get(self, fact: k.FactId) -> StoredState:
-        k.require(fact in s.IDS, "ospf_settle_fact")
-        return self.values[next(index for index, identifier in enumerate(s.IDS) if identifier == fact)]
+        k.require(fact in self.values, "ospf_settle_fact")
+        return self.values[fact]
 
 
 def _valid(state: StoredState, expected: type[object], basis: k.Basis) -> None:
@@ -130,19 +134,18 @@ def build_group(group: P3Group, store: FactStore) -> Result:
         for sample in sorted(group.samples, key=lambda item: item.id):
             for point in (adjacency.left, adjacency.right):
                 subject = sample_subject(adjacency, point, sample)
-                reads.append(_Read(sample=sample, point=point, subject=subject,
-                                  values=tuple(reader.read(fact=fact, subject=subject) for fact in s.IDS)))
+                reads.append(_Read(point=point, subject=subject,
+                                  values={fact: reader.read(fact=fact, subject=subject) for fact in s.IDS}))
         matrix.append((adjacency, peers, tuple(reads)))
     results: list[Fields] = []
-    types = {fact.id: bool if fact.value_type == "boolean" else int if fact.value_type == "integer" else str
-             for fact in s.FACTS}
+    k.require(set(TYPES) == set(s.IDS), "ospf_settle_fact_types")
     for adjacency, peers, rows in matrix:
         for peer in peers:
             _valid(peer, str, k.Basis.DERIVED)
         for row in rows:
-            for fact, state in zip(s.IDS, row.values):
+            for fact, state in row.values.items():
                 basis = k.Basis.DECLARED if fact in DECLARED else k.Basis.CONFIGURED if fact == s.IGNORE else k.Basis.OBSERVED
-                _valid(state, types[fact], basis)
+                _valid(state, TYPES[fact], basis)
             state = row.get(s.STATE)
             k.require(not isinstance(state, k.Known) or state.value in STATES, "ospf_settle_state_value")
             role = row.get(s.ROLE)
@@ -166,6 +169,7 @@ def build_group(group: P3Group, store: FactStore) -> Result:
                   for row in results for fact in s.SETTLE.produces), "ospf_settle_duplicate_write")
     writer = bind_writer(store, step=s.SETTLE)
     for row in results:
-        for fact, value in ((s.CONTEXT, row.context), (s.PERSISTENT, row.persistent), (s.SPAN, row.span)):
-            writer.write(fact=fact, subject=row.subject, value=value)
+        writer.write(fact=s.CONTEXT, subject=row.subject, value=row.context)
+        writer.write(fact=s.PERSISTENT, subject=row.subject, value=row.persistent)
+        writer.write(fact=s.SPAN, subject=row.subject, value=row.span)
     return Result(rows=tuple(results))
