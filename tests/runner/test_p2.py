@@ -23,7 +23,7 @@ IDS = ("l1.link.peer", "l2.discovery.bridge_capable", "l2.discovery.device_id",
        "l2.discovery.remote_port", "l2.vlan_trunk.allowed", "l2.vlan_trunk.native")
 
 
-def members(native=("10", "20"), allowed=("10,30", "10,20"), missing_b=False, remote_b=P):
+def members(native=("10", "20"), allowed=("10,30", "10,20"), missing_b=False, remote_b=P, lldp=False):
     files, captures = {}, []
     for index, node in enumerate(("a", "b")):
         if missing_b and node == "b":
@@ -36,6 +36,10 @@ def members(native=("10", "20"), allowed=("10,30", "10,20"), missing_b=False, re
                    (trunk.OP, "Port Mode Encapsulation Status Native vlan\n" + P
                     + " on 802.1q trunking " + native[index] + "\nPort Vlans allowed on trunk\n"
                     + P + " " + allowed[index] + "\n"))
+        if lldp:
+            outputs = (("iosxe.show_lldp_neighbors_detail",
+                        "Local Intf: " + P + "\nPort id: " + remote + "\nSystem Name: sw-" + peer
+                        + "\nEnabled Capabilities: B\n"), outputs[1])
         for operation, text in outputs:
             path = node + "." + operation + ".txt"
             files[path] = text.encode()
@@ -57,8 +61,11 @@ def leaves(records):
              leaves(item["state"]["evidence"]) if item["kind"] == "fact" else [])]
 
 
-def test_counterexamples_keep_both_ends_exact_leaf_proofs_and_owner_denominator():
-    group = bundle()
+@pytest.mark.parametrize("lldp", (False, True))
+def test_counterexamples_keep_both_ends_exact_leaf_proofs_and_owner_denominator(lldp):
+    group = bundle(lldp=lldp)
+    assert {capture.operation for capture in group.captures} == {
+        "iosxe.show_lldp_neighbors_detail" if lldp else "iosxe.show_cdp_neighbors_detail", trunk.OP}
     payload, summary = p2.analyse_group(group)
     assert payload["schema"] == "atlas-brain.p2-demo/1"
     assert payload["group"]["semantic_group"] == "declared_synthetic"
