@@ -106,7 +106,7 @@ def _persistent(context: k.Known[bool] | k.Unknown, rows: tuple[_Read, ...],
                 needs: tuple[k.EvidenceNeed, ...]) -> k.Known[bool] | k.Unknown:
     if isinstance(context, k.Unknown):
         return timeline.unknown(context.reason, context.detail, proof, needs, context)
-    states = tuple(row.get(s.STATE) for row in rows)
+    states = tuple(value for row in rows for fact, value in row.values.items() if fact == s.STATE)
     known = {state.value for state in states if isinstance(state, k.Known)}
     if len(known) > 1:
         return timeline.unknown(k.UnknownReason.CONFLICTING_EVIDENCE, "sample_states_disagree", proof, needs)
@@ -146,9 +146,9 @@ def build_group(group: P3Group, store: FactStore) -> Result:
             for fact, state in row.values.items():
                 basis = k.Basis.DECLARED if fact in DECLARED else k.Basis.CONFIGURED if fact == s.IGNORE else k.Basis.OBSERVED
                 _valid(state, TYPES[fact], basis)
-            state = row.get(s.STATE)
+            state = next(value for fact, value in row.values.items() if fact == s.STATE)
             k.require(not isinstance(state, k.Known) or state.value in STATES, "ospf_settle_state_value")
-            role = row.get(s.ROLE)
+            role = next(value for fact, value in row.values.items() if fact == s.ROLE)
             k.require(not isinstance(role, k.Known) or role.value in ("-", "DR", "BDR", "DROTHER"), "ospf_settle_role_value")
         proof = (group.base.declaration.evidence + adjacency.declaration.evidence
                  + adjacency.left.node.declaration.evidence + adjacency.right.node.declaration.evidence
