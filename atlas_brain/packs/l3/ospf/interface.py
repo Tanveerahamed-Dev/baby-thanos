@@ -116,7 +116,8 @@ def parse_capture(capture: Capture, exact_ports: tuple[str, ...]) -> Result:
     parsed = run_rules(capture.raw, capture.id, _rules(), _MAPS)
     for line in parsed.lines:
         words = capture.raw[line.span.start:line.span.end].split()
-        if (len(words) > 1 and words[1] == b"is" and _PORT_TOKEN.fullmatch(words[0]) is not None
+        if (len(words) > 1 and words[1] == b"is" and words[0] != b"Interface"
+                and _PORT_TOKEN.fullmatch(words[0]) is not None
                 and words[0].decode("ascii") not in exact_ports):
             raise ValueError("undeclared_local_port")
     groups: dict[str, list[Record]] = {}

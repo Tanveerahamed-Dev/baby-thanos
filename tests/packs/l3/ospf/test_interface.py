@@ -35,8 +35,8 @@ def test_complete_identity_keeps_full_context_and_original_tokens(ending):
         assert raw[field.span.start:field.span.end] == field.raw.encode()
 
 
-@pytest.mark.parametrize("area,value", [(b"0", "0"), (b"0.0.0.1", "1"),
-                                       (b"255.255.255.255", "4294967295"), (b"4294967295", "4294967295")])
+@pytest.mark.parametrize("area,value", [(b"0", "0"), (b"192.0.2.1", "3221225985"),
+                                       (b"192.0.2.255", "3221226239"), (b"4294967295", "4294967295")])
 def test_area_normalization_preserves_raw_spans(area, value):
     raw = BODY.replace(b"Area 0", b"Area " + area)
     field = dict(parser.parse_capture(capture(raw), (P,)).rows[0].fields)["area"]
