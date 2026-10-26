@@ -57,12 +57,12 @@ def _rules() -> tuple[Rule, ...]:
             rules.append(Rule(kind + "_" + state, state, kind + " (?P<name>" + grammar + r")[ \t]*+",
                               "enter_state", "block", "", ("name",)))
         rules.extend((
-            Rule("separator_" + state, state, "!", "enter_state", "global", "", ()),
-            Rule("end_" + state, state, "end", "enter_state", "done", "", ()),
+            Rule("separator_" + state, state, r"(?P<separator>!)", "enter_state", "global", "", ("separator",)),
+            Rule("end_" + state, state, r"(?P<end>end)", "enter_state", "done", "", ("end",)),
         ))
     for state in ("start", "global"):
         for name, pattern, fields in (
-            ("building", r"Building configuration\.\.\.", ()),
+            ("building", r"(?P<building>Building configuration\.\.\.)", ("building",)),
             ("current", r"Current configuration : (?P<size>[0-9]++) bytes", ("size",)),
             ("version", r"version (?P<version>[A-Za-z0-9.()_-]++)", ("version",)),
             ("hostname", r"hostname (?P<hostname>[A-Za-z0-9_.:-]++)", ("hostname",)),
