@@ -609,6 +609,33 @@ def constructor_members(apis):
 
 
 def source_refusals(source: str, sources=None, path="atlas_brain/probe.py") -> set[str]:
+    scoped_modules = {p.removesuffix(".py").replace("/", ".") for p in SCOPED_API}
+    try:
+        index = ImportIndex({path: source, **(sources or {})}, () if path in SCOPED_API else scoped_modules)
+    except ValueError:
+        return {"unresolved-provenance"}
+    return _indexed_refusals(source, path, index)
+
+
+def bulk_source_refusals(sources) -> dict[str, set[str]]:
+    """Check one immutable source snapshot; share no index across invocations."""
+    snapshot = dict(sources)
+    scoped_modules = frozenset(p.removesuffix(".py").replace("/", ".") for p in SCOPED_API)
+    indexes = {}
+    result = {}
+    for path, source in snapshot.items():
+        forbidden = frozenset() if path in SCOPED_API else scoped_modules
+        if forbidden not in indexes:
+            try:
+                indexes[forbidden] = ImportIndex(snapshot, forbidden)
+            except ValueError:
+                indexes[forbidden] = None
+        index = indexes[forbidden]
+        result[path] = {"unresolved-provenance"} if index is None else _indexed_refusals(source, path, index)
+    return result
+
+
+def _indexed_refusals(source, path, index) -> set[str]:
     tree = ast.parse(source)
     apis = (STDLIB_API | SCOPED_API.get(path, set()) | RUNTIME_API.get(path, set())
             | RUNNER_API.get(path, set()) | RUNNER_EVIDENCE_API.get(path, set()))
@@ -616,7 +643,6 @@ def source_refusals(source: str, sources=None, path="atlas_brain/probe.py") -> s
     all_factories = constructor_members(admitted_apis())
     scoped_modules = {p.removesuffix(".py").replace("/", ".") for p in SCOPED_API}
     try:
-        index = ImportIndex({path: source, **(sources or {})}, () if path in SCOPED_API else scoped_modules)
         aliases, exports, declarations = import_bindings(tree, path, index.ignored_arg_classes)
     except ValueError:
         return {"unresolved-provenance"}
@@ -736,8 +762,8 @@ def main() -> int:
                     refuse(path, "machine-data", "invalid-shape")
             except (OSError, ValueError, TypeError):
                 refuse(path, "machine-data", "invalid-data")
-    for path, source in sources.items():
-        for name in sorted(source_refusals(source, sources, path)):
+    for path, refusals in bulk_source_refusals(sources).items():
+        for name in sorted(refusals):
             refuse(path, "import", name)
     try:
         if not dependencies_allowed(tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))):
