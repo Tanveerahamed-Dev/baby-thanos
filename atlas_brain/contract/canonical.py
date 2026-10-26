@@ -1,6 +1,9 @@
 """RFC 8785 bytes for the contract's integer-only I-JSON subset."""
 import json
+import re
 from typing import cast
+
+SAFE = re.compile(r"[\x20-\x21\x23-\x5b\x5d-\x7e]*")
 
 
 def canonical(value: object) -> bytes:
@@ -10,8 +13,12 @@ def canonical(value: object) -> bytes:
 def _encode(value: object) -> str:
     if type(value) not in (type(None), bool, int, str, list, tuple, dict):
         raise TypeError("non_json_type")
-    if isinstance(value, (type(None), bool, str)):
+    if isinstance(value, str):
+        if SAFE.fullmatch(value):
+            return f'"{value}"'
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, (type(None), bool)):
+        return json.dumps(value)
     if isinstance(value, int):
         if value not in range(-9007199254740991, 9007199254740992):
             raise ValueError("integer_out_of_range")
