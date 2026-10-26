@@ -6,7 +6,13 @@ from typing import cast
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence.admission import record, strict_json
 from atlas_brain.evidence.capture import Capture, Channel
-from atlas_brain.evidence.synthetic import OPERATIONS, SCHEMA, SyntheticGroup, endpoint
+from atlas_brain.evidence.synthetic import (
+    CONFIG_SCHEMA,
+    SCHEMA,
+    SyntheticGroup,
+    endpoint,
+    operation_map,
+)
 from atlas_brain.kernel import states as k
 from atlas_brain.model.store import FactReader, StoredState
 from atlas_brain.runner.records import RunnerRefused
@@ -17,8 +23,9 @@ def _need(condition: bool, code: str) -> None:
         raise RunnerRefused("p2_evidence_" + code)
 
 
-def _operation(value: str | None) -> str:
-    for operation, rendered in OPERATIONS.items():
+def _operation(value: str | None, schema: str = SCHEMA) -> str:
+    _need(schema in (SCHEMA, CONFIG_SCHEMA), "registry_group")
+    for operation, rendered in operation_map(schema).items():
         if value in (operation, rendered):
             return operation
     raise RunnerRefused("p2_evidence_operation")
@@ -29,7 +36,8 @@ def _manifest(group: SyntheticGroup) -> dict[str, object]:
         manifest = record(strict_json(group.raw), ("schema", "semantic_group", "group", "nodes", "captures"))
     except ValueError as error:
         raise RunnerRefused("p2_evidence_registry_json") from error
-    _need(manifest["schema"] == SCHEMA and manifest["semantic_group"] == "declared_synthetic"
+    _need(group.schema in (SCHEMA, CONFIG_SCHEMA) and manifest["schema"] == group.schema
+          and manifest["semantic_group"] == "declared_synthetic"
           and manifest["group"] == group.id, "registry_group")
     return manifest
 
@@ -42,8 +50,8 @@ def _capture(group: SyntheticGroup, ref: k.EvidenceRef) -> dict[str, object]:
     capture: Capture = matches[0]
     nodes = tuple(node for node in group.nodes if node.key == capture.source)
     _need(len(nodes) == 1 and capture.channel is Channel.CLI, "capture_source")
-    operation = _operation(capture.operation)
-    _need(capture.rendered == OPERATIONS[operation], "operation")
+    operation = _operation(capture.operation, group.schema)
+    _need(capture.rendered == operation_map(group.schema)[operation], "operation")
     rows = _manifest(group)["captures"]
     _need(type(rows) is list, "capture_registry")
     paths: list[str] = []
@@ -53,7 +61,7 @@ def _capture(group: SyntheticGroup, ref: k.EvidenceRef) -> dict[str, object]:
         except ValueError as error:
             raise RunnerRefused("p2_evidence_capture_registry") from error
         _need(all(type(value) is str for value in row.values()), "capture_registry")
-        identity = sha256(canonical((SCHEMA, group.id, sha256(group.raw).hexdigest(), row["path"],
+        identity = sha256(canonical((group.schema, group.id, sha256(group.raw).hexdigest(), row["path"],
                                     row["node"], row["operation"], row["sha256"]))).hexdigest()
         if (row["node"] == nodes[0].id and row["operation"] == operation
                 and row["sha256"] == capture.bytes_sha256 and capture.id == "cap:" + identity):
@@ -61,7 +69,7 @@ def _capture(group: SyntheticGroup, ref: k.EvidenceRef) -> dict[str, object]:
     _need(len(paths) == 1, "capture_registry")
     result: dict[str, object] = {
         "kind": "capture", "capture": str(capture.id), "source": str(capture.source), "path": paths[0],
-        "operation": operation, "rendered": OPERATIONS[operation], "role": str(ref.role),
+        "operation": operation, "rendered": operation_map(group.schema)[operation], "role": str(ref.role),
         "sha256": ref.excerpt_sha256, "capture_sha256": capture.bytes_sha256,
         "integrity": str(capture.integrity), "read_scope": str(capture.read_scope), "view": str(capture.view),
     }
@@ -128,10 +136,11 @@ def _value(value: object, depth: int = 0) -> object:
 
 
 def _next(group: SyntheticGroup, need: k.EvidenceNeed) -> dict[str, object]:
+    _manifest(group)
     _need(need.node in tuple(node.key for node in group.nodes), "need_node")
     _need(need.params == (), "need_params")
-    operation = _operation(need.operation)
-    return {"node": str(need.node), "operation": operation, "rendered": OPERATIONS[operation],
+    operation = _operation(need.operation, group.schema)
+    return {"node": str(need.node), "operation": operation, "rendered": operation_map(group.schema)[operation],
             "params": [], "resolves": list(need.resolves), "reruns": list(need.reruns),
             "after_s": need.after_s, "unprintable": list(need.unprintable)}
 
