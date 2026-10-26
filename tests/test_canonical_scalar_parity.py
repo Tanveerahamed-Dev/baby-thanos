@@ -1,4 +1,4 @@
-"""Byte and refusal parity for the admitted scalar json.dumps fast path."""
+"""Byte and refusal parity for the admitted unescaped ASCII fast path."""
 import json
 from copy import deepcopy
 
@@ -22,9 +22,13 @@ def fresh_bytes(value):
     ).encode("utf-8")
 
 
-def test_ascii_scalars_keep_old_bytes_and_use_existing_default_dumps(monkeypatch):
+def test_ascii_scalars_keep_old_bytes_and_route_only_escaped_text(monkeypatch):
     values = [None, True, False, "", *(chr(code) for code in range(127))]
     values.append("".join(chr(code) for code in range(127)))
+    values.extend([
+        "prefix with spaces/suffix![]{}", "0123456789:,.?<>|=+-_",
+        "".join(chr(code) for code in range(32, 127) if code not in (34, 92)),
+    ])
     expected = [fresh_bytes(value) for value in values]
     original = json.dumps
     calls = []
@@ -35,7 +39,14 @@ def test_ascii_scalars_keep_old_bytes_and_use_existing_default_dumps(monkeypatch
 
     monkeypatch.setattr(json, "dumps", observe)
     assert [canonical(value) for value in values] == expected
-    assert calls == [(value, {}) for value in values]
+    escaped = [
+        *(chr(code) for code in range(32)), '"', "\\",
+        "".join(chr(code) for code in range(127)),
+    ]
+    assert calls == [(None, {}), (True, {}), (False, {})] + [
+        (value, {"ensure_ascii": False, "separators": (",", ":")})
+        for value in escaped
+    ]
 
 
 def test_del_and_unicode_keep_the_original_explicit_dumps_options(monkeypatch):
@@ -60,6 +71,41 @@ def test_del_and_unicode_keep_the_original_explicit_dumps_options(monkeypatch):
     ]
     assert canonical("\x7f") == b'"\x7f"'
     assert original("\x7f").encode("utf-8") != b'"\x7f"'
+
+
+def test_unsafe_characters_anywhere_cannot_escape_the_original_encoder(monkeypatch):
+    special = [
+        *(chr(code) for code in range(32)), '"', "\\", "\x7f", "\x80",
+        "\u00e9", "\U0001f600",
+    ]
+    values = [
+        prefix + character + suffix
+        for character in special
+        for prefix, suffix in [("", "suffix"), ("prefix", ""), ("prefix", "suffix")]
+    ]
+    values.extend([
+        'safe","injected":true,"tail":"safe', r"prefix\nsuffix",
+        'prefix\\"suffix', "safe\r\nsuffix", "safe\tend",
+    ])
+    expected = [fresh_bytes(value) for value in values]
+    nested = {value: ("safe", value) for value in values}
+    expected_nested = fresh_bytes(nested)
+    original = json.dumps
+    calls = []
+
+    def observe(value, **kwargs):
+        calls.append((value, kwargs))
+        return original(value, **kwargs)
+
+    monkeypatch.setattr(json, "dumps", observe)
+    actual = [canonical(value) for value in values]
+    assert actual == expected
+    assert [json.loads(encoded) for encoded in actual] == values
+    assert calls == [
+        (value, {"ensure_ascii": False, "separators": (",", ":")})
+        for value in values
+    ]
+    assert canonical(nested) == expected_nested
 
 
 def test_nested_keys_and_values_match_whole_value_fresh_encoding():

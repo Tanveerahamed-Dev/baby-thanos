@@ -3,7 +3,7 @@ import json
 import re
 from typing import cast
 
-ASCII_SCALAR = re.compile(r"[\x00-\x7e]*")
+SAFE = re.compile(r"[\x20-\x21\x23-\x5b\x5d-\x7e]*")
 
 
 def canonical(value: object) -> bytes:
@@ -13,9 +13,11 @@ def canonical(value: object) -> bytes:
 def _encode(value: object) -> str:
     if type(value) not in (type(None), bool, int, str, list, tuple, dict):
         raise TypeError("non_json_type")
-    if isinstance(value, (type(None), bool, str)):
-        if isinstance(value, str) and not ASCII_SCALAR.fullmatch(value):
-            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, str):
+        if SAFE.fullmatch(value):
+            return f'"{value}"'
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, (type(None), bool)):
         return json.dumps(value)
     if isinstance(value, int):
         if value not in range(-9007199254740991, 9007199254740992):
