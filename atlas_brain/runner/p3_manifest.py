@@ -182,11 +182,13 @@ def validate(payload: object, evidence: object) -> None:
         allowed = tuple(base_points[pair] for pair in expected_points[identifier])
         _need(receiver in allowed if len(hops) >= 3 else receiver is None)
         if len(hops) >= 4:
-            controls = [ref for ref in _rows(states[3]["evidence"])
-                        if ref.get("kind") == "fact" and ref.get("fact") == p3.s.IGNORE]
+            controls: list[dict[str, object]] = []
+            for control_ref in _rows(states[3]["evidence"]):
+                if control_ref.get("kind") == "fact" and control_ref.get("fact") == p3.s.IGNORE:
+                    controls.append(control_ref)
             expected_controls = {point["subject"] for sample in samples for point in _rows(sample["endpoints"])
                                  if point["adjacency"] == identifier and base_points[_pair(point)] == receiver}
-            _need(len(controls) == len(samples) and {ref["subject"] for ref in controls} == expected_controls)
+            _need(len(controls) == len(samples) and {control["subject"] for control in controls} == expected_controls)
     captures = _rows(row["captures"])
     metadata = _mapping(evidence, {"digest", "files", "captures", "registry_sha256", "base_registry_sha256"})
     _need(type(metadata["files"]) is int and type(metadata["captures"]) is int

@@ -13,12 +13,10 @@ from tools.p3_cases import members
 
 def record(case="supported", supplied=None):
     payload, _ = p3.analyse_group(admit_members(members(canonical, case) if supplied is None else supplied))
-    expected = {"captures": sorted(({"capture": capture["id"], "sha256": capture["sha256"]}
-                 for capture in payload["captures"]), key=lambda entry: entry["capture"]),
+    expected = {"captures": sorted(({"capture": capture["id"], "sha256": capture["sha256"]} for capture in payload["captures"]), key=lambda entry: entry["capture"]),
                 "registry_sha256": payload["registry_sha256"], "base_registry_sha256": payload["base_registry_sha256"]}
     metadata = {key: value for key, value in expected.items() if key != "captures"}
-    metadata.update(digest=sha256(canonical(expected)).hexdigest(), captures=len(payload["captures"]),
-                    files=len(payload["captures"]) + 2)
+    metadata.update(digest=sha256(canonical(expected)).hexdigest(), captures=len(payload["captures"]), files=len(payload["captures"]) + 2)
     return payload, metadata
 
 
