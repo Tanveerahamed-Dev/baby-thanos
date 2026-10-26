@@ -109,7 +109,8 @@ def build_group(group: P3Group, store: FactStore) -> Result:
         context_refs = (k.FactRef(fact=specs.CONTEXT, subject=subject),)
         context_hop = (_gap(context, context_refs, needs) if isinstance(context, k.Unknown) else
                        k.Known(value=True, basis=k.Basis.DERIVED, evidence=context_refs, raw=None))
-        hops = [Hop(id="peer_context", state=context_hop)]
+        hops: list[Hop] = []
+        hops.append(Hop(id="peer_context", state=context_hop))
         if isinstance(context, k.Unknown):
             rows.append(_finding(adjacency, hops, None, needs))
             continue
