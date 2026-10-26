@@ -95,6 +95,10 @@ jobs:
         run: uv run --no-sync python -m tools.p2_demo
       - name: Demonstrate configured P2 intent with direct and inherited statements
         run: uv run --no-sync python -m tools.p2_config_demo
+      - name: Demonstrate P3 conditional chain and required unknown/countercondition cases
+        env:
+          P3_REVIEWED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: uv run --no-sync python -m tools.p3_demo
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
