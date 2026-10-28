@@ -173,8 +173,9 @@ def parse_capture(capture: Capture, exact_groups: tuple[str, ...], exact_ports: 
                 spans_by_group[current].append(record.span)
                 all_ports.extend(member.port.raw for member in members)
     conflict = conflict or len(set(all_ports)) != len(all_ports)
-    invalid = (invalid or len(counts) != 2 or counts[0] != len(fields_by_group) or counts[1] is None
-               or (counts[0] == 0) != (counts[1] == 0)
+    # Initial allowlist: one reported aggregator per group row, not a vendor invariant.
+    invalid = (invalid or len(counts) != 2 or counts[0] != len(fields_by_group)
+               or counts[1] != len(fields_by_group)
                or sum(record.rule_id == "separator" for record in parsed.records) != 1)
     reason = (k.UnknownReason.CAPTURE_ERROR if capture.error is not None or capture.integrity is k.IntegrityState.ERROR else
               k.UnknownReason.CAPTURE_TRUNCATED if capture.integrity in (

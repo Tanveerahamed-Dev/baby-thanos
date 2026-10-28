@@ -168,3 +168,15 @@ def test_invalid_declared_populations_refuse(groups, ports):
 def test_capture_command_identity_is_exact(change):
     with pytest.raises(ValueError, match="^unsupported_etherchannel_summary$"):
         parser.parse_capture(replace(capture(), **change), ("1",), PORTS)
+
+
+@pytest.mark.parametrize("raw", [
+    BODY.replace(b"aggregators: 1", b"aggregators: 2"),
+    HEADER.replace(b"in use: 1", b"in use: 2") + ROW + b"2 Po2(SD) -\n",
+])
+def test_count_relation_outside_allowlist_is_partial_not_subject_absence(raw):
+    result = parse(raw, ("2", "1"))
+    assert result.reason is k.UnknownReason.PARSE_PARTIAL
+    assert result.parse.quality == "partial"
+    assert [row.group for row in result.rows] == ["1", "2"]
+    assert all(row.reason is result.reason for row in result.rows)
