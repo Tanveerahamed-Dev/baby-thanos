@@ -135,7 +135,13 @@ def parse_capture(capture: Capture, exact_groups: tuple[str, ...], exact_ports: 
     opening = closing = ""
     invalid = conflict = False
     all_ports: list[str] = []
-    for record in parsed.records:
+    records_by_start = {record.span.start: record for record in parsed.records}
+    for line in parsed.lines:
+        if line.status == "unrecognised":
+            current = None
+        if line.span.start not in records_by_start:
+            continue
+        record = records_by_start[line.span.start]
         fields = dict(record.fields)
         if record.rule_id.startswith("legend_"):
             text = " ".join(fields["legend"].raw.split())
