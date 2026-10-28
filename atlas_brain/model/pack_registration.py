@@ -11,7 +11,15 @@ from hashlib import sha256
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.kernel.states import PackId, require
 from atlas_brain.model.catalogue import build_catalogue, catalogue_digest
-from atlas_brain.model.specs import PACK, STEP, EntityKindSpec, FactSpec, RelationSpec, StepId, StepSpec
+from atlas_brain.model.specs import (
+    PACK,
+    STEP,
+    EntityKindSpec,
+    FactSpec,
+    RelationSpec,
+    StepId,
+    StepSpec,
+)
 from atlas_brain.model.steps import order_steps
 
 REGISTRATION_SCHEMA = 'atlas-brain.pack-registration/1'

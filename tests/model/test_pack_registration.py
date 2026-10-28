@@ -8,8 +8,18 @@ import pytest
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.kernel.states import FactId, PackId
 from atlas_brain.model.catalogue import build_catalogue, catalogue_digest
-from atlas_brain.model.pack_registration import OperationBinding, PackDeclaration, compile_packs
-from atlas_brain.model.specs import EntityKindSpec, FactSpec, RelationSpec, StepId, StepSpec
+from atlas_brain.model.pack_registration import (
+    OperationBinding,
+    PackDeclaration,
+    compile_packs,
+)
+from atlas_brain.model.specs import (
+    EntityKindSpec,
+    FactSpec,
+    RelationSpec,
+    StepId,
+    StepSpec,
+)
 
 SOURCE, CONSUMER = PackId('test.source'), PackId('test.consumer')
 
