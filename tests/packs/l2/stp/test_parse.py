@@ -193,3 +193,31 @@ def test_zero_bytes_remain_empty_unregistered():
     result = parser.parse_capture(capture(b""), PORT, (1,))
     assert result.reason is k.UnknownReason.EMPTY_UNREGISTERED
     assert result.rows[0].reason is result.reason and result.parse.quality == "partial"
+
+
+@pytest.mark.parametrize("ending", [b"\n", b"\r\n"])
+@pytest.mark.parametrize("mode", ["quarantine", "recover", "blank"])
+def test_guard_observations_require_uninterrupted_vlan_context(ending, mode):
+    second = HEADER.replace(b"VLAN0001", b"VLAN0002")
+    bad = second.replace(b"\n", b"!\n")
+    guard = b"Root guard is enabled on the port\n"
+    raw = HEADER + b"Port path cost 20000, Port priority 128, Port Identifier 128.1.\n"
+    raw += (b"\n" if mode == "blank" else bad) + guard
+    if mode == "recover":
+        raw += second + guard
+    raw = raw.replace(b"\n", ending)
+    result = parser.parse_capture(capture(raw), PORT, (1,) if mode == "blank" else (2, 1))
+    expected = [("enabled",)] if mode == "blank" else [(), ("enabled",) if mode == "recover" else ()]
+    assert [tuple(token.raw for name, token in row.fields if name == "root_guard")
+            for row in result.rows] == expected
+    assert dict(result.rows[0].fields)["path_cost"].raw == "20000"
+    assert result.reason is (None if mode == "blank" else k.UnknownReason.PARSE_PARTIAL)
+    assert all(row.reason is result.reason for row in result.rows)
+    assert result.parse.quality == ("complete" if mode == "blank" else "partial")
+    assert b"".join(raw[line.span.start:line.span.end] for line in result.parse.lines) == raw
+    assert [raw[line.span.start:line.span.end] for line in result.parse.lines
+            if line.status == "unrecognised"] == ([] if mode == "blank" else [bad.replace(b"\n", ending)])
+    for row in result.rows:
+        for _, token in row.fields:
+            assert raw[token.span.start:token.span.end] == token.raw.encode()
+            assert any(span.start <= token.span.start < token.span.end <= span.end for span in row.spans)
