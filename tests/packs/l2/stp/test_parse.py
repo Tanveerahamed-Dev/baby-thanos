@@ -174,3 +174,22 @@ def test_port_path_cost_line_is_not_a_foreign_interface_header():
     assert result.reason is result.rows[0].reason is None
     fields = dict(result.rows[0].fields)
     assert fields["port"].raw == PORT and fields["path_cost"].raw == "20000"
+
+
+@pytest.mark.parametrize("raw", [
+    b"\n", b" \t\r\n", parser.command(PORT).encode(), parser.command(PORT).encode() + b"\n",
+    b"sw#" + parser.command(PORT).encode() + b"\n",
+    b"sw#" + parser.command(PORT).encode() + b"\n \t\n",
+])
+def test_no_response_cannot_establish_vlan_absence(raw):
+    result = parser.parse_capture(capture(raw), PORT, (2, 1))
+    assert result.reason is k.UnknownReason.PARSE_PARTIAL
+    assert result.parse.quality == "partial"
+    assert [row.vlan for row in result.rows] == [1, 2]
+    assert all(row.reason is result.reason and row.fields == () for row in result.rows)
+
+
+def test_zero_bytes_remain_empty_unregistered():
+    result = parser.parse_capture(capture(b""), PORT, (1,))
+    assert result.reason is k.UnknownReason.EMPTY_UNREGISTERED
+    assert result.rows[0].reason is result.reason and result.parse.quality == "partial"

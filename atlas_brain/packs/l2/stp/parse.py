@@ -161,7 +161,7 @@ def parse_capture(capture: Capture, exact_port: str, expected_vlans: tuple[int, 
               k.UnknownReason.CAPTURE_TRUNCATED if capture.integrity in (k.IntegrityState.TRUNCATED, k.IntegrityState.PAGING_ARTIFACTS) else
               k.UnknownReason.EMPTY_UNREGISTERED if not capture.raw or capture.integrity is k.IntegrityState.EMPTY else
               k.UnknownReason.PARSE_UNSUPPORTED_VARIANT if unsupported or capture.integrity is not k.IntegrityState.COMPLETE else
-              k.UnknownReason.PARSE_PARTIAL if parsed.quality == "partial" or invalid
+              k.UnknownReason.PARSE_PARTIAL if not groups or parsed.quality == "partial" or invalid
               or opening and closing and opening != closing else None)
     if reason is not None:
         parsed = ParseResult(parsed.records, parsed.lines, parsed.tokens, "partial")
