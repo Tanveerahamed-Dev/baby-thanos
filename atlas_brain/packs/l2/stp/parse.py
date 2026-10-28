@@ -127,7 +127,8 @@ def parse_capture(capture: Capture, exact_port: str, expected_vlans: tuple[int, 
     unsupported = False
     for line in parsed.lines:
         words = capture.raw[line.span.start:line.span.end].split()
-        if len(words) > 4 and words[0] == b"Port":
+        if (len(words) > 4 and words[0] == b"Port" and words[3] == b"of"
+                and words[2].startswith(b"(") and words[2].endswith(b")")):
             port = words[2].removeprefix(b"(").removesuffix(b")")
             if PORT_TOKEN.fullmatch(port) is not None and port.decode("ascii") != exact_port:
                 raise ValueError("undeclared_stp_port")

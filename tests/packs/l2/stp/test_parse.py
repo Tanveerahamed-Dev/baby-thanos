@@ -166,3 +166,11 @@ def test_root_port_designated_bridge_is_not_inferred_as_local_bridge():
     assert fields["designated_bridge_mac"].raw == "0200.0000.0002"
     assert fields["designated_bridge_priority"].raw == "32769"
     assert not {"bridge_mac", "bridge_priority", "local_bridge_mac", "local_bridge_priority"} & fields.keys()
+
+
+def test_port_path_cost_line_is_not_a_foreign_interface_header():
+    raw = HEADER + b"   Port path cost 20000, Port priority 128, Port Identifier 128.1.\n"
+    result = parser.parse_capture(capture(raw), PORT, (1,))
+    assert result.reason is result.rows[0].reason is None
+    fields = dict(result.rows[0].fields)
+    assert fields["port"].raw == PORT and fields["path_cost"].raw == "20000"
