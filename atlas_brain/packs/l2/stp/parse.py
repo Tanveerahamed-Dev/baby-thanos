@@ -4,7 +4,14 @@ from enum import StrEnum
 
 from atlas_brain.evidence.capture import Capture
 from atlas_brain.evidence.parsekit.patterns import compile_pattern
-from atlas_brain.evidence.parsekit.rules import Captured, ParseResult, Record, Rule, TokenMap, run_rules
+from atlas_brain.evidence.parsekit.rules import (
+    Captured,
+    ParseResult,
+    Record,
+    Rule,
+    TokenMap,
+    run_rules,
+)
 from atlas_brain.kernel import states as k
 
 OP, VARIANT_SUPPORT = "iosxe.show_spanning_tree_interface_detail", "allowlisted"
@@ -89,8 +96,8 @@ def _rules(rendered: str) -> tuple[Rule, ...]:
          ("path_cost", "port_priority", "port_identifier")),
         ("root", r"Designated root has priority (?P<root_priority>[0-9]++), address (?P<root_mac>" + MAC + ")",
          ("root_priority", "root_mac")),
-        ("bridge", r"Designated bridge has priority (?P<bridge_priority>[0-9]++), address (?P<bridge_mac>" + MAC + ")",
-         ("bridge_priority", "bridge_mac")),
+        ("designated_bridge", r"Designated bridge has priority (?P<designated_bridge_priority>[0-9]++), address (?P<designated_bridge_mac>" + MAC + ")",
+         ("designated_bridge_priority", "designated_bridge_mac")),
         ("designated", r"Designated port id is (?P<designated_port>[0-9]++\.[0-9]++), designated path cost (?P<designated_cost>[0-9]++)",
          ("designated_port", "designated_cost")),
         ("timers", r"Timers: message age (?P<age>[0-9]++), forward delay (?P<delay>[0-9]++), hold (?P<hold>[0-9]++)",
@@ -126,9 +133,9 @@ def parse_capture(capture: Capture, exact_port: str, expected_vlans: tuple[int, 
                 raise ValueError("undeclared_stp_port")
             unsupported = unsupported or words[4].startswith(b"MST")
             token = words[4].removeprefix(b"VLAN")
-            if words[4].startswith(b"VLAN") and token.isdigit() and len(token) <= 4:
-                if int(token) not in expected_vlans:
-                    raise ValueError("undeclared_stp_vlan")
+            if (words[4].startswith(b"VLAN") and token.isdigit() and len(token) <= 4
+                    and int(token) not in expected_vlans):
+                raise ValueError("undeclared_stp_vlan")
     groups: dict[int, list[Record]] = {}
     current: int | None = None
     opening = closing = ""
@@ -144,7 +151,7 @@ def parse_capture(capture: Capture, exact_port: str, expected_vlans: tuple[int, 
             closing = fields["prompt"].raw
         elif current is not None and not record.rule_id.startswith("blank_"):
             groups[current].append(record)
-        for name in ("root_priority", "bridge_priority"):
+        for name in ("root_priority", "designated_bridge_priority"):
             if name in fields:
                 token = fields[name].raw
                 invalid = invalid or len(token) > 5 or (len(token) <= 5 and

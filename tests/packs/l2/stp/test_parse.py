@@ -44,7 +44,7 @@ def test_distinct_observations_have_exact_original_spans_and_closed_tokens(endin
     assert missing.reason is k.UnknownReason.SUBJECT_ABSENT_FROM_CAPTURE
     fields = dict(first.fields)
     assert fields["root_mac"].raw == "0200.0000.0001"
-    assert fields["bridge_mac"].raw == "0200.0000.0002"
+    assert fields["designated_bridge_mac"].raw == "0200.0000.0002"
     assert fields["role"].value is parser.Role.DESIGNATED
     assert fields["state"].value is parser.State.FORWARDING
     assert fields["root_guard"].value is fields["bpdu_guard"].value is parser.Switch.ENABLED
@@ -155,3 +155,14 @@ def test_two_vlans_have_separate_observations_independent_of_declared_order():
     assert [row.vlan for row in result.rows] == [1, 2]
     assert [dict(row.fields)["root_mac"].raw for row in result.rows] == ["0200.0000.0001", "0200.0000.0003"]
     assert all(row.reason is None for row in result.rows)
+
+
+def test_root_port_designated_bridge_is_not_inferred_as_local_bridge():
+    raw = BODY.replace(b"is designated forwarding", b"is root forwarding")
+    row, = parser.parse_capture(capture(raw), PORT, (1,)).rows
+    fields = dict(row.fields)
+    assert row.reason is None and fields["role"].value is parser.Role.ROOT
+    assert fields["root_mac"].raw == "0200.0000.0001"
+    assert fields["designated_bridge_mac"].raw == "0200.0000.0002"
+    assert fields["designated_bridge_priority"].raw == "32769"
+    assert not {"bridge_mac", "bridge_priority", "local_bridge_mac", "local_bridge_priority"} & fields.keys()
