@@ -180,3 +180,21 @@ def test_count_relation_outside_allowlist_is_partial_not_subject_absence(raw):
     assert result.parse.quality == "partial"
     assert [row.group for row in result.rows] == ["1", "2"]
     assert all(row.reason is result.reason for row in result.rows)
+
+
+@pytest.mark.parametrize("broken,recover", [(True, False), (True, True), (False, False)])
+def test_wrapped_members_require_an_uninterrupted_recognized_group(broken, recover):
+    bad = b"2 Po2(SU) LACP Gi1/0/4(P)!\n" if broken else b"\n"
+    raw = (HEADER.replace(b": 1", b": 2") if broken else HEADER) + ROW + bad + b"   Gi1/0/3(D)\n"
+    if recover:
+        raw += b"2 Po2(SD) -\n   Gi1/0/4(P)\n"
+    result = parse(raw, ("1", "2") if broken else ("1",))
+    assert result.reason is (k.UnknownReason.PARSE_PARTIAL if broken else None)
+    assert result.parse.quality == ("partial" if broken else "complete")
+    assert all(row.reason is result.reason for row in result.rows)
+    expected = [list(PORTS[:2]), [PORTS[3]] if recover else []] if broken else [list(PORTS[:3])]
+    assert [[member.port.raw for member in row.members] for row in result.rows] == expected
+    assert result.missing_ports == ((PORTS[2:3] if recover else PORTS[2:]) if broken else PORTS[3:])
+    assert b"".join(raw[line.span.start:line.span.end] for line in result.parse.lines) == raw
+    assert [raw[line.span.start:line.span.end] for line in result.parse.lines
+            if line.status == "unrecognised"] == ([bad] if broken else [])
