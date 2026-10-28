@@ -1,12 +1,14 @@
 # ADR-0023: P4 evidence and pack boundaries
 
-Status: proposed
+Status: accepted (design boundaries only)
 
 Date: 2026-10-28
 
 P4 implements issue #7: STP root/guards, EtherChannel membership and HSRP/VRRP
 groups on a bounded synthetic demo estate. The owner authorized this phase
-after P3 completion. All P4 PRs remain unmerged. P5/release work is excluded.
+after P3 completion. The delegated Lead accepts these design boundaries.
+At acceptance, the P4 PRs are unmerged; merge requires separate owner
+authorization. This ADR does not certify implementation. P5/release work is excluded.
 This decision does not amend accepted P0-P3 semantics or output bytes.
 
 ## Admission and ownership
