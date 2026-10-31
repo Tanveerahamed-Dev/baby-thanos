@@ -141,7 +141,13 @@ def parse_capture(capture: Capture, exact_port: str, expected_vlans: tuple[int, 
     current: int | None = None
     opening = closing = ""
     invalid = False
-    for record in parsed.records:
+    records_by_start = {record.span.start: record for record in parsed.records}
+    for line in parsed.lines:
+        if line.status == "unrecognised":
+            current = None
+        if line.span.start not in records_by_start:
+            continue
+        record = records_by_start[line.span.start]
         fields = dict(record.fields)
         if record.rule_id.startswith("header_"):
             current = int(fields["vlan"].raw)
