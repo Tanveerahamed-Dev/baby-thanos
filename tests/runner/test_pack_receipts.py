@@ -64,9 +64,9 @@ def scenario(names=("alpha", "beta")):
 @pytest.mark.parametrize("reverse_receipts", [False, True])
 def test_exact_bijection_is_sorted_without_replacing_payloads(reverse_packs, reverse_requests, reverse_receipts):
     packs, requests, receipts = scenario()
-    actual = validate_receipts(packs[::-1] if reverse_packs else packs,
-                               requests[::-1] if reverse_requests else requests,
-                               receipts[::-1] if reverse_receipts else receipts)
+    actual = validate_receipts(tuple(reversed(packs)) if reverse_packs else packs,
+                               tuple(reversed(requests)) if reverse_requests else requests,
+                               tuple(reversed(receipts)) if reverse_receipts else receipts)
     assert actual == receipts
     assert all(result is original and result.parse is original.parse for result, original in zip(actual, receipts))
     copied = tuple(replace(item, capture=replace(item.capture)) for item in receipts)
@@ -124,7 +124,7 @@ def test_distinct_receipt_faults_refuse_in_capture_id_order(reverse):
     broken = (replace(receipts[0], owner=receipts[1].owner),
               replace(receipts[1], context="wrong-context"))
     if reverse:
-        packs, requests, broken = packs[::-1], requests[::-1], broken[::-1]
+        packs, requests, broken = tuple(reversed(packs)), tuple(reversed(requests)), tuple(reversed(broken))
     with pytest.raises(ValueError, match="^pack_receipts_owner_mismatch$"):
         validate_receipts(packs, requests, broken)
 
@@ -281,3 +281,17 @@ def test_request_constructor_and_both_records_are_closed_and_frozen():
     for item in (requests[0], receipts[0]):
         with pytest.raises(FrozenInstanceError):
             item.context = "changed"
+
+
+@pytest.mark.parametrize("offset", [False, 0.0], ids=["boolean", "float"])
+def test_equal_offset_values_with_wrong_types_cannot_bypass_custody(offset):
+    packs, requests, receipts = scenario()
+    original = receipts[0].capture
+    line = replace(original.lines[0], offsets=(offset,) + original.lines[0].offsets[1:])
+    forged = replace(original, lines=(line,))
+    assert forged == original
+    assert original.lines[0].raw_span(0, 1) == k.ByteSpan(start=0, end=1)
+    with pytest.raises(ValueError, match="^invalid_span$"):
+        line.raw_span(0, 1)
+    with pytest.raises(ValueError, match="^pack_receipts_capture_lines$"):
+        validate_receipts(packs, requests, (replace(receipts[0], capture=forged), receipts[1]))
