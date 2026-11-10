@@ -41,7 +41,7 @@ class Parser[T]:
 
 def _checked_parser[T](value: Parser[T] | None) -> Parser[T]:
     if not isinstance(value, Parser):
-        raise ValueError('pack_runtime_parser')
+        raise TypeError('pack_runtime_parser')
     return value
 
 

@@ -145,7 +145,8 @@ def test_late_bad_request_cannot_follow_an_earlier_parser_call(plant, code):
 ])
 def test_closed_shapes_refuse_before_execution(plant, code):
     packs, handlers, requests, trace = setup_plan()
-    with pytest.raises(ValueError, match="^" + code + "$"):
+    error = TypeError if code == "pack_runtime_parser" else ValueError
+    with pytest.raises(error, match="^" + code + "$"):
         handlers, requests = plant(handlers, requests)
         execute_parsers(packs, handlers, requests)
     assert trace == []
