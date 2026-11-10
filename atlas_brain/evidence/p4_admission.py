@@ -158,7 +158,7 @@ def admit_folder(root: Path, budgets: Budgets, *, declarations: tuple[PackDeclar
         identity = canonical((SCHEMA, registry_digest, base_digest, context, target_id, path,
                               digest, compiled.registration_sha256))
         capture_rows[path] = (target_id, digest, k.CaptureId("cap:" + sha256(identity).hexdigest()))
-    _need(len({capture_id for _, _, capture_id in capture_rows.values()}) == len(capture_rows), "duplicate_capture_id")
+    _need(len({capture_rows[path][2] for path in capture_rows}) == len(capture_rows), "duplicate_capture_id")
     _need(set(members) == claimed | {"p2.json", "p4.json"}, "unlisted_member")
 
     base = admit_base(base_members)
