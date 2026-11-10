@@ -20,7 +20,6 @@ from atlas_brain.runner.pack_receipts import (
     validate_receipts,
 )
 
-
 # Immutable pairing lets narrow parser result types compose in application unions.
 type Parsed[T] = tuple[T, ParseResult]
 
