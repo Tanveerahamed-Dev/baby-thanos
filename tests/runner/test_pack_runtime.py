@@ -266,8 +266,8 @@ class Bundle(runtime.Parser[channel.Result]):
 def mixed(packs: tuple[PackDeclaration, ...], tree: OperationBinding, channel_op: OperationBinding,
           requests: tuple[CaptureRequest, ...]) -> tuple[runtime.Executed[Value], ...]:
     handlers: tuple[runtime.Handler[Value], ...] = (
-        runtime.Handler(binding=tree, parser=Tree()),
-        runtime.Handler(binding=channel_op, parser=Bundle()),
+        runtime.Handler[Value](binding=tree, parser=Tree()),
+        runtime.Handler[Value](binding=channel_op, parser=Bundle()),
     )
     return runtime.execute_parsers(packs, handlers, requests)
 
