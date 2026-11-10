@@ -1,13 +1,23 @@
-"""Root-guard facts from admitted inputs; missing registry bytes leave node/context/VLAN declarations trusted."""
+"""STP root-guard facts, with registry-backed subjects for declared synthetic folders."""
 import re
 from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
+from typing import cast
 
 from atlas_brain.contract.canonical import canonical
-from atlas_brain.evidence.capture import Scope
-from atlas_brain.evidence.synthetic import Node, endpoint
+from atlas_brain.evidence import p4_admission
+from atlas_brain.evidence.admission import Budgets, record, strict_json, string
+from atlas_brain.evidence.capture import Capture, Scope
+from atlas_brain.evidence.synthetic import SCHEMA as BASE_SCHEMA
+from atlas_brain.evidence.synthetic import Node, SyntheticGroup, endpoint
+from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
-from atlas_brain.model.pack_registration import OperationBinding, PackDeclaration
+from atlas_brain.model.pack_registration import (
+    OperationBinding,
+    PackDeclaration,
+    compile_packs,
+)
 from atlas_brain.model.specs import EntityKindSpec, FactSpec, StepId, StepSpec
 from atlas_brain.model.store import FactStore, bind_writer
 from atlas_brain.packs.l2.stp import parse as stp
@@ -89,7 +99,7 @@ def _line(raw: bytes, span: k.ByteSpan) -> bytes:
     return raw[span.start:span.end]
 
 
-def _observed(target: Target, row: stp.Row, output: Executed[stp.Result]) -> k.Known[bool]:
+def _observed(target: Target, row: stp.Row, output: Executed[stp.Result], provenance: tuple[k.Evidence, ...]) -> k.Known[bool]:
     capture = output.receipt.capture
     fields = dict(row.fields)
     names = tuple(name for name, _ in row.fields)
@@ -131,13 +141,14 @@ def _observed(target: Target, row: stp.Row, output: Executed[stp.Result]) -> k.K
               and capture.raw[token.span.start:token.span.end] == word, "stp_guard_witness")
     refs = tuple(k.EvidenceRef(capture=capture.id, locator=s, role=k.EvidenceRole.SUBJECT,
                  excerpt_sha256=sha256(capture.raw[s.start:s.end]).hexdigest()) for s in (token.span, guard, port.span, vid.span, header))
-    return k.Known(value=enabled, basis=k.Basis.OBSERVED, evidence=target.node.declaration.evidence + refs, raw=token.raw)
+    return k.Known(value=enabled, basis=k.Basis.OBSERVED, evidence=provenance + refs, raw=token.raw)
 
 
-def _rows(target: Target, outputs: list[Executed[stp.Result]]) -> tuple[Row, ...]:
+def _rows(target: Target, outputs: list[Executed[stp.Result]], declared: tuple[k.RegistryRef, ...]) -> tuple[Row, ...]:
     needs = (k.EvidenceNeed(node=target.node.key, operation=stp.OP, params=(("port", target.port),),
              resolves=(ROOT_GUARD,), reruns=(STEP.id,), after_s=None, unprintable=()),)
-    evidence = target.node.declaration.evidence + tuple(k.EvidenceRef(capture=o.receipt.capture.id,
+    provenance = target.node.declaration.evidence + declared
+    evidence = provenance + tuple(k.EvidenceRef(capture=o.receipt.capture.id,
         locator=k.WholeCapture(), role=k.EvidenceRole.WITNESS, excerpt_sha256=o.receipt.capture.bytes_sha256) for o in outputs)
     rows: list[Row] = []
     for index, vlan in enumerate(target.vlans):
@@ -151,7 +162,7 @@ def _rows(target: Target, outputs: list[Executed[stp.Result]]) -> tuple[Row, ...
             if reason is None and "root_guard" not in dict(row.fields):
                 reason = k.UnknownReason.FIELD_NOT_PRINTED
             if reason is None:
-                rows.append(Row(target=target, vlan=vlan, subject=subject(target, vlan), value=_observed(target, row, output)))
+                rows.append(Row(target=target, vlan=vlan, subject=subject(target, vlan), value=_observed(target, row, output, provenance)))
                 continue
         value = k.Unknown(reason=reason, detail="stp_root_guard_unresolved", evidence=evidence, candidates=(), next_evidence=needs)
         rows.append(Row(target=target, vlan=vlan, subject=subject(target, vlan), value=value))
@@ -160,6 +171,11 @@ def _rows(target: Target, outputs: list[Executed[stp.Result]]) -> tuple[Row, ...
 
 def build_root_guard(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> Result:
     """Accept at most one capture per target and execute before projecting any subject."""
+    return _build(targets, requests, None)
+
+
+def _build(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...],
+           proofs: dict[tuple[str, k.EntityKey, str], tuple[k.RegistryRef, ...]] | None) -> Result:
     k.require(type(targets) is tuple and all(type(t) is Target for t in targets), "stp_targets")
     k.require(type(requests) is tuple and all(type(r) is CaptureRequest for r in requests), "stp_requests")
     indexed: dict[tuple[str, k.EntityKey, str], Target] = {}
@@ -191,10 +207,144 @@ def build_root_guard(targets: tuple[Target, ...], requests: tuple[CaptureRequest
                   and r.port == target.port for r in output.value.rows)
                   and tuple(r.vlan for r in output.value.rows) == target.vlans, "stp_parser_population")
         grouped[(target.context, target.node.key, stp.command(target.port))].append(output)
-    rows = tuple(row for key in sorted(indexed) for row in _rows(indexed[key], grouped[key]))
+    rows = tuple(row for key in sorted(indexed) for row in _rows(indexed[key], grouped[key], () if proofs is None else proofs[key]))
     k.require(len({r.subject for r in rows}) == len(rows), "stp_subject_collision")
     store = FactStore()
     writer = bind_writer(store, step=STEP)
     for row in rows:
         writer.write(fact=ROOT_GUARD, subject=row.subject, value=row.value)
     return Result(store=store, rows=rows, executed=executed)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FolderResult:
+    envelope: p4_admission.Envelope
+    result: Result
+
+
+def _reference(state: k.Known[str], table: str, identity: str, digest: str, pointer: str) -> k.RegistryRef:
+    ref = k.RegistryRef(table=table, row_id=identity, table_digest=digest, citation=pointer)
+    k.require(type(state) is k.Known and state.basis is k.Basis.DECLARED and state.raw == state.value == identity
+              and state.evidence == (ref,), "stp_folder_declaration")
+    return ref
+
+
+def _records(value: object, fields: tuple[str, ...], key: str) -> dict[str, tuple[int, dict[str, object]]]:
+    k.require(type(value) is list, "stp_folder_registry")
+    indexed: dict[str, tuple[int, dict[str, object]]] = {}
+    for i, item in enumerate(cast(list[object], value)):
+        row = record(item, fields)
+        identifier = string(row, key)
+        k.require(identifier not in indexed, "stp_folder_registry")
+        indexed[identifier] = (i, row)
+    return indexed
+
+
+def _integrity(raw: bytes, command: str) -> k.IntegrityState:
+    try:
+        text = raw.decode("utf-8").replace("\r\n", "\n")
+    except UnicodeError as error:
+        raise ValueError("stp_folder_text") from error
+    k.require(not any(ord(c) < 32 and c not in "\t\n" or 127 <= ord(c) <= 159 or c in "\u2028\u2029" for c in text),
+              "stp_folder_text")
+    lines = [line for line in text.split("\n") if line.strip(" \t")]
+    opening = re.fullmatch(r"([A-Za-z0-9_.:-]+[>#]) ?(.+)", lines[0], re.ASCII) if lines else None
+    missing_prompt = False
+    if opening:
+        k.require(opening[2] == command, "stp_folder_frame")
+        missing_prompt = lines[-1] != opening[1]
+        lines = lines[1:] if missing_prompt else lines[1:-1]
+    elif lines and lines[0] == command:
+        lines = lines[1:]
+    forbidden = (r"(?:[a-z0-9_.:-]+(?:\([^)]*\))?[>#].*|(?:do[ \t]+)?sh(?:ow|o)?(?:[ \t].*)?|!|"
+                 r"(?:end|exit|configure|building configuration|current configuration|banner|interface|router|vlan|"
+                 r"hostname|spanning-tree|switchport|description|shutdown|no|default)(?:[ \t:].*)?)")
+    k.require(not any(re.fullmatch(forbidden, line.strip().casefold(), re.ASCII) for line in lines), "stp_folder_frame")
+    if any(line.lstrip().startswith("%") or line.strip().casefold() in ("command authorization failed", "command authorization failed.")
+           for line in lines):
+        return k.IntegrityState.ERROR
+    if any(line.strip().casefold() in ("--more--", "<--- more --->", "--(more)--") for line in lines):
+        return k.IntegrityState.PAGING_ARTIFACTS
+    if any(line.strip().casefold() in ("[truncated]", "<output truncated>") for line in lines):
+        return k.IntegrityState.TRUNCATED
+    k.require(not missing_prompt, "stp_folder_frame")
+    if not lines:
+        return k.IntegrityState.EMPTY
+    header = r"[ \t]*Port [0-9]+ \(" + stp.PORT + r"\) of VLAN[0-9]{4} is [a-z]+ [a-z]+[ \t]*"
+    return k.IntegrityState.COMPLETE if re.fullmatch(header, lines[0], re.ASCII) else k.IntegrityState.UNKNOWN_FORMAT
+
+
+def build_root_guard_folder(root: Path, budgets: Budgets) -> FolderResult:
+    """Admit a singleton STP composition and resolve its declared subjects before execution."""
+    envelope = p4_admission.admit_folder(root, budgets, declarations=(DECLARATION,))
+    k.require(type(envelope) is p4_admission.Envelope and type(envelope.raw) is bytes
+              and type(envelope.base) is SyntheticGroup and type(envelope.base.raw) is bytes, "stp_folder_registry")
+    registration = compile_packs((DECLARATION,)).registration_sha256
+    k.require(envelope.registration_sha256 == registration, "stp_folder_registration")
+    base, context = envelope.base, envelope.context
+    p4_digest, base_digest = sha256(envelope.raw).hexdigest(), sha256(base.raw).hexdigest()
+    side = record(strict_json(envelope.raw, budgets.nesting_depth, budgets.numeric_digits),
+                  ("schema", "semantic_group", "context", "base_sha256", "targets", "captures"))
+    registry = record(strict_json(base.raw, budgets.nesting_depth, budgets.numeric_digits),
+                      ("schema", "semantic_group", "group", "nodes", "captures"))
+    k.require(side["schema"] == p4_admission.SCHEMA and side["semantic_group"] == "declared_synthetic"
+              and side["context"] == context and side["base_sha256"] == base_digest and registry["group"] == base.id
+              and registry["semantic_group"] == "declared_synthetic" and registry["schema"] == base.schema == BASE_SCHEMA,
+              "stp_folder_registry")
+    _reference(base.declaration, "synthetic_p2.groups", base.id, base_digest, "/group")
+    context_ref = _reference(envelope.declaration, "synthetic_p4.context", context, p4_digest, "/context")
+    node_rows = _records(registry["nodes"], ("id", "discovery_id", "ports"), "id")
+    k.require(type(base.nodes) is tuple and all(type(node) is Node for node in base.nodes), "stp_folder_node")
+    nodes = {node.id: node for node in base.nodes}
+    k.require(set(nodes) == set(node_rows) and len(nodes) == len(base.nodes), "stp_folder_node")
+    for node_id in nodes:
+        node = nodes[node_id]
+        index, row = node_rows[node_id]
+        ports = row["ports"]
+        k.require(type(ports) is list and all(type(p) is str for p in cast(list[object], ports))
+                  and node.group == base.id and node.discovery_id == row["discovery_id"]
+                  and tuple(sorted(cast(list[str], ports))) == node.ports, "stp_folder_node")
+        _reference(node.declaration, "synthetic_p2.nodes", node_id, base_digest, f"/nodes/{index}")
+
+    target_rows = _records(side["targets"], ("id", "node", "operation", "params"), "id")
+    k.require(type(envelope.targets) is tuple and all(type(t) is p4_admission.Target for t in envelope.targets),
+              "stp_folder_target")
+    declared = {item.id: item for item in envelope.targets}
+    k.require(set(declared) == set(target_rows) and len(declared) == len(envelope.targets), "stp_folder_target")
+    targets: dict[str, Target] = {}
+    proofs: dict[tuple[str, k.EntityKey, str], tuple[k.RegistryRef, ...]] = {}
+    for identifier in declared:
+        item = declared[identifier]
+        index, row = target_rows[identifier]
+        node_id = string(row, "node")
+        k.require(node_id in nodes and item.node is nodes[node_id] and item.operation == row["operation"] == stp.OP
+                  and item.owner == STEP.id and type(item.params) is bytes and canonical(row["params"]) == item.params, "stp_folder_target")
+        target_ref = _reference(item.declaration, "synthetic_p4.targets", identifier, p4_digest, f"/targets/{index}")
+        params = record(row["params"], ("port", "vlans"))
+        vlans = params["vlans"]
+        k.require(type(vlans) is list, "invalid_stp_vlans")
+        target = Target(context=context, node=item.node, port=string(params, "port"), vlans=tuple(cast(list[int], vlans)))
+        targets[identifier] = target
+        proofs[(context, target.node.key, stp.command(target.port))] = (context_ref, target_ref)
+
+    capture_rows = _records(side["captures"], ("target", "path", "sha256"), "path")
+    k.require(type(envelope.captures) is tuple and all(type(m) is p4_admission.CaptureMember and type(m.raw) is bytes
+              for m in envelope.captures), "stp_folder_member")
+    k.require({m.path for m in envelope.captures} == set(capture_rows)
+              and len(envelope.captures) == len(capture_rows), "stp_folder_member")
+    for member in envelope.captures:
+        _, row = capture_rows[member.path]
+        identifier = string(row, "target")
+        digest = sha256(member.raw).hexdigest()
+        key = canonical((p4_admission.SCHEMA, p4_digest, base_digest, context, identifier, member.path, digest, registration))
+        k.require(identifier in declared and member.target is declared[identifier] and digest == member.sha256 == row["sha256"]
+                  and member.id == "cap:" + sha256(key).hexdigest(), "stp_folder_member")
+    requests: list[CaptureRequest] = []
+    for member in envelope.captures:
+        target = targets[member.target.id]
+        command = stp.command(target.port)
+        capture = Capture(id=member.id, source=target.node.key, operation=stp.OP, rendered=command,
+                          raw=member.raw, codec="utf-8", integrity=_integrity(member.raw, command),
+                          lines=text_lines(member.raw, "utf-8"), read_scope=k.ReadScope.UNKNOWN, view=k.ViewConsistency.UNKNOWN)
+        requests.append(CaptureRequest(capture=capture, context=context))
+    return FolderResult(envelope=envelope, result=_build(tuple(targets[name] for name in targets), tuple(requests), proofs))
