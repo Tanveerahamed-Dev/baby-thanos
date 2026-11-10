@@ -297,8 +297,8 @@ def build_root_guard_folder(root: Path, budgets: Budgets) -> FolderResult:
     k.require(type(base.nodes) is tuple and all(type(node) is Node for node in base.nodes), "stp_folder_node")
     nodes = {node.id: node for node in base.nodes}
     k.require(set(nodes) == set(node_rows) and len(nodes) == len(base.nodes), "stp_folder_node")
-    for node_id in nodes:
-        node = nodes[node_id]
+    for node in base.nodes:
+        node_id = node.id
         index, row = node_rows[node_id]
         ports = row["ports"]
         k.require(type(ports) is list and all(type(p) is str for p in cast(list[object], ports))
@@ -313,8 +313,8 @@ def build_root_guard_folder(root: Path, budgets: Budgets) -> FolderResult:
     k.require(set(declared) == set(target_rows) and len(declared) == len(envelope.targets), "stp_folder_target")
     targets: dict[str, Target] = {}
     proofs: dict[tuple[str, k.EntityKey, str], tuple[k.RegistryRef, ...]] = {}
-    for identifier in declared:
-        item = declared[identifier]
+    for item in envelope.targets:
+        identifier = item.id
         index, row = target_rows[identifier]
         node_id = string(row, "node")
         k.require(node_id in nodes and item.node is nodes[node_id] and item.operation == row["operation"] == stp.OP
