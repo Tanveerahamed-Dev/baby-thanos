@@ -21,15 +21,8 @@ from atlas_brain.runner.pack_receipts import (
 )
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class Parsed[T]:
-    """A trusted parser's rich result and its parse accounting."""
-
-    value: T
-    parse: ParseResult
-
-    def __post_init__(self) -> None:
-        k.require(type(self.parse) is ParseResult, 'pack_runtime_parse')
+# Immutable pairing lets narrow parser result types compose in application unions.
+type Parsed[T] = tuple[T, ParseResult]
 
 
 class Parser[T]:
@@ -97,9 +90,10 @@ def execute_parsers[T](
     values: dict[k.CaptureId, T] = {}
     for request, parser, owner in plan:
         parsed = parser.parse(request)
-        k.require(type(parsed) is Parsed, 'pack_runtime_result')
+        k.require(type(parsed) is tuple and len(parsed) == 2, 'pack_runtime_result')
+        k.require(type(parsed[1]) is ParseResult, 'pack_runtime_parse')
         receipts.append(ParseReceipt(capture=request.capture, context=request.context, owner=owner,
-                                     registration_sha256=compiled.registration_sha256, parse=parsed.parse))
-        values[request.capture.id] = parsed.value
+                                     registration_sha256=compiled.registration_sha256, parse=parsed[1]))
+        values[request.capture.id] = parsed[0]
     validated = validate_receipts(declarations, requests, tuple(receipts))
     return tuple(Executed(receipt=item, value=values[item.capture.id]) for item in validated)

@@ -21,7 +21,7 @@ from atlas_brain.packs.l2.etherchannel import parse_summary as channel
 from atlas_brain.packs.l2.stp import parse as stp
 from atlas_brain.runner import pack_runtime
 from atlas_brain.runner.pack_receipts import CaptureRequest
-from atlas_brain.runner.pack_runtime import Handler, Parsed, Parser, execute_parsers
+from atlas_brain.runner.pack_runtime import Handler, Parser, execute_parsers
 
 
 def pack(name, *operations):
@@ -54,9 +54,13 @@ class Probe(Parser[object]):
         parse = ParseResult((), (), (), "partial")
         if self.failure == "wrong-envelope":
             return parse
+        if self.failure == "short-result":
+            return ()
+        if self.failure == "long-result":
+            return object(), parse, parse
         if self.failure == "wrong-parse":
-            return Parsed(value=object(), parse="partial")
-        output = Parsed(value=object(), parse=parse)
+            return object(), "partial"
+        output = (object(), parse)
         self.outputs[request.capture.id] = output
         return output
 
@@ -87,7 +91,7 @@ def test_dispatch_is_per_operation_and_capture_once_in_id_order(reverse):
         assert supplied == original and supplied.capture is original.capture
         handler = next(h for h in handlers if h.binding.operation == supplied.capture.operation)
         expected = handler.parser.outputs[supplied.capture.id]
-        assert executed.value is expected.value and executed.receipt.parse is expected.parse
+        assert executed.value is expected[0] and executed.receipt.parse is expected[1]
         assert executed.receipt.capture is supplied.capture and executed.receipt.context == supplied.context
         assert executed.receipt.owner == handler.binding.step and executed.receipt.registration_sha256 == digest
 
@@ -164,6 +168,7 @@ def test_empty_and_subset_inputs_run_only_supplied_captures():
 @pytest.mark.parametrize("mode,error,code", [
     ("exception", RuntimeError, "parser refusal"), ("wrong-envelope", ValueError, "pack_runtime_result"),
     ("wrong-parse", ValueError, "pack_runtime_parse"),
+    ("short-result", ValueError, "pack_runtime_result"), ("long-result", ValueError, "pack_runtime_result"),
 ])
 def test_handler_failure_stops_later_calls_and_raises_to_caller(mode, error, code):
     packs, handlers, requests, trace = setup_plan()
@@ -198,13 +203,13 @@ def test_real_parsers_retain_semantic_results_and_their_exact_accounting():
         def parse(self, request):
             result = stp.parse_capture(request.capture, port, (1,))
             calls.append((request, result))
-            return Parsed(value=result, parse=result.parse)
+            return result, result.parse
 
     class Bundle(Parser[channel.Result]):
         def parse(self, request):
             result = channel.parse_capture(request.capture, ("1", "2"), ("Gi1/0/1", "Gi1/0/2"))
             calls.append((request, result))
-            return Parsed(value=result, parse=result.parse)
+            return result, result.parse
 
     stp_bytes = (b"Port 1 (GigabitEthernet1/0/1) of VLAN0001 is designated forwarding\n"
                  b"   Root guard is enabled on the port\n   Root guard is disabled on the port\n")
@@ -233,7 +238,7 @@ def test_trusted_adapter_can_pair_real_stp_rows_with_separate_accounting():
     class Adapter(Parser[stp.Result]):
         def parse(self, request):
             self.result = stp.parse_capture(request.capture, port, (1,))
-            return Parsed(value=self.result, parse=separate)
+            return self.result, separate
 
     declaration, adapter = pack("tree", stp.OP), Adapter()
     raw = f"Port 1 ({port}) of VLAN0001 is designated forwarding\n".encode("ascii")
@@ -256,12 +261,12 @@ type Value = stp.Result | channel.Result
 class Tree(runtime.Parser[stp.Result]):
     def parse(self, request: CaptureRequest) -> runtime.Parsed[stp.Result]:
         result = stp.parse_capture(request.capture, "GigabitEthernet1/0/1", (1,))
-        return runtime.Parsed(value=result, parse=result.parse)
+        return result, result.parse
 
 class Bundle(runtime.Parser[channel.Result]):
     def parse(self, request: CaptureRequest) -> runtime.Parsed[channel.Result]:
         result = channel.parse_capture(request.capture, ("1",), ("Gi1/0/1",))
-        return runtime.Parsed(value=result, parse=result.parse)
+        return result, result.parse
 
 def mixed(packs: tuple[PackDeclaration, ...], tree: OperationBinding, channel_op: OperationBinding,
           requests: tuple[CaptureRequest, ...]) -> tuple[runtime.Executed[Value], ...]:
