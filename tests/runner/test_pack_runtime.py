@@ -286,6 +286,7 @@ def test_strict_pyright_accepts_mixed_real_types_and_rejects_the_planted_return(
                          cwd=tmp_path, capture_output=True, text=True, check=False, timeout=60)
     assert run.returncode == 1, (run.stdout, run.stderr)
     report = json.loads(run.stdout)
+    print(json.dumps(report["generalDiagnostics"], indent=2))
     assert report["summary"]["errorCount"] == 1, report
     assert len(report["generalDiagnostics"]) == 1, report["generalDiagnostics"]
     diagnostic = report["generalDiagnostics"][0]
