@@ -1,8 +1,4 @@
-"""Root guard facts for separately declared targets and already-admitted captures.
-
-Node registry references retain their admitted provenance. This builder has no registry bytes
-with which to authenticate a node, context or VLAN declaration.
-"""
+"""Root-guard facts from admitted inputs; missing registry bytes leave node/context/VLAN declarations trusted."""
 import re
 from dataclasses import dataclass
 from hashlib import sha256
@@ -16,7 +12,13 @@ from atlas_brain.model.specs import EntityKindSpec, FactSpec, StepId, StepSpec
 from atlas_brain.model.store import FactStore, bind_writer
 from atlas_brain.packs.l2.stp import parse as stp
 from atlas_brain.runner.pack_receipts import CaptureRequest
-from atlas_brain.runner.pack_runtime import Executed, Handler, Parsed, Parser, execute_parsers
+from atlas_brain.runner.pack_runtime import (
+    Executed,
+    Handler,
+    Parsed,
+    Parser,
+    execute_parsers,
+)
 
 PACK = k.PackId("l2.stp")
 ROOT_GUARD = k.FactId("l2.stp.root_guard")
