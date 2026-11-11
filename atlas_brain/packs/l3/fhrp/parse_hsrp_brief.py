@@ -22,10 +22,8 @@ SOURCE = ("https://github.com/CiscoTestAutomation/genieparser/blob/"
           "iosxe/tests/ShowStandbyBrief/cli/equal/")
 SOURCES = (SOURCE + "golden_output1_output.txt", SOURCE + "golden_output2_output.txt",
            SOURCE + "golden_output3_output.txt", SOURCE + "golden_output4_output.txt")
-_OCTET = r"(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])"
-_IPV4 = _OCTET + r"\." + _OCTET + r"\." + _OCTET + r"\." + _OCTET
-_ENDPOINT = r"(?:local|unknown|" + _IPV4 + ")"
-_VIP = r"(?:unknown|" + _IPV4 + ")"
+_ENDPOINT = r"[A-Za-z0-9:.]{1,64}+"
+_VIP = _ENDPOINT
 
 
 class State(StrEnum):
@@ -37,7 +35,7 @@ class State(StrEnum):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Endpoint:
     token: Captured
-    kind: Literal["local", "unknown", "ipv4"]
+    kind: Literal["local", "unknown", "ipv4"] | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -91,8 +89,19 @@ def _rules() -> tuple[Rule, ...]:
     return tuple(rules)
 
 
-def _endpoint(token: Captured) -> Endpoint:
-    kind: Literal["local", "unknown", "ipv4"] = "local" if token.raw == "local" else "unknown" if token.raw == "unknown" else "ipv4"
+def ipv4_literal(value: str) -> bool:
+    """Canonical ASCII dotted-decimal only; never bind an endpoint to a node."""
+    if type(value) is not str or not value.isascii() or not 7 <= len(value) <= 15:
+        return False
+    octets = value.split(".")
+    return len(octets) == 4 and all(1 <= len(part) <= 3 and part.isdigit() and int(part) <= 255
+                                  and str(int(part)) == part for part in octets)
+
+
+def _endpoint(token: Captured, allow_local: bool = True) -> Endpoint:
+    kind: Literal["local", "unknown", "ipv4"] | None = (
+        "local" if token.raw == "local" and allow_local else "unknown" if token.raw == "unknown"
+        else "ipv4" if ipv4_literal(token.raw) else None)
     return Endpoint(token=token, kind=kind)
 
 
@@ -102,7 +111,7 @@ def _decimal(token: Captured, maximum: int) -> bool:
 
 def _row(item: Record, reason: k.UnknownReason | None) -> Row:
     fields = dict(item.fields)
-    active, standby, vip = (_endpoint(fields[name]) for name in ("active", "standby", "virtual_ip"))
+    active, standby, vip = _endpoint(fields["active"]), _endpoint(fields["standby"]), _endpoint(fields["virtual_ip"], False)
     af_spans = tuple(value.token.span for value in (active, standby, vip) if value.kind == "ipv4")
     return Row(interface=fields["interface"], group=fields["group"], priority=fields["priority"],
                preempt=fields.get("preempt"), state=fields["state"], active=active, standby=standby, virtual_ip=vip,
@@ -136,7 +145,8 @@ def parse_capture(capture: Capture) -> Result:
         elif item.rule_id in ("row", "row_preempt"):
             physical.append(item)
             invalid = invalid or not _decimal(fields["group"], 4095) or not _decimal(fields["priority"], 255)
-            endpoints = tuple(_endpoint(fields[name]) for name in ("active", "standby", "virtual_ip"))
+            endpoints = (_endpoint(fields["active"]), _endpoint(fields["standby"]), _endpoint(fields["virtual_ip"], False))
+            invalid = invalid or any(value.kind is None for value in endpoints)
             family = any(value.kind == "ipv4" for value in endpoints)
             unresolved = unresolved or not family
             if family:

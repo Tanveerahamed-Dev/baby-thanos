@@ -44,6 +44,14 @@ def assert_columns(raw, result):
             assert gap and not gap.strip(b" \t")
 
 
+def poisoned(raw, reason, integrity=k.IntegrityState.COMPLETE):
+    result = parser.parse_capture(capture(raw, integrity))
+    assert result.reason is reason and result.parse.quality == "partial"
+    assert all(row.reason is reason for row in result.rows)
+    assert_columns(raw, result)
+    return result
+
+
 @pytest.mark.parametrize("ending", [b"\n", b"\r\n"])
 @pytest.mark.parametrize("frame", ["body", "command", "prompt"])
 @pytest.mark.parametrize("final_newline", [False, True])
@@ -84,11 +92,8 @@ def test_supported_synthetic_rows_preserve_physical_columns_and_explicit_af_witn
     (BODY + INIT.replace(b"203.0.113.1", b"unknown"), k.UnknownReason.IDENTITY_UNRESOLVED, ("Vl20", "Vl10", "BD3329", "Vl20")),
 ])
 def test_duplicates_and_one_unresolved_af_poison_the_whole_result_without_losing_rows(raw, reason, interfaces):
-    result = parser.parse_capture(capture(raw))
-    assert result.reason is reason and result.parse.quality == "partial"
+    result = poisoned(raw, reason)
     assert tuple(row.interface.raw for row in result.rows) == interfaces
-    assert all(row.reason is reason for row in result.rows)
-    assert_columns(raw, result)
     if reason is k.UnknownReason.CONFLICTING_EVIDENCE:
         assert [row.virtual_ip.token.raw for row in result.rows if row.interface.raw == "Vl10"] == ["192.0.2.1", "192.0.2.9" if b"192.0.2.9" in raw else "192.0.2.1"]
     else:
@@ -110,20 +115,22 @@ def test_noncanonical_or_unsupported_lexemes_never_become_complete(field, value)
     substitutions = {"group": (b"1    110", value.encode() + b"    110"),
         "priority": (b"1    110", b"1    " + value.encode()), "state": (b"Active", value.encode())}
     old, new = substitutions[field]
-    result = parser.parse_capture(capture(LEGEND + HEADER + ACTIVE.replace(old, new)))
-    assert result.reason is k.UnknownReason.PARSE_PARTIAL and result.parse.quality == "partial"
+    poisoned(LEGEND + HEADER + ACTIVE.replace(old, new), k.UnknownReason.PARSE_PARTIAL)
 
 
-@pytest.mark.parametrize("row", [
-    ACTIVE.replace(b"192.0.2.2", b"192.000.2.2"), ACTIVE.replace(b"192.0.2.2", b"256.0.2.2"),
-    ACTIVE.replace(b"192.0.2.1", b"local"), ACTIVE.replace(b"192.0.2.2", b"2001:db8::2"),
-    b"Vl11        0    200 P Active  local           2001:db8::2\n                                                               2001:db8::5\n",
+@pytest.mark.parametrize("row,recognized", [
+    (ACTIVE.replace(b"192.0.2.2", b"192.000.2.2"), True), (ACTIVE.replace(b"192.0.2.2", b"256.0.2.2"), True),
+    (ACTIVE.replace(b"192.0.2.1", b"local"), True), (ACTIVE.replace(b"192.0.2.2", b"2001:db8::2"), True),
+    (b"Vl11        0    200 P Active  local           2001:db8::2\n                                                               2001:db8::5\n", False),
 ])
-def test_invalid_address_ipv6_and_wrapped_forms_poison_recognized_ipv4_rows(row):
+def test_invalid_address_ipv6_and_wrapped_forms_poison_recognized_ipv4_rows(row, recognized):
     raw = LEGEND + HEADER + INIT + row + STANDBY
-    result = parser.parse_capture(capture(raw))
-    assert result.reason is k.UnknownReason.PARSE_PARTIAL and result.parse.quality == "partial"
-    assert [r.interface.raw for r in result.rows] == ["Vl20", "BD3329"]
+    result = poisoned(raw, k.UnknownReason.PARSE_PARTIAL)
+    assert [r.interface.raw for r in result.rows] == ["Vl20"] + (["Vl10"] if recognized else []) + ["BD3329"]
+    if recognized:
+        endpoints = (result.rows[1].active, result.rows[1].standby, result.rows[1].virtual_ip)
+        assert any(endpoint.kind is None for endpoint in endpoints)
+        assert result.rows[1].af_spans == tuple(endpoint.token.span for endpoint in endpoints if endpoint.kind == "ipv4")
     assert_columns(raw, result)
 
 
@@ -132,9 +139,8 @@ def test_invalid_address_ipv6_and_wrapped_forms_poison_recognized_ipv4_rows(row)
     (k.IntegrityState.PAGING_ARTIFACTS, k.UnknownReason.CAPTURE_TRUNCATED),
     (k.IntegrityState.UNKNOWN_FORMAT, k.UnknownReason.PARSE_UNSUPPORTED_VARIANT)])
 def test_capture_damage_dominates_rows_that_look_valid(integrity, reason):
-    result = parser.parse_capture(capture(BODY, integrity))
-    assert result.reason is reason and result.parse.quality == "partial"
-    assert len(result.rows) == 3 and all(row.reason is reason for row in result.rows)
+    result = poisoned(BODY, reason, integrity)
+    assert len(result.rows) == 3
 
 
 @pytest.mark.parametrize("field", ["group", "priority"])
@@ -164,12 +170,7 @@ def test_empty_capture_has_no_rows_or_positive_claim():
     b"fixture#" + parser.COMMAND.encode() + b"\n" + BODY + b"fixture#\n" + ACTIVE,
 ])
 def test_missing_or_mixed_format_never_recovers_a_positive_table(raw):
-    sample = capture(raw)
-    result = parser.parse_capture(sample)
-    assert result.reason is k.UnknownReason.PARSE_PARTIAL and result.parse.quality == "partial"
-    assert tuple(line.span for line in result.parse.lines) == tuple(line.span for line in sample.lines)
-    assert all(row.reason is result.reason for row in result.rows)
-    assert_columns(raw, result)
+    poisoned(raw, k.UnknownReason.PARSE_PARTIAL)
 
 
 @pytest.mark.parametrize("interface", [b"Vlan10", b"BD10"])
@@ -201,10 +202,8 @@ def test_every_ipv4_operand_can_prove_af_and_equal_literals_keep_distinct_witnes
 
 def test_capture_error_wins_over_bad_format_duplicates_and_unresolved_af():
     raw = BODY + ACTIVE + INIT.replace(b"203.0.113.1", b"unknown") + b"unrecognised synthetic line\n"
-    result = parser.parse_capture(capture(raw, k.IntegrityState.ERROR))
-    assert result.reason is k.UnknownReason.CAPTURE_ERROR and result.parse.quality == "partial"
-    assert len(result.rows) == 5 and all(row.reason is result.reason for row in result.rows)
-    assert_columns(raw, result)
+    result = poisoned(raw, k.UnknownReason.CAPTURE_ERROR, k.IntegrityState.ERROR)
+    assert len(result.rows) == 5
 
 
 def test_allowlisted_provenance_is_pinned_to_the_four_read_only_format_floors():
@@ -214,11 +213,19 @@ def test_allowlisted_provenance_is_pinned_to_the_four_read_only_format_floors():
     assert parser.VARIANT_SUPPORT == "allowlisted"
 
 
+@pytest.mark.parametrize("literal,valid", [
+    ("0.0.0.0", True), ("255.255.255.255", True), ("192.0.2.1", True),
+    ("01.2.3.4", False), ("256.0.0.1", False), ("1.2.3", False), ("1.2.3.4.5", False),
+    (" 192.0.2.1", False), ("192.0.2.1/24", False), ("2001:db8::1", False), ("local", False),
+    ("unknown", False), ("\u0661.2.3.4", False),
+])
+def test_public_ipv4_literal_predicate_preserves_canonical_ascii_boundaries(literal, valid):
+    assert parser.ipv4_literal(literal) is valid
+
+
 @pytest.mark.parametrize("extra,reason", [(b"", k.UnknownReason.CONFLICTING_EVIDENCE),
     (b"unrecognised synthetic line\n", k.UnknownReason.PARSE_PARTIAL)])
 def test_format_then_conflict_then_unresolved_identity_precedence(extra, reason):
     raw = BODY + ACTIVE + INIT.replace(b"203.0.113.1", b"unknown") + extra
-    result = parser.parse_capture(capture(raw))
-    assert result.reason is reason and result.parse.quality == "partial"
-    assert len(result.rows) == 5 and all(row.reason is reason for row in result.rows)
-    assert_columns(raw, result)
+    result = poisoned(raw, reason)
+    assert len(result.rows) == 5
