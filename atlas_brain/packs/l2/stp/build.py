@@ -21,7 +21,8 @@ from atlas_brain.model.pack_registration import (
 from atlas_brain.model.specs import EntityKindSpec, FactSpec, StepId, StepSpec
 from atlas_brain.model.store import FactStore, bind_writer
 from atlas_brain.packs.l2.stp import parse as stp
-from atlas_brain.runner.pack_receipts import CaptureRequest
+from atlas_brain.runner import p4_pipeline
+from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
 from atlas_brain.runner.pack_runtime import (
     Executed,
     Handler,
@@ -84,12 +85,17 @@ class Result:
 
 
 class _Adapter(Parser[stp.Result]):
-    def __init__(self, targets: dict[k.CaptureId, Target]) -> None:
+    def __init__(self, targets: dict[k.CaptureId, Target], produced: dict[k.CaptureId, stp.Result] | None = None) -> None:
         self.targets = targets
+        self.produced = produced
 
     def parse(self, request: CaptureRequest) -> Parsed[stp.Result]:
         target = self.targets[request.capture.id]
+        if self.produced is not None:
+            k.require(request.capture.id not in self.produced, "stp_global_value")
         result = stp.parse_capture(request.capture, target.port, target.vlans)
+        if self.produced is not None:
+            self.produced[request.capture.id] = result
         return result, result.parse
 
 
@@ -171,11 +177,22 @@ def _rows(target: Target, outputs: list[Executed[stp.Result]], declared: tuple[k
 
 def build_root_guard(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> Result:
     """Accept at most one capture per target and execute before projecting any subject."""
-    return _build(targets, requests, None)
+    return _local(_plan(targets, requests, None))
 
 
-def _build(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...],
-           proofs: dict[tuple[str, k.EntityKey, str], tuple[k.RegistryRef, ...]] | None) -> Result:
+type _Key = tuple[str, k.EntityKey, str]
+type _Proofs = dict[_Key, tuple[k.RegistryRef, ...]]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Plan:
+    indexed: dict[_Key, Target]
+    by_capture: dict[k.CaptureId, Target]
+    requests: tuple[CaptureRequest, ...]
+    proofs: _Proofs | None
+
+
+def _plan(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...], proofs: _Proofs | None) -> _Plan:
     k.require(type(targets) is tuple and all(type(t) is Target for t in targets), "stp_targets")
     k.require(type(requests) is tuple and all(type(r) is CaptureRequest for r in requests), "stp_requests")
     indexed: dict[tuple[str, k.EntityKey, str], Target] = {}
@@ -197,8 +214,16 @@ def _build(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...],
         k.require(key not in supplied, "stp_duplicate_target_capture")
         supplied.add(key)
         by_capture[capture.id] = indexed[key]
-    handler = Handler(binding=BINDING, parser=_Adapter(by_capture))
-    executed = execute_parsers((DECLARATION,), (handler,), requests)
+    return _Plan(indexed=indexed, by_capture=by_capture, requests=requests, proofs=proofs)
+
+
+def _local(plan: _Plan) -> Result:
+    handler = Handler(binding=BINDING, parser=_Adapter(plan.by_capture))
+    return _materialize(plan, execute_parsers((DECLARATION,), (handler,), plan.requests))
+
+
+def _materialize(plan: _Plan, executed: tuple[Executed[stp.Result], ...]) -> Result:
+    indexed, by_capture, proofs = plan.indexed, plan.by_capture, plan.proofs
     grouped: dict[tuple[str, k.EntityKey, str], list[Executed[stp.Result]]] = {key: [] for key in indexed}
     for output in executed:
         target = by_capture[output.receipt.capture.id]
@@ -277,10 +302,15 @@ def _integrity(raw: bytes, command: str) -> k.IntegrityState:
 def build_root_guard_folder(root: Path, budgets: Budgets) -> FolderResult:
     """Admit a singleton STP composition and resolve its declared subjects before execution."""
     envelope = p4_admission.admit_folder(root, budgets, declarations=(DECLARATION,))
+    return FolderResult(envelope=envelope, result=_local(_scope(envelope, budgets, singleton=True)))
+
+
+def _scope(envelope: p4_admission.Envelope, budgets: Budgets, *, singleton: bool) -> _Plan:
     k.require(type(envelope) is p4_admission.Envelope and type(envelope.raw) is bytes
               and type(envelope.base) is SyntheticGroup and type(envelope.base.raw) is bytes, "stp_folder_registry")
-    registration = compile_packs((DECLARATION,)).registration_sha256
-    k.require(envelope.registration_sha256 == registration, "stp_folder_registration")
+    registration = envelope.registration_sha256
+    if singleton:
+        k.require(registration == compile_packs((DECLARATION,)).registration_sha256, "stp_folder_registration")
     base, context = envelope.base, envelope.context
     p4_digest, base_digest = sha256(envelope.raw).hexdigest(), sha256(base.raw).hexdigest()
     side = record(strict_json(envelope.raw, budgets.nesting_depth, budgets.numeric_digits),
@@ -317,9 +347,13 @@ def build_root_guard_folder(root: Path, budgets: Budgets) -> FolderResult:
         identifier = item.id
         index, row = target_rows[identifier]
         node_id = string(row, "node")
-        k.require(node_id in nodes and item.node is nodes[node_id] and item.operation == row["operation"] == stp.OP
-                  and item.owner == STEP.id and type(item.params) is bytes and canonical(row["params"]) == item.params, "stp_folder_target")
+        k.require(node_id in nodes and item.node is nodes[node_id] and item.operation == row["operation"]
+                  and type(item.params) is bytes and canonical(row["params"]) == item.params, "stp_folder_target")
         target_ref = _reference(item.declaration, "synthetic_p4.targets", identifier, p4_digest, f"/targets/{index}")
+        if item.operation != stp.OP:
+            k.require(not singleton and item.owner != STEP.id, "stp_folder_target")
+            continue
+        k.require(item.owner == STEP.id, "stp_folder_target")
         params = record(row["params"], ("port", "vlans"))
         vlans = params["vlans"]
         k.require(type(vlans) is list, "invalid_stp_vlans")
@@ -341,10 +375,83 @@ def build_root_guard_folder(root: Path, budgets: Budgets) -> FolderResult:
                   and member.id == "cap:" + sha256(key).hexdigest(), "stp_folder_member")
     requests: list[CaptureRequest] = []
     for member in envelope.captures:
+        if member.target.id not in targets:
+            continue
         target = targets[member.target.id]
         command = stp.command(target.port)
         capture = Capture(id=member.id, source=target.node.key, operation=stp.OP, rendered=command,
                           raw=member.raw, codec="utf-8", integrity=_integrity(member.raw, command),
                           lines=text_lines(member.raw, "utf-8"), read_scope=k.ReadScope.UNKNOWN, view=k.ViewConsistency.UNKNOWN)
         requests.append(CaptureRequest(capture=capture, context=context))
-    return FolderResult(envelope=envelope, result=_build(tuple(targets[name] for name in targets), tuple(requests), proofs))
+    return _plan(tuple(targets[name] for name in targets), tuple(requests), proofs)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GlobalFacts[Peer]:
+    execution: p4_pipeline.Result[stp.Result | Peer]
+    result: Result
+
+
+class _GlobalSTP[Peer](p4_pipeline.Pack[stp.Result | Peer]):
+    """One invocation retains its admitted plan and the values its own parser actually produced."""
+
+    def __init__(self, budgets: Budgets) -> None:
+        self.budgets = budgets
+        self.envelope: p4_admission.Envelope | None = None
+        self.registration = ""
+        self.plan: _Plan | None = None
+        self.produced: dict[k.CaptureId, stp.Result] = {}
+
+    def declaration(self) -> PackDeclaration:
+        return DECLARATION
+
+    def prepare(self, envelope: p4_admission.Envelope) -> p4_pipeline.Prepared[stp.Result | Peer]:
+        k.require(self.plan is None, "stp_global_run")
+        plan = _scope(envelope, self.budgets, singleton=False)
+        self.envelope, self.registration, self.plan = envelope, envelope.registration_sha256, plan
+        handler = Handler[stp.Result | Peer](binding=BINDING, parser=_Adapter(plan.by_capture, self.produced))
+        return p4_pipeline.Prepared[stp.Result | Peer](targets=tuple(t for t in envelope.targets if t.operation == stp.OP),
+                                                       handlers=(handler,), requests=plan.requests)
+
+    def finish(self, execution: p4_pipeline.Result[stp.Result | Peer]) -> Result:
+        envelope, plan = self.envelope, self.plan
+        if (envelope is None or plan is None or type(execution) is not p4_pipeline.Result
+                or execution.envelope is not envelope or envelope.registration_sha256 != self.registration):
+            raise ValueError("stp_global_run")
+        outputs = execution.executed
+        k.require(type(outputs) is tuple and all(type(o) is Executed and type(o.receipt) is ParseReceipt
+                  and type(o.receipt.capture) is Capture for o in outputs), "stp_global_receipt")
+        members = {m.id: m for m in envelope.captures}
+        k.require(len(outputs) == len(members) and {o.receipt.capture.id for o in outputs} == set(members),
+                  "stp_global_coverage")
+        for output in outputs:
+            receipt = output.receipt
+            capture = receipt.capture
+            member = members[capture.id]
+            k.require(receipt.owner == member.target.owner and receipt.context == envelope.context
+                      and receipt.registration_sha256 == self.registration and capture.source == member.target.node.key
+                      and capture.operation == member.target.operation and type(capture.raw) is bytes
+                      and capture.raw == member.raw and capture.bytes_sha256 == member.sha256, "stp_global_receipt")
+        requests = {req.capture.id: req for req in plan.requests}
+        k.require(set(self.produced) == set(requests), "stp_global_value")
+        owned: list[Executed[stp.Result]] = []
+        for output in outputs:
+            receipt = output.receipt
+            identity = receipt.capture.id
+            if identity in requests:
+                k.require(receipt.capture is requests[identity].capture, "stp_global_capture")
+                value = self.produced[identity]
+                k.require(output.value is value and receipt.parse is value.parse, "stp_global_value")
+                owned.append(Executed(receipt=receipt, value=value))
+        return _materialize(plan, tuple(owned))
+
+
+def build_root_guard_global[Peer](
+    root: Path, budgets: Budgets, *, peers: tuple[p4_pipeline.Pack[stp.Result | Peer], ...],
+) -> GlobalFacts[Peer]:
+    """Run once; STP facts need original captures/values from this invocation, and peers stay opaque."""
+    k.require(type(peers) is tuple, "stp_global_peers")
+    owner = _GlobalSTP[Peer](budgets)
+    packs: tuple[p4_pipeline.Pack[stp.Result | Peer], ...] = (owner, *peers)
+    execution = p4_pipeline.execute_p4_folder(root, budgets, packs=packs)
+    return GlobalFacts[Peer](execution=execution, result=owner.finish(execution))
