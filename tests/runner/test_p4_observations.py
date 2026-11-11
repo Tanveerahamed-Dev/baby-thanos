@@ -6,6 +6,7 @@ from dataclasses import replace
 from hashlib import sha256
 
 import pytest
+from test_p4_hsrp_proofs import ACTIVE, BODY, INIT, estate3
 from test_p4_leaf_refs import assert_leaf
 from test_p4_proof_index import LIMITS, P, estate, expected_references
 
@@ -16,7 +17,7 @@ from atlas_brain.model.pack_registration import compile_packs
 from atlas_brain.model.store import FactReader
 from atlas_brain.runner import p4 as m
 
-FACTS = ("facts/stp_port_vlan.jsonl", "facts/etherchannel_group.jsonl")
+FACTS = ("facts/stp_port_vlan.jsonl", "facts/etherchannel_group.jsonl", "facts/fhrp_local.jsonl")
 
 
 def snapshot(root):
@@ -30,7 +31,7 @@ def unpack(files):
     assert all(sha256(files[name]).hexdigest() == digest for digest, name in entries)
     head = json.loads(files["result.json"])
     assert canonical(head) == files["result.json"]
-    for path, declaration in zip(FACTS, (m.stp.DECLARATION, m.ec.DECLARATION), strict=True):
+    for path, declaration in zip(FACTS, (m.stp.DECLARATION, m.ec.DECLARATION, m.fhrp.DECLARATION), strict=True):
         facts = {spec.id for spec in declaration.facts}
         assert all(row["fact"] in facts and row["pack"] == declaration.pack for row in map(json.loads, files[path].splitlines()))
     rows = [json.loads(line) for path in FACTS for line in files[path].splitlines()]
@@ -43,30 +44,48 @@ def semantics(files):
     return head["denominator"], [(r["subject"], r["fact"], r["state"], r.get("value"), r.get("reason"), r.get("basis"), r.get("raw")) for r in rows]
 
 
-@pytest.mark.parametrize("guard,protocol,expected", [(b"enabled", b"LACP", "lacp"), (b"disabled", b"-", "none_reported"), (None, b"PAgP", "pagp")])
+def expected_observations(side, envelope):
+    peers = dict(side, targets=[target for target in side["targets"] if target["operation"] != m.fhrp.hsrp.OP])
+    refs = expected_references(peers, envelope)
+    nodes = {node.id: node for node in envelope.base.nodes}
+    for item in side["targets"]:
+        if item["operation"] == m.fhrp.hsrp.OP:
+            target = m.fhrp.Target(context=side["context"], node=nodes[item["node"]], groups=tuple(tuple(pair) for pair in item["params"]["groups"]))
+            refs.update(k.FactRef(fact=m.fhrp.REPORTED_STATE, subject=m.fhrp.subject(target, interface, group)) for interface, group in target.groups)
+    return refs
+
+
+@pytest.mark.parametrize("guard,protocol,expected,with_hsrp", [(b"enabled", b"LACP", "lacp", False), (b"disabled", b"-", "none_reported", False),
+    (None, b"PAgP", "pagp", False), (b"disabled", b"-", "none_reported", True)])
 @pytest.mark.parametrize("ending", [b"\n", b"\r\n"])
-def test_real_folder_returns_canonical_partial_bundle_only_after_both_finishes_and_reader(tmp_path, monkeypatch, guard, protocol, expected, ending):
-    side = estate(tmp_path, guard, protocol, ending)
+def test_real_folder_returns_canonical_partial_bundle_only_after_all_finishes_and_reader(tmp_path, monkeypatch, guard, protocol, expected, ending, with_hsrp):
+    side = estate3(tmp_path, ending=ending) if with_hsrp else estate(tmp_path, guard, protocol, ending)
     before, runs, finishes, reads = snapshot(tmp_path), [], [], []
-    factory, finish, read, bundle = m.stp.build_root_guard_global, m.SummaryPack.finish, FactReader.read, m.result_bundle
+    factory, finish, hfinish = m.stp.build_root_guard_global, m.SummaryPack.finish, m.StandbyBriefPack.finish
+    read, bind, bundle = FactReader.read, m.bind_reader, m.result_bundle
     def built(*args, **kwargs):
         out = factory(*args, **kwargs)
         runs.append(out)
         return out
     def finished(self, execution):
         assert len(runs) == 1 and execution is runs[0].execution
-        out = finish(self, execution)
+        out = (finish if isinstance(self, m.SummaryPack) else hfinish)(self, execution)
         finishes.append(out)
         return out
     def consumed(self, **kwargs):
-        assert len(finishes) == 1
+        assert len(finishes) == 2
         reads.append((self.step.reads, kwargs["fact"], kwargs["subject"]))
         return read(self, **kwargs)
+    def bound(*args, **kwargs):
+        assert len(finishes) == 2
+        return bind(*args, **kwargs)
     def bundled(*args, **kwargs):
-        assert len(runs) == len(finishes) == 1 and reads
+        assert len(runs) == 1 and len(finishes) == 2 and reads
         return bundle(*args, **kwargs)
     monkeypatch.setattr(m.stp, "build_root_guard_global", built)
     monkeypatch.setattr(m.SummaryPack, "finish", finished)
+    monkeypatch.setattr(m.StandbyBriefPack, "finish", finished)
+    monkeypatch.setattr(m, "bind_reader", bound)
     monkeypatch.setattr(FactReader, "read", consumed)
     monkeypatch.setattr(m, "result_bundle", bundled)
     files = m.analyse_folder(tmp_path, LIMITS)
@@ -76,16 +95,17 @@ def test_real_folder_returns_canonical_partial_bundle_only_after_both_finishes_a
     assert head["semantic_group"] == "declared_synthetic" and head["context"] == "round"
     assert head["registration_sha256"] == runs[0].execution.envelope.registration_sha256
     assert head["registry_sha256"] == sha256(before["p4.json"]).hexdigest() and head["base_registry_sha256"] == sha256(before["p2.json"]).hexdigest()
-    expected_refs = expected_references(side, runs[0].execution.envelope)
-    assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4} and len(rows) == len(reads) == 3 + 4 * len(m.ec.STEP.produces)
+    expected_refs = expected_observations(side, runs[0].execution.envelope)
+    assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4, "l3.fhrp": 5 if with_hsrp else 0}
+    assert len(rows) == len(reads) == 3 + 4 * len(m.ec.STEP.produces) + (5 if with_hsrp else 0)
     assert {k.FactRef(fact=k.FactId(row["fact"]), subject=k.EntityKey(row["subject"])) for row in rows} == expected_refs
-    assert {(f, s) for _, f, s in reads} == {(r["fact"], r["subject"]) for r in rows} and all(set(declared) == {m.stp.ROOT_GUARD, *m.ec.STEP.produces} and fact in declared for declared, fact, _ in reads)
+    assert {(f, s) for _, f, s in reads} == {(r["fact"], r["subject"]) for r in rows} and all(set(declared) == {m.stp.ROOT_GUARD, *m.ec.STEP.produces, *m.fhrp.STEP.produces} and fact in declared for declared, fact, _ in reads)
     root = next(r for r in rows if r["fact"] == m.stp.ROOT_GUARD and r["vlan"] == 1)
     assert (root["state"], root.get("value", root.get("reason"))) == (("unknown", "field_not_printed") if guard is None else ("known", guard == b"enabled"))
     channel = next(r for r in rows if r["fact"] == m.ec.REPORTED_PROTOCOL and r["group"] == "2")
     assert (channel["value"], channel["raw"]) == (expected, protocol.decode())
     original = {o.receipt.capture.id: o for o in runs[0].execution.executed}
-    assert len(head["captures"]) == len(original) == 2 and {c["id"] for c in head["captures"]} == set(original)
+    assert len(head["captures"]) == len(original) == (3 if with_hsrp else 2) and {c["id"] for c in head["captures"]} == set(original)
     for capture in head["captures"]:
         item = original[capture["id"]]
         assert (capture["source"], capture["operation"], capture["rendered"], capture["owner"]) == (item.receipt.capture.source, item.receipt.capture.operation, item.receipt.capture.rendered, item.receipt.owner)
@@ -96,19 +116,32 @@ def test_real_folder_returns_canonical_partial_bundle_only_after_both_finishes_a
         assert (clock["state"], clock["reason"], clock["detail"]) == ("unknown", "as_of_missing", "no_collector_time") and clock["evidence"] == capture["integrity_evidence"] and clock["candidates"] == clock["next_evidence"] == []
         assert clock["evidence"][0]["locator"] == "whole_capture" and clock["evidence"][0]["capture"] == capture["id"]
         assert capture["sha256"] == sha256(before[capture["path"]]).hexdigest() and capture["registration_sha256"] == head["registration_sha256"]
-    original_rows = [(m.stp.ROOT_GUARD, row, row.value) for row in runs[0].result.rows] + list(m.ec.fact_rows(finishes[0]))
+    channel, standby = next(out for out in finishes if type(out) is m.ec.Result), next(out for out in finishes if type(out) is m.fhrp.Result)
+    original_rows = [(m.stp.ROOT_GUARD, row, row.value) for row in runs[0].result.rows] + list(m.ec.fact_rows(channel)) + list(m.fhrp.fact_rows(standby))
     expected = {(fact, row.subject): value.evidence for fact, row, value in original_rows}
+    if with_hsrp:
+        local = {(row["interface"], row["group"]): row for row in rows if row["fact"] == m.fhrp.REPORTED_STATE}
+        assert set(local) == {("Vl20", "0"), ("Vl10", "1"), ("BD3329", "129"), ("Vl99", "2"), ("Vl30", "2")}
+        for key, value, raw in ((("Vl20", "0"), "init", "Init"), (("Vl10", "1"), "active", "Active"), (("BD3329", "129"), "standby", "Standby")):
+            assert (local[key]["state"], local[key]["value"], local[key]["raw"], local[key]["basis"]) == ("known", value, raw, "observed")
+            assert local[key]["address_family"] == "ipv4" and local[key]["protocol"] == "hsrp"
+        assert local[("Vl99", "2")]["reason"] == "subject_absent_from_capture" and local[("Vl30", "2")]["reason"] == "not_collected"
+        assert local[("Vl99", "2")]["next_evidence"][0]["params"] == [["group", "2"], ["interface", "Vl99"]]
     for row in rows:
         for original, projected in zip(expected[(row["fact"], row["subject"])], row["evidence"], strict=True):
             assert_leaf(original, projected, runs[0].execution)
 
 
+@pytest.mark.parametrize("with_hsrp", [False, True])
 @pytest.mark.parametrize("seed", ["1", "83"])
-def test_same_raw_bytes_are_identical_across_directory_and_hash_seed(tmp_path, seed):
+def test_same_raw_bytes_are_identical_across_directory_and_hash_seed(tmp_path, seed, with_hsrp):
     left, right = tmp_path / "left", tmp_path / "right"
     left.mkdir()
     right.mkdir()
-    estate(left)
+    if with_hsrp:
+        estate3(left)
+    else:
+        estate(left)
     raw = snapshot(left)
     for name in reversed(tuple(raw)):
         (right / name).write_bytes(raw[name])
@@ -119,8 +152,9 @@ def test_same_raw_bytes_are_identical_across_directory_and_hash_seed(tmp_path, s
     assert child.stdout.strip() == expected["MANIFEST.sha256"].hex()
 
 
-def test_iteration_does_not_change_bytes_but_raw_registry_or_line_endings_change_provenance(tmp_path, monkeypatch):
-    side = estate(tmp_path)
+@pytest.mark.parametrize("with_hsrp", [False, True])
+def test_iteration_does_not_change_bytes_but_raw_registry_or_line_endings_change_provenance(tmp_path, monkeypatch, with_hsrp):
+    side = estate3(tmp_path) if with_hsrp else estate(tmp_path)
     original = m.analyse_folder(tmp_path, LIMITS)
     factory = m.stp.build_root_guard_global
     def reordered(*args, **kwargs):
@@ -134,7 +168,10 @@ def test_iteration_does_not_change_bytes_but_raw_registry_or_line_endings_change
     (tmp_path / "p4.json").write_bytes(canonical(side))
     changed = m.analyse_folder(tmp_path, LIMITS)
     assert changed != original and semantics(changed) == semantics(original)
-    estate(tmp_path, ending=b"\r\n")
+    if with_hsrp:
+        estate3(tmp_path, ending=b"\r\n")
+    else:
+        estate(tmp_path, ending=b"\r\n")
     crlf = m.analyse_folder(tmp_path, LIMITS)
     assert crlf != original and semantics(crlf) == semantics(original)
 
@@ -148,7 +185,7 @@ def test_missing_failed_and_partial_capture_remain_unknown_with_original_denomin
         (tmp_path / "ec.txt").unlink()
         (tmp_path / "p4.json").write_bytes(canonical(side))
     head, rows = unpack(m.analyse_folder(tmp_path, LIMITS))
-    assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4} and len(rows) == 3 + 4 * len(m.ec.STEP.produces)
+    assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4, "l3.fhrp": 0} and len(rows) == 3 + 4 * len(m.ec.STEP.produces)
     selected = rows if mode == "missing" else [r for r in rows if r["fact"] == m.stp.ROOT_GUARD]
     assert all(r["state"] == "unknown" and r["reason"] == {"missing": "not_collected", "error": "capture_error", "partial": "parse_partial"}[mode] for r in selected)
     need = next(r for r in selected if r["fact"] == m.stp.ROOT_GUARD)["next_evidence"][0]
@@ -384,19 +421,24 @@ def test_ec_adapter_cannot_define_its_own_census_or_bypass_original_rows_and_sto
         m.analyse_folder(tmp_path, LIMITS)
 
 
+@pytest.mark.parametrize("family", ["etherchannel", "hsrp"])
 @pytest.mark.parametrize("canonical_clone", [False, True])
-def test_ec_adapter_returns_original_rows_and_states_and_order_does_not_change_bytes(tmp_path, monkeypatch, canonical_clone):
-    estate(tmp_path)
+def test_owner_adapter_returns_original_rows_and_states_and_order_does_not_change_bytes(tmp_path, monkeypatch, canonical_clone, family):
+    if family == "hsrp":
+        estate3(tmp_path)
+    else:
+        estate(tmp_path)
     original = m.analyse_folder(tmp_path, LIMITS)
-    adapter, finish = m.ec.fact_rows, m.SummaryPack.finish
+    module, pack = (m.fhrp, m.StandbyBriefPack) if family == "hsrp" else (m.ec, m.SummaryPack)
+    adapter, finish = module.fact_rows, pack.finish
     def finished(self, execution):
         owner = finish(self, execution)
         values = adapter(owner)
-        assert type(values) is tuple and {fact for fact, _, _ in values} == set(m.ec.STEP.produces)
-        assert len(values) == len(owner.rows) * len(m.ec.STEP.produces)
+        assert type(values) is tuple and {fact for fact, _, _ in values} == set(module.STEP.produces)
+        assert len(values) == len(owner.rows) * len(module.STEP.produces)
         assert all(any(row is original for original in owner.rows) for _, row, _ in values)
         assert all(owner.store.values[k.FactRef(fact=fact, subject=row.subject)] is state for fact, row, state in values)
-        assert all(state is row.value for fact, row, state in values if fact == m.ec.REPORTED_PROTOCOL)
+        assert all(state is row.value for fact, row, state in values if fact in (m.ec.REPORTED_PROTOCOL, m.fhrp.REPORTED_STATE))
         if canonical_clone:
             fact, row, state = next(item for item in values if type(item[2]) is k.Known)
             canonical = replace(state)
@@ -405,13 +447,13 @@ def test_ec_adapter_returns_original_rows_and_states_and_order_does_not_change_b
         return owner
     def mapped(owner):
         return tuple((fact, row, owner.store.values[k.FactRef(fact=fact, subject=row.subject)]) for fact, row, _ in reversed(adapter(owner)))
-    monkeypatch.setattr(m.SummaryPack, "finish", finished)
-    monkeypatch.setattr(m.ec, "fact_rows", mapped)
+    monkeypatch.setattr(pack, "finish", finished)
+    monkeypatch.setattr(module, "fact_rows", mapped)
     assert m.analyse_folder(tmp_path, LIMITS) == original
 
 
 @pytest.mark.parametrize("removed", ["tree", "ec"])
-def test_empty_owner_population_keeps_registered_fact_profile_and_four_files(tmp_path, removed):
+def test_empty_owner_population_keeps_registered_fact_profile_and_five_files(tmp_path, removed):
     side = estate(tmp_path)
     operation = m.stp.stp.OP if removed == "tree" else m.ec.parse_summary.OP
     side["targets"] = [target for target in side["targets"] if target["operation"] != operation]
@@ -420,13 +462,13 @@ def test_empty_owner_population_keeps_registered_fact_profile_and_four_files(tmp
     (tmp_path / "p4.json").write_bytes(canonical(side))
     before = snapshot(tmp_path)
     head, rows = unpack(m.analyse_folder(tmp_path, LIMITS))
-    assert head["denominator"] == {"l2.stp": 0 if removed == "tree" else 3, "l2.etherchannel": 0 if removed == "ec" else 4}
+    assert head["denominator"] == {"l2.stp": 0 if removed == "tree" else 3, "l2.etherchannel": 0 if removed == "ec" else 4, "l3.fhrp": 0}
     assert len(rows) == (4 * len(m.ec.STEP.produces) if removed == "tree" else 3)
     assert all(row["pack"] != ("l2.stp" if removed == "tree" else "l2.etherchannel") for row in rows)
     assert snapshot(tmp_path) == before
 
 
-# Native 2442488 receipts: the new member catalogue intentionally changes P4 bytes; input pins remain.
+# Native 2442488 four-file receipts remain reference; the three-owner profile changes P4 bytes, never input pins.
 @pytest.mark.parametrize("guard,protocol,ending,inputs,pure,cli", [
     (b"disabled", b"-", b"\n",
         {
@@ -465,16 +507,16 @@ def test_empty_owner_population_keeps_registered_fact_profile_and_four_files(tmp
             "MANIFEST.sha256": "67b8729099cd102cee2e272642c30da74235e0c3661003d8b8c396e033084781",
         }),
 ])
-def test_member_profile_changes_previous_p4_bytes_with_independent_content_and_cli_checks(tmp_path, guard, protocol, ending, inputs, pure, cli):
+def test_three_owner_profile_changes_previous_p4_bytes_with_independent_content_and_cli_checks(tmp_path, guard, protocol, ending, inputs, pure, cli):
     estate(tmp_path, guard, protocol, ending)
     before = snapshot(tmp_path)
     assert {name: sha256(raw).hexdigest() for name, raw in before.items()} == inputs
     files = m.analyse_folder(tmp_path, LIMITS)
     current = {name: sha256(raw).hexdigest() for name, raw in files.items()}
-    assert set(current) == set(pure) and all(current[name] != pure[name] for name in pure)
+    assert set(current) == set(pure) | {"facts/fhrp_local.jsonl"} and not files["facts/fhrp_local.jsonl"] and all(current[name] != pure[name] for name in pure)
     head, rows = unpack(files)
-    assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4} and len(rows) == 11
-    assert head["registration_sha256"] == compile_packs((m.stp.DECLARATION, m.ec.DECLARATION)).registration_sha256
+    assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4, "l3.fhrp": 0} and len(rows) == 11
+    assert head["registration_sha256"] == compile_packs((m.stp.DECLARATION, m.ec.DECLARATION, m.fhrp.DECLARATION)).registration_sha256
     assert {row["fact"] for row in rows} == {m.stp.ROOT_GUARD, m.ec.REPORTED_PROTOCOL, m.ec.REPORTED_MEMBER_TOKENS}
     members = {row["group"]: row for row in rows if row["fact"] == m.ec.REPORTED_MEMBER_TOKENS}
     assert set(members) == {"1", "2", "3", "4"}
@@ -490,7 +532,7 @@ def test_member_profile_changes_previous_p4_bytes_with_independent_content_and_c
         published = {path.relative_to(out).as_posix(): path.read_bytes() for path in out.rglob("*") if path.is_file()}
         assert child.stdout.strip() == "runner: ok egress_denied=40"
         old_cli = pure | cli
-        assert set(published) == set(old_cli) and all(sha256(published[name]).hexdigest() != old_cli[name] for name in old_cli)
+        assert set(published) == set(old_cli) | {"facts/fhrp_local.jsonl"} and not published["facts/fhrp_local.jsonl"] and all(sha256(published[name]).hexdigest() != old_cli[name] for name in old_cli)
         published_head, published_rows = unpack(published)
         execution = published_head.pop("execution")
         assert published_head == head and published_rows == rows
@@ -500,3 +542,93 @@ def test_member_profile_changes_previous_p4_bytes_with_independent_content_and_c
         assert previous is None or previous == published
         previous = published
     assert snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("raw,mode,reason", [
+    (BODY, "no_captures", "not_collected"), (BODY + ACTIVE, "normal", "conflicting_evidence"),
+    (BODY + INIT.replace(b"203.0.113.1", b"unknown"), "normal", "identity_unresolved"),
+    (BODY + b"unrecognized trailer\n", "normal", "parse_partial"),
+    (BODY.replace(ACTIVE, ACTIVE.replace(b"Active", b"Listen")), "normal", "parse_partial"),
+    (BODY + b"% Invalid input\n", "normal", "capture_error"), (BODY + b"--More--\n", "normal", "capture_truncated"),
+])
+def test_hsrp_unknown_population_candidate_records_and_local_needs_survive_output(tmp_path, raw, mode, reason):
+    estate3(tmp_path, raw, mode)
+    head, rows = unpack(m.analyse_folder(tmp_path, LIMITS))
+    local = [row for row in rows if row["fact"] == m.fhrp.REPORTED_STATE]
+    assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4, "l3.fhrp": 5} and len(local) == 5
+    assert all(row["state"] == "unknown" and row["reason"] == reason for row in local if row["node"] == "a")
+    assert next(row for row in local if row["node"] == "b")["reason"] == "not_collected"
+    row = next(row for row in local if row["interface"] == "Vl10")
+    assert row["next_evidence"] == [{"node": "node:demo:a", "operation": "iosxe.show_standby_brief",
+        "params": [["group", "1"], ["interface", "Vl10"]], "resolves": ["l3.fhrp.reported_state"],
+        "reruns": ["l3.fhrp/parse_hsrp_brief"], "after_s": None, "unprintable": []}]
+    captures = [ref for ref in row["evidence"] if ref["kind"] == "capture"]
+    assert all(ref["role"] == "witness" for ref in captures)
+    if mode == "no_captures":
+        assert not captures
+    else:
+        assert captures[0]["locator"] == "whole_capture"
+        assert len([ref for ref in captures if ref["locator"] == "bytes"]) == (2 if reason == "conflicting_evidence" else 1)
+
+
+@pytest.mark.parametrize("plant,code", [
+    ("finish", "late_hsrp"), ("owner", "store"), ("store_extra", "store"), ("missing", "population"), ("duplicate", "population"),
+    ("row", "row"), ("state", "store"), ("foreign_fact", "row"), ("reader", "store"), ("scope", "scope"), ("value", "value"),
+    ("positive", "positive"), ("coupled_drop", "population"), ("spec_type", "spec"), ("spec_subject", "spec"), ("spec_root", "spec"),
+])
+def test_hsrp_owner_adapter_and_projection_fail_before_any_bundle(tmp_path, monkeypatch, plant, code):
+    estate3(tmp_path)
+    finish, adapter, read = m.StandbyBriefPack.finish, m.fhrp.fact_rows, FactReader.read
+    if plant.startswith("spec_"):
+        declaration = m.fhrp.DECLARATION
+        facts = declaration.facts if plant == "spec_root" else tuple(replace(fact, **({"value_type": "boolean"} if plant == "spec_type" else {"subject": "etherchannel_group"})) for fact in declaration.facts)
+        kinds = tuple(replace(kind, root=True) for kind in declaration.entity_kinds) if plant == "spec_root" else declaration.entity_kinds
+        monkeypatch.setattr(m.fhrp, "DECLARATION", replace(declaration, facts=facts, entity_kinds=kinds))
+    def finished(self, execution):
+        if plant == "finish":
+            raise RuntimeError("late_hsrp")
+        owner = finish(self, execution)
+        row = owner.rows[0]
+        if plant == "owner":
+            owner.store.owners[m.fhrp.REPORTED_STATE] = m.ec.STEP.id
+        elif plant == "store_extra":
+            owner.store.values[k.FactRef(fact=m.fhrp.REPORTED_STATE, subject=k.EntityKey("subject:extra"))] = row.value
+        elif plant in ("missing", "duplicate"):
+            return replace(owner, rows=owner.rows[:-1] if plant == "missing" else (row,) + owner.rows[:-1])
+        elif plant == "coupled_drop":
+            cold = next(item for item in owner.rows if item.target.node.id == "b")
+            owner.store.values.pop(k.FactRef(fact=m.fhrp.REPORTED_STATE, subject=cold.subject))
+            return replace(owner, rows=tuple(item for item in owner.rows if item is not cold))
+        elif plant in ("scope", "value", "positive"):
+            changed = replace(row, target=replace(row.target, context="foreign")) if plant == "scope" else replace(row, value=replace(row.value, value=False))
+            if plant == "positive":
+                raw = next(rich for rich in owner.executed[0].value.rows if (rich.interface.raw, rich.group.raw) == (row.interface, row.group))
+                value = replace(row.value, evidence=tuple(ref for ref in row.value.evidence if not (type(ref) is k.EvidenceRef and ref.locator == raw.af_spans[-1])))
+                changed = replace(row, value=value)
+            owner.store.values[k.FactRef(fact=m.fhrp.REPORTED_STATE, subject=row.subject)] = changed.value
+            return replace(owner, rows=(changed,) + owner.rows[1:])
+        return owner
+    def mapped(owner):
+        items = adapter(owner)
+        if plant in ("row", "state", "foreign_fact"):
+            fact, row, value = items[0]
+            changed = (fact, replace(row), value) if plant == "row" else (fact, row, replace(value)) if plant == "state" else (m.ec.REPORTED_PROTOCOL, row, value)
+            return (changed,) + items[1:]
+        return items
+    def consumed(self, **kwargs):
+        value = read(self, **kwargs)
+        return replace(value) if plant == "reader" and kwargs["fact"] == m.fhrp.REPORTED_STATE else value
+    if plant == "coupled_drop":
+        constructor = m.ProofIndex.__init__
+        def indexed(self, *args, **kwargs):
+            constructor(self, *args, **kwargs)
+            self.ordered = tuple(scope for scope in self.scopes if scope.target.id != "hsrp-cold")
+        monkeypatch.setattr(m.ProofIndex, "__init__", indexed)
+    monkeypatch.setattr(m.StandbyBriefPack, "finish", finished)
+    monkeypatch.setattr(m.fhrp, "fact_rows", mapped)
+    monkeypatch.setattr(FactReader, "read", consumed)
+    monkeypatch.setattr(m, "result_bundle", lambda *args, **kwargs: pytest.fail("bundle before HSRP closure"))
+    if plant == "finish":
+        monkeypatch.setattr(m, "bind_reader", lambda *args, **kwargs: pytest.fail("reader before final owner finish"))
+    with pytest.raises(RuntimeError if plant == "finish" else ValueError, match="^" + ("late_hsrp" if plant == "finish" else "p4_projection_positive" if plant == "positive" else "p4_observations_" + code) + "$"):
+        m.analyse_folder(tmp_path, LIMITS)

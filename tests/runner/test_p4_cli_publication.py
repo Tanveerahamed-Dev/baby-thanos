@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 from test_p2_runner import snapshot as tree_snapshot
+from test_p4_hsrp_proofs import estate3
 from test_p4_observations import FACTS, snapshot, unpack
-from test_p4_proof_index import estate
 from test_runner import evidence_folder, read_outputs, run_cli
 
 from atlas_brain.contract.canonical import canonical
@@ -25,7 +25,7 @@ def stage(out):
 def prepared(tmp_path, monkeypatch):
     evidence, out = tmp_path / "evidence", tmp_path / "out"
     evidence.mkdir()
-    estate(evidence)
+    estate3(evidence)
     monkeypatch.setattr(coordinator.tripwire, "probe", lambda: 4)
     monkeypatch.setattr(coordinator, "_spawn_workers", lambda workers: RECEIPTS)
     return evidence, out
@@ -34,7 +34,7 @@ def prepared(tmp_path, monkeypatch):
 def test_real_cli_witness_worker_seed_and_directory_invariance(tmp_path, monkeypatch):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
-    estate(evidence, guard=b"disabled", protocol=b"-")
+    estate3(evidence)
     before, outputs = snapshot(evidence), []
     for role, workers, seed, total in (("parent", "1", "1", 40), ("parent", "4", "83", 40), ("coordinator", "2", "1", 36)):
         monkeypatch.setenv("PYTHONHASHSEED", seed)
@@ -83,7 +83,7 @@ def test_invalid_formats_refuse_without_publishing(tmp_path, arguments):
     assert not out.exists() and not stage(out).exists()
 
 
-@pytest.mark.parametrize("fault", ["analysis", "probe", "worker", "worker_os", "profile", "manifest", "workers_bool", "parent_bool", "parent_count"])
+@pytest.mark.parametrize("fault", ["analysis", "probe", "worker", "worker_os", "profile", "manifest", "missing_file", "extra_file", "late_hsrp", "workers_bool", "parent_bool", "parent_count"])
 def test_all_analysis_profile_and_witnesses_close_before_any_stage(tmp_path, monkeypatch, fault):
     real_spawn = coordinator._spawn_workers
     evidence, out = prepared(tmp_path, monkeypatch)
@@ -102,8 +102,16 @@ def test_all_analysis_profile_and_witnesses_close_before_any_stage(tmp_path, mon
             else:
                 files["MANIFEST.sha256"] = b"wrong"
         events.append("analysis")
+        if fault in ("missing_file", "extra_file"):
+            if fault == "missing_file":
+                files.pop("facts/fhrp_local.jsonl")
+            else:
+                files["facts/foreign.jsonl"] = b"extra"
+            files["MANIFEST.sha256"] = manifest({name: raw for name, raw in files.items() if name != "MANIFEST.sha256"})
         return files
     monkeypatch.setattr(p4, "analyse_folder", analyse)
+    if fault == "late_hsrp":
+        monkeypatch.setattr(p4.StandbyBriefPack, "finish", lambda *args: (_ for _ in ()).throw(ValueError("hsrp_test_finish")))
     def probe():
         assert not out.exists() and not stage(out).exists() and events == ["analysis"]
         events.append("probe")
@@ -121,7 +129,11 @@ def test_all_analysis_profile_and_witnesses_close_before_any_stage(tmp_path, mon
         return RECEIPTS
     monkeypatch.setattr(coordinator.tripwire, "probe", probe)
     monkeypatch.setattr(coordinator, "_spawn_workers", workers)
-    with pytest.raises(coordinator.RunnerRefused, match="^(p4_projection_scope|egress_witness_failed|worker_protocol_failed|p4_output_invalid|invalid_workers|invalid_parent_witness)$"):
+    code = {"analysis": "p4_projection_scope", "probe": "egress_witness_failed", "worker": "worker_protocol_failed",
+        "worker_os": "worker_protocol_failed", "profile": "p4_output_invalid", "manifest": "p4_output_invalid",
+        "missing_file": "p4_output_invalid", "extra_file": "p4_output_invalid", "late_hsrp": "p4_hsrp_test_finish",
+        "workers_bool": "invalid_workers", "parent_bool": "invalid_parent_witness", "parent_count": "invalid_parent_witness"}[fault]
+    with pytest.raises(coordinator.RunnerRefused, match="^" + code + "$"):
         coordinator.run_p4(evidence=evidence, out=out, workers=True if fault == "workers_bool" else 2, parent_denied=False if fault == "parent_bool" else 99 if fault == "parent_count" else 4)
     assert not out.exists() and not stage(out).exists()
 
@@ -171,12 +183,14 @@ def test_overlapping_and_linked_output_paths_refuse_before_analysis(tmp_path, mo
         coordinator.run_p4(evidence=evidence, out=out, workers=1, parent_denied=4)
 
 
+@pytest.mark.parametrize("fact_file", ["etherchannel_group.jsonl", "fhrp_local.jsonl"])
 @pytest.mark.parametrize("fault", ["open", "partial_write", "short_write", "readback", "read_error", "rename", "cleanup", "unknown", "replacement", "inventory", "directory"])
-def test_publication_failure_never_exposes_final_and_cleanup_is_ownership_bounded(tmp_path, monkeypatch, fault):
+def test_publication_failure_never_exposes_final_and_cleanup_is_ownership_bounded(tmp_path, monkeypatch, fault, fact_file):
     evidence, out = prepared(tmp_path, monkeypatch)
     staging = stage(out)
     real_open, real_read, real_rename, real_unlink, real_iter = Path.open, Path.read_bytes, Path.rename, Path.unlink, Path.iterdir
-    first, second = staging / "MANIFEST.sha256", staging / "facts/etherchannel_group.jsonl"
+    first, second = staging / "MANIFEST.sha256", staging / "facts" / fact_file
+    verification = second if fact_file == "fhrp_local.jsonl" else first
     replaced = []
     @contextmanager
     def opened(path, *args, **kwargs):
@@ -202,9 +216,9 @@ def test_publication_failure_never_exposes_final_and_cleanup_is_ownership_bounde
             yield SimpleNamespace(write=write) if args == ("xb",) else stream
     def accessed(path, listing=False):
         assert not (replaced and path.is_relative_to(staging)), "verification visited replaced output tree"
-        if not listing and path == first and fault == "read_error":
+        if not listing and path == verification and fault == "read_error":
             raise OSError("injected verification read")
-        return real_iter(path) if listing else b"changed" if path == first and fault == "readback" else real_read(path)
+        return real_iter(path) if listing else b"changed" if path == verification and fault == "readback" else real_read(path)
     def blocked(method, code, target):
         def apply(path, *args, **kwargs):
             if path == target and fault == code:

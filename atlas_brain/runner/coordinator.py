@@ -181,7 +181,8 @@ def _spawn_workers(workers: int) -> tuple[tuple[str, int], ...]:
     return tuple(sorted(results))
 
 
-P4_NAMES = ("MANIFEST.sha256", "facts/etherchannel_group.jsonl", "facts/stp_port_vlan.jsonl", "result.json")
+P4_NAMES = ("MANIFEST.sha256", "facts/etherchannel_group.jsonl", "facts/fhrp_local.jsonl",
+            "facts/stp_port_vlan.jsonl", "result.json")
 
 
 type OwnedPath = tuple[Path, int, int]
@@ -231,7 +232,7 @@ def _publish_p4(out: Path, stage: Path, files: dict[str, bytes]) -> None:
         if (not all(_owned_p4(item, directory=True) for item in created_directories)
                 or not all(_owned_p4(item, directory=False) for item in created_files)
                 or {path.name for path in stage.iterdir()} != {"facts", "result.json", "MANIFEST.sha256"}
-                or {path.name for path in (stage / "facts").iterdir()} != {"etherchannel_group.jsonl", "stp_port_vlan.jsonl"}
+                or {path.name for path in (stage / "facts").iterdir()} != {"etherchannel_group.jsonl", "fhrp_local.jsonl", "stp_port_vlan.jsonl"}
                 or any((stage / name).read_bytes() != raw for name, raw in files.items())):
             raise RunnerRefused("output_verification_failed")
         try:
