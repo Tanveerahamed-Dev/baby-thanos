@@ -2,11 +2,15 @@
 import re
 from dataclasses import dataclass
 from hashlib import sha256
+from typing import cast
 
 from atlas_brain.contract.canonical import canonical
-from atlas_brain.evidence.capture import Scope
+from atlas_brain.evidence import p4_admission as p4
+from atlas_brain.evidence.admission import Budgets, record, strict_json, string
+from atlas_brain.evidence.capture import Capture, Scope
 from atlas_brain.evidence.parsekit.rules import Captured, Record
-from atlas_brain.evidence.synthetic import Node
+from atlas_brain.evidence.synthetic import SCHEMA as BASE_SCHEMA
+from atlas_brain.evidence.synthetic import Node, SyntheticGroup
 from atlas_brain.kernel import states as k
 from atlas_brain.model.pack_registration import (
     OperationBinding,
@@ -15,7 +19,7 @@ from atlas_brain.model.pack_registration import (
 )
 from atlas_brain.model.specs import EntityKindSpec, FactSpec, StepId, StepSpec
 from atlas_brain.model.store import FactStore, bind_writer
-from atlas_brain.runner.pack_receipts import CaptureRequest
+from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
 from atlas_brain.runner.pack_runtime import (
     Executed,
     Handler,
@@ -138,8 +142,9 @@ def _claims(output: Executed[hsrp.Result]) -> tuple[tuple[hsrp.Row, tuple[k.Byte
 
 
 def _unknown(target: Target, interface: str, group: str, output: Executed[hsrp.Result] | None,
-             candidates: tuple[hsrp.Row, ...], reason: k.UnknownReason) -> k.Unknown:
-    evidence = target.node.declaration.evidence
+             candidates: tuple[hsrp.Row, ...], reason: k.UnknownReason,
+             declared: tuple[k.RegistryRef, ...] = ()) -> k.Unknown:
+    evidence = target.node.declaration.evidence + declared
     if output is not None:
         capture = output.receipt.capture
         evidence += (k.EvidenceRef(capture=capture.id, locator=k.WholeCapture(), role=k.EvidenceRole.WITNESS, excerpt_sha256=capture.bytes_sha256),)
@@ -150,8 +155,19 @@ def _unknown(target: Target, interface: str, group: str, output: Executed[hsrp.R
     return k.Unknown(reason=reason, detail="hsrp_state_unresolved", evidence=evidence, candidates=(), next_evidence=(need,))
 
 
-def build_reported_state(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> Result:
-    """Direct trusted API; node provenance is structural, not raw-envelope or global-run admission."""
+type _Key = tuple[str, k.EntityKey]
+type _Proofs = dict[_Key, tuple[k.RegistryRef, ...]]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Plan:
+    indexed: dict[_Key, Target]
+    expected: dict[k.CaptureId, CaptureRequest]
+    requests: tuple[CaptureRequest, ...]
+    proofs: _Proofs | None
+
+
+def _plan(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> _Plan:
     _need(type(targets) is tuple and all(type(target) is Target for target in targets), "target")
     _need(type(requests) is tuple and all(type(request) is CaptureRequest for request in requests), "request_target")
     indexed: dict[tuple[str, k.EntityKey], Target] = {}
@@ -172,10 +188,15 @@ def build_reported_state(targets: tuple[Target, ...], requests: tuple[CaptureReq
         _need(key not in supplied and capture.id not in expected, "duplicate_capture")
         supplied.add(key)
         expected[capture.id] = request
-    executed = execute_parsers((DECLARATION,), (Handler(binding=BINDING, parser=_Adapter()),), requests)
+    return _Plan(indexed=indexed, expected=expected, requests=requests, proofs=None)
+
+
+def _materialize(plan: _Plan, executed: tuple[Executed[hsrp.Result], ...], registration: str | None = None) -> Result:
+    indexed, expected = plan.indexed, plan.expected
     _need(type(executed) is tuple and len(executed) == len(expected)
           and {output.receipt.capture.id for output in executed} == set(expected), "receipt_coverage")
-    registration = compile_packs((DECLARATION,)).registration_sha256
+    if registration is None:
+        registration = compile_packs((DECLARATION,)).registration_sha256
     outcomes: dict[tuple[str, k.EntityKey], tuple[Executed[hsrp.Result], tuple[tuple[hsrp.Row, tuple[k.ByteSpan, ...]], ...]]] = {}
     for output in executed:
         receipt = output.receipt
@@ -191,6 +212,7 @@ def build_reported_state(targets: tuple[Target, ...], requests: tuple[CaptureReq
     rows: list[Row] = []
     for key in sorted(indexed):
         target = indexed[key]
+        declared = () if plan.proofs is None else plan.proofs[key]
         outcome = outcomes.get(key)
         for interface, group in target.groups:
             output = None if outcome is None else outcome[0]
@@ -203,13 +225,143 @@ def build_reported_state(targets: tuple[Target, ...], requests: tuple[CaptureReq
                 refs = tuple(k.EvidenceRef(capture=output.receipt.capture.id, locator=point, role=k.EvidenceRole.SUBJECT,
                              excerpt_sha256=sha256(output.receipt.capture.raw[point.start:point.end]).hexdigest()) for point in claims)
                 value: k.Known[str] | k.Unknown = k.Known(value=observed.state.raw.lower(), raw=observed.state.raw,
-                    basis=k.Basis.OBSERVED, evidence=target.node.declaration.evidence + refs)
+                    basis=k.Basis.OBSERVED, evidence=target.node.declaration.evidence + declared + refs)
             else:
                 reason = reason or (k.UnknownReason.CONFLICTING_EVIDENCE if candidates else k.UnknownReason.SUBJECT_ABSENT_FROM_CAPTURE)
-                value = _unknown(target, interface, group, output, candidates, reason)
+                value = _unknown(target, interface, group, output, candidates, reason, declared)
             rows.append(Row(target=target, interface=interface, group=group, subject=subject(target, interface, group), value=value))
     store = FactStore()
     writer = bind_writer(store, step=STEP)
     for row in rows:
         writer.write(fact=REPORTED_STATE, subject=row.subject, value=row.value)
     return Result(store=store, rows=tuple(rows), executed=executed)
+
+
+def build_reported_state(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> Result:
+    """Direct trusted API; node provenance is structural, not raw-envelope or global-run admission."""
+    plan = _plan(targets, requests)
+    executed = execute_parsers((DECLARATION,), (Handler(binding=BINDING, parser=_Adapter()),), plan.requests)
+    return _materialize(plan, executed)
+
+
+def _declared(state: k.Known[str], table: str, identity: str, digest: str, pointer: str) -> k.RegistryRef:
+    ref = k.RegistryRef(table=table, row_id=identity, table_digest=digest, citation=pointer)
+    _need(type(state) is k.Known and state.basis is k.Basis.DECLARED and state.raw == state.value == identity
+          and state.evidence == (ref,), "global_provenance")
+    return ref
+
+
+def _proofs(envelope: p4.Envelope, budgets: Budgets, indexed: dict[_Key, Target]) -> _Proofs:
+    _need(type(envelope) is p4.Envelope and type(envelope.raw) is bytes and type(envelope.base) is SyntheticGroup
+          and type(envelope.base.raw) is bytes, "global_provenance")
+    base, context = envelope.base, envelope.context
+    digest, base_digest = sha256(envelope.raw).hexdigest(), sha256(base.raw).hexdigest()
+    side = record(strict_json(envelope.raw, budgets.nesting_depth, budgets.numeric_digits),
+                  ("schema", "semantic_group", "context", "base_sha256", "targets", "captures"))
+    registry = record(strict_json(base.raw, budgets.nesting_depth, budgets.numeric_digits),
+                      ("schema", "semantic_group", "group", "nodes", "captures"))
+    _need(side["schema"] == p4.SCHEMA and side["semantic_group"] == "declared_synthetic" and side["context"] == context
+          and side["base_sha256"] == base_digest and registry["schema"] == base.schema == BASE_SCHEMA
+          and registry["semantic_group"] == "declared_synthetic" and registry["group"] == base.id, "global_provenance")
+    _declared(base.declaration, "synthetic_p2.groups", base.id, base_digest, "/group")
+    context_ref = _declared(envelope.declaration, "synthetic_p4.context", context, digest, "/context")
+    _need(type(registry["nodes"]) is list and type(side["targets"]) is list, "global_provenance")
+    nodes = tuple(record(row, ("id", "discovery_id", "ports")) for row in cast(list[object], registry["nodes"]))
+    rows = tuple(record(row, ("id", "node", "operation", "params")) for row in cast(list[object], side["targets"]))
+    _need(len({string(row, "id") for row in nodes}) == len(nodes)
+          and len({string(row, "id") for row in rows}) == len(rows), "global_provenance")
+    _need(type(envelope.targets) is tuple and all(type(t) is p4.Target for t in envelope.targets)
+          and type(base.nodes) is tuple and all(type(n) is Node for n in base.nodes), "global_provenance")
+    owned_targets = tuple(target for target in envelope.targets if target.operation == hsrp.OP)
+    declared = {target.id: target for target in owned_targets}
+    own = tuple((i, row) for i, row in enumerate(rows) if row["operation"] == hsrp.OP)
+    _need(len(owned_targets) == len(declared) == len(own) == len(indexed)
+          and {string(row, "id") for _, row in own} == set(declared),
+          "global_provenance")
+    proofs: _Proofs = {}
+    for index, row in own:
+        identifier, node_id = string(row, "id"), string(row, "node")
+        item = declared[identifier]
+        key = (context, item.node.key)
+        _need(key in indexed and key not in proofs and indexed[key].node is item.node and item.node.id == node_id
+              and item.owner == STEP.id and type(item.params) is bytes and canonical(row["params"]) == item.params
+              and any(item.node is node for node in base.nodes), "global_provenance")
+        pairs = record(row["params"], ("groups",))["groups"]
+        _need(type(pairs) is list and all(type(pair) is list and len(cast(list[object], pair)) == 2
+              and all(type(v) is str for v in cast(list[object], pair)) for pair in cast(list[object], pairs)), "global_provenance")
+        groups = tuple(sorted((cast(list[str], pair)[0], cast(list[str], pair)[1]) for pair in cast(list[object], pairs)))
+        _need(groups == indexed[key].groups, "global_provenance")
+        matches = tuple((i, node) for i, node in enumerate(nodes) if node["id"] == node_id)
+        _need(len(matches) == 1, "global_provenance")
+        node_index, node = matches[0]
+        ports = node["ports"]
+        _need(item.node.group == base.id and item.node.discovery_id == node["discovery_id"] and type(ports) is list
+              and all(type(port) is str for port in cast(list[object], ports))
+              and tuple(sorted(cast(list[str], ports))) == item.node.ports, "global_provenance")
+        _declared(item.node.declaration, "synthetic_p2.nodes", node_id, base_digest, f"/nodes/{node_index}")
+        proofs[key] = (context_ref, _declared(item.declaration, "synthetic_p4.targets", identifier, digest, f"/targets/{index}"))
+    return proofs
+
+
+class StateOwner(Parser[hsrp.Result]):
+    """Own parsing/facts for trusted, admitted, classified targets and requests.
+
+    Declaration proofs are rechecked; finish authenticates owned receipt metadata.
+    Raw member-ID/framing admission and whole-global-run attestation stay outside this helper.
+    """
+
+    def __init__(self, envelope: p4.Envelope, budgets: Budgets, targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> None:
+        plan = _plan(targets, requests)
+        self.plan = _Plan(indexed=plan.indexed, expected=plan.expected, requests=plan.requests,
+                          proofs=_proofs(envelope, budgets, plan.indexed))
+        self.registration = envelope.registration_sha256
+        k.digest(self.registration)
+        _need(type(envelope.captures) is tuple and all(type(member) is p4.CaptureMember and type(member.target) is p4.Target for member in envelope.captures),
+              "global_provenance")
+        owned = tuple(member for member in envelope.captures if member.target.operation == hsrp.OP)
+        members = {member.id: member for member in owned}
+        declared = {target.id: target for target in envelope.targets if target.operation == hsrp.OP}
+        _need(len(members) == len(owned) == len(requests) and set(members) == set(plan.expected), "global_provenance")
+        for request in requests:
+            capture, member = request.capture, members[request.capture.id]
+            _need(member.target.id in declared and member.target is declared[member.target.id]
+                  and capture.source == member.target.node.key and capture.raw == member.raw
+                  and capture.bytes_sha256 == member.sha256, "global_provenance")
+        self.produced: dict[k.CaptureId, hsrp.Result] = {}
+        self.finished = False
+
+    def parse(self, request: CaptureRequest) -> Parsed[hsrp.Result]:
+        expected = self.plan.expected
+        _need(type(request) is CaptureRequest and request.capture.id in expected
+              and request.capture is expected[request.capture.id].capture
+              and request.context == expected[request.capture.id].context, "global_capture")
+        _need(request.capture.id not in self.produced, "global_value")
+        value = hsrp.parse_capture(request.capture)
+        self.produced[request.capture.id] = value
+        return value, value.parse
+
+    def own[T](self, output: Executed[T]) -> Executed[hsrp.Result]:
+        _need(type(output) is Executed and type(output.receipt) is ParseReceipt
+              and type(output.receipt.capture) is Capture, "global_receipt")
+        receipt, expected = output.receipt, self.plan.expected
+        _need(receipt.capture.id in expected and receipt.capture is expected[receipt.capture.id].capture, "global_capture")
+        _need(receipt.capture.id in self.produced, "global_value")
+        value = self.produced[receipt.capture.id]
+        _need(output.value is value and receipt.parse is value.parse, "global_value")
+        return Executed(receipt=receipt, value=value)
+
+    def finish(self, executed: tuple[Executed[hsrp.Result], ...]) -> Result:
+        _need(type(executed) is tuple, "global_receipt")
+        _need(not self.finished, "global_run")
+        _need(set(self.produced) == set(self.plan.expected), "global_value")
+        checked = tuple(self.own(output) for output in executed)
+        result = _materialize(self.plan, checked, self.registration)
+        self.finished = True
+        return result
+
+
+def fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[str] | k.Unknown], ...]:
+    """Expose original owning rows/states for trusted projection; this is not result admission."""
+    _need(type(result) is Result and type(result.rows) is tuple and all(type(row) is Row for row in result.rows), "fact_rows")
+    _need(STEP.produces == (REPORTED_STATE,) and tuple(spec.id for spec in DECLARATION.facts) == STEP.produces, "fact_rows")
+    return tuple((REPORTED_STATE, row, row.value) for row in result.rows)
