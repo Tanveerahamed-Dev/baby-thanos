@@ -13,8 +13,8 @@ from . import coordinator, tripwire
 from .records import DEFAULT_WORKERS, EXIT_OK, EXIT_REFUSED, RunnerRefused
 
 ROLES = ("parent", "coordinator", "worker")
-FLAGS = frozenset({"--evidence", "--out", "--workers", "--role", "--steps", "--parent-denied"})
-USAGE = """usage: python -m atlas_brain.runner --evidence DIR --out DIR [--workers N]
+FLAGS = frozenset({"--evidence", "--out", "--workers", "--role", "--steps", "--parent-denied", "--format"})
+USAGE = """usage: python -m atlas_brain.runner --evidence DIR --out DIR [--workers N] [--format p4-observations]
 
 Analyse raw IOS-XE show-version/interface captures (P0/P1), or a declared
 synthetic P2 p2.json group: schema 1 discovery/trunk observations, or schema 2
@@ -25,6 +25,9 @@ windows are not authenticated clocks or proof of continuous adjacency state.
 Execute deterministic witness steps and write SUMMARY.txt
 plus MANIFEST.json under --out. Egress is denied and counted; identical inputs
 give identical output bytes across worker counts.
+P4 requires --format p4-observations and a fresh output directory with an existing
+parent. It writes result.json, two facts/*.jsonl files and MANIFEST.sha256.
+These are partial observations; protocol checks and health are not implemented.
 """
 
 
@@ -36,6 +39,7 @@ class Options:
     workers: int
     steps: tuple[str, ...]
     parent_denied: int
+    output_format: str
 
 
 def _parse(arguments: list[str]) -> Options:
@@ -48,6 +52,9 @@ def _parse(arguments: list[str]) -> Options:
         values[flag] = arguments[position + 1]
         position += 2
     role = values.get("--role", "parent")
+    output_format = values.get("--format", "legacy")
+    if output_format not in ("legacy", "p4-observations") or role == "worker" and output_format != "legacy":
+        raise RunnerRefused("invalid_format")
     if role not in ROLES:
         raise RunnerRefused("invalid_role")
     try:
@@ -64,7 +71,7 @@ def _parse(arguments: list[str]) -> Options:
     return Options(role=role,
                    evidence=Path(values["--evidence"]) if "--evidence" in values else None,
                    out=Path(values["--out"]) if "--out" in values else None,
-                   workers=workers, steps=steps, parent_denied=parent_denied)
+                   workers=workers, steps=steps, parent_denied=parent_denied, output_format=output_format)
 
 
 def _run(arguments: list[str]) -> int:
@@ -76,7 +83,8 @@ def _run(arguments: list[str]) -> int:
         raise RunnerRefused("missing_evidence" if options.evidence is None else "missing_out")
     evidence, out = options.evidence, options.out
     if options.role == "coordinator":
-        print("runner: ok egress_denied=" + str(coordinator.run(
+        execute = coordinator.run_p4 if options.output_format == "p4-observations" else coordinator.run
+        print("runner: ok egress_denied=" + str(execute(
             evidence=evidence, out=out, workers=options.workers, parent_denied=options.parent_denied)))
         return EXIT_OK
     coordinator.require_evidence(evidence)
@@ -86,6 +94,8 @@ def _run(arguments: list[str]) -> int:
     command = [sys.executable, "-m", "atlas_brain.runner", "--role", "coordinator",
                "--evidence", str(evidence), "--out", str(out),
                "--workers", str(options.workers), "--parent-denied", str(parent_denied)]
+    if options.output_format == "p4-observations":
+        command.extend(("--format", "p4-observations"))
     return subprocess.run(command, check=False).returncode
 
 

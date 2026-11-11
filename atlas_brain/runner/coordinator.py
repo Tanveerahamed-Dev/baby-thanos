@@ -179,3 +179,152 @@ def _spawn_workers(workers: int) -> tuple[tuple[str, int], ...]:
     if sorted(step for step, _ in results) != sorted(STEPS):
         raise RunnerRefused("worker_protocol_failed")
     return tuple(sorted(results))
+
+
+P4_NAMES = ("MANIFEST.sha256", "facts/etherchannel_group.jsonl", "facts/stp_port_vlan.jsonl", "result.json")
+
+
+type OwnedPath = tuple[Path, int, int]
+
+
+def _owned_p4(item: OwnedPath, *, directory: bool) -> bool:
+    path, device, inode = item
+    try:
+        info = Path.lstat(path)
+    except OSError:
+        return False
+    return ((info.st_dev, info.st_ino) == (device, inode)
+            and (stat.S_ISDIR(info.st_mode) and not path.is_junction() if directory
+                 else stat.S_ISREG(info.st_mode) and info.st_nlink == 1))
+
+
+def _rollback_p4(files: list[OwnedPath], directories: list[OwnedPath]) -> None:
+    for item in reversed(files):
+        try:
+            if _owned_p4(item, directory=False):
+                item[0].unlink()
+        except OSError:
+            pass
+    for item in reversed(directories):
+        try:
+            if _owned_p4(item, directory=True):
+                item[0].rmdir()
+        except OSError:
+            pass
+
+
+def _publish_p4(out: Path, stage: Path, files: dict[str, bytes]) -> None:
+    created_files: list[OwnedPath] = []
+    created_directories: list[OwnedPath] = []
+    try:
+        for directory in (stage, stage / "facts"):
+            directory.mkdir()
+            info = Path.lstat(directory)
+            created_directories.append((directory, info.st_dev, info.st_ino))
+        for name, raw in sorted(files.items()):
+            path = stage / name
+            with path.open("xb") as stream:
+                info = Path.lstat(path)
+                created_files.append((path, info.st_dev, info.st_ino))
+                if stream.write(raw) != len(raw):
+                    raise RunnerRefused("output_verification_failed")
+        if (not all(_owned_p4(item, directory=True) for item in created_directories)
+                or not all(_owned_p4(item, directory=False) for item in created_files)
+                or {path.name for path in stage.iterdir()} != {"facts", "result.json", "MANIFEST.sha256"}
+                or {path.name for path in (stage / "facts").iterdir()} != {"etherchannel_group.jsonl", "stp_port_vlan.jsonl"}
+                or any((stage / name).read_bytes() != raw for name, raw in files.items())):
+            raise RunnerRefused("output_verification_failed")
+        try:
+            Path.lstat(out)
+        except FileNotFoundError:
+            pass
+        else:
+            raise RunnerRefused("output_exists")
+        stage.rename(out)
+    except (OSError, RunnerRefused) as error:
+        _rollback_p4(created_files, created_directories)
+        if isinstance(error, RunnerRefused):
+            raise
+        raise RunnerRefused("output_unwritable") from error
+
+
+def run_p4(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
+    """Publish P4 observations on stable trees; rename visibility does not promise fsync or hostile-race safety."""
+    from atlas_brain.contract.manifest import manifest
+    from atlas_brain.evidence.admission import Budgets
+
+    from .p4 import SCHEMA as P4_SCHEMA
+    from .p4 import analyse_folder
+
+    if type(workers) is not int or workers < 1:
+        raise RunnerRefused("invalid_workers")
+    if type(parent_denied) is not int or parent_denied not in (0, tripwire.WITNESS_ATTEMPTS):
+        raise RunnerRefused("invalid_parent_witness")
+    require_evidence(evidence)
+    try:
+        source, destination = Path.resolve(evidence), Path.resolve(out)
+        stage = out.with_name("." + out.name + ".p4-stage")
+    except (OSError, ValueError) as error:
+        raise RunnerRefused("evidence_output_unreadable") from error
+    if Path.is_relative_to(source, destination) or Path.is_relative_to(destination, source):
+        raise RunnerRefused("evidence_output_overlap")
+    try:
+        parent = Path.lstat(out.parent)
+        if not stat.S_ISDIR(parent.st_mode) or out.parent.is_symlink() or out.parent.is_junction():
+            raise RunnerRefused("output_parent_invalid")
+        for path, code in ((out, "output_exists"), (stage, "output_staging_exists")):
+            try:
+                Path.lstat(path)
+            except FileNotFoundError:
+                continue
+            raise RunnerRefused(code)
+    except OSError as error:
+        raise RunnerRefused("output_unwritable") from error
+    try:
+        files = dict(analyse_folder(evidence, Budgets(
+            bundle_bytes=16 * 1024 * 1024, artifact_bytes=4 * 1024 * 1024, artifacts=128)))
+    except RunnerRefused:
+        raise
+    except OSError as error:
+        raise RunnerRefused("evidence_unreadable") from error
+    except ValueError as error:
+        code = str(error)
+        if re.fullmatch(r"[a-z][a-z0-9_]*", code, re.ASCII) is None:
+            code = "analysis_failed"
+        raise RunnerRefused("p4_" + code) from error
+    if set(files) != set(P4_NAMES) or any(type(raw) is not bytes for raw in files.values()):
+        raise RunnerRefused("p4_output_invalid")
+    if files["MANIFEST.sha256"] != manifest({name: raw for name, raw in files.items() if name != "MANIFEST.sha256"}):
+        raise RunnerRefused("p4_output_invalid")
+    try:
+        payload = json.loads(files["result.json"])
+    except ValueError as error:
+        raise RunnerRefused("p4_output_invalid") from error
+    if not isinstance(payload, dict):
+        raise RunnerRefused("p4_output_invalid")
+    record = cast(dict[str, object], payload)
+    if (record.get("schema") != P4_SCHEMA or record.get("scope") != "observations_only"
+            or record.get("checks") != "not_implemented" or "execution" in record):
+        raise RunnerRefused("p4_output_invalid")
+    coordinator_denied = tripwire.probe()
+    if type(coordinator_denied) is not int or coordinator_denied != tripwire.WITNESS_ATTEMPTS:
+        raise RunnerRefused("egress_witness_failed")
+    try:
+        results = _spawn_workers(workers)
+    except RunnerRefused:
+        raise
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise RunnerRefused("worker_protocol_failed") from error
+    worker_denied = sum(denied for _, denied in results)
+    total = parent_denied + coordinator_denied + worker_denied
+    record["execution"] = {
+        "schema": "atlas-brain.runner-witness/1",
+        "plan": {"steps": len(results), "witness_attempts": tripwire.WITNESS_ATTEMPTS},
+        "egress": {"parent_denied": parent_denied, "coordinator_denied": coordinator_denied,
+                   "worker_denied": worker_denied, "denied": total},
+        "steps": [{"denied": denied, "id": step} for step, denied in results],
+    }
+    files["result.json"] = canonical(record)
+    files["MANIFEST.sha256"] = manifest({name: raw for name, raw in files.items() if name != "MANIFEST.sha256"})
+    _publish_p4(out, stage, files)
+    return total
