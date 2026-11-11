@@ -50,6 +50,7 @@ class Scope:
     declarations: tuple[k.RegistryRef, ...]
     spans: frozenset[tuple[k.CaptureId, k.ByteSpan]]
     positive: frozenset[tuple[k.CaptureId, k.ByteSpan]]
+    required: frozenset[tuple[k.CaptureId, k.ByteSpan]] = frozenset()
 
 
 def _table(value: object, fields: tuple[str, ...], table: str,
@@ -170,6 +171,9 @@ class ProofIndex:
                 raise RunnerRefused("p4_projection_reference")
         _need(not positive or any(type(ref) is k.EvidenceRef and ref.role is k.EvidenceRole.SUBJECT
                   and type(ref.locator) is k.ByteSpan and (ref.capture, ref.locator) in scope.positive for ref in evidence), "positive")
+        supplied = {(ref.capture, ref.locator) for ref in evidence if type(ref) is k.EvidenceRef
+                    and ref.role is k.EvidenceRole.SUBJECT and type(ref.locator) is k.ByteSpan}
+        _need(not positive or scope.required <= supplied, "positive")
         return result
 
     def metadata_evidence(self, identity: k.CaptureId, evidence: tuple[k.Evidence, ...]) -> list[dict[str, object]]:
@@ -191,13 +195,15 @@ def _bind(resolver: ProofIndex, target: Target, value: object) -> None:
         params = record(value, ("groups", "ports"))
         _need(target.owner == ec.STEP.id, "scope")
         channel = ec.Target(context=resolver.execution.envelope.context, node=target.node, groups=_strings(params["groups"]), ports=_strings(params["ports"]))
-        cases = tuple((k.FactRef(fact=ec.REPORTED_PROTOCOL, subject=ec.subject(channel, group)),
-            (("context", channel.context), ("group", group), ("node", channel.node.id), ("target", target.id))) for group in channel.groups)
+        cases = tuple((k.FactRef(fact=fact, subject=ec.subject(channel, group)),
+            (("context", channel.context), ("group", group), ("node", channel.node.id), ("target", target.id)))
+            for group in channel.groups for fact in (ec.REPORTED_PROTOCOL, ec.REPORTED_MEMBER_TOKENS))
     else:
         raise RunnerRefused("p4_projection_scope")
     for reference, labels in cases:
         spans: set[tuple[k.CaptureId, k.ByteSpan]] = set()
         positive: set[tuple[k.CaptureId, k.ByteSpan]] = set()
+        required: set[tuple[k.CaptureId, k.ByteSpan]] = set()
         for output in resolver.by_target[target.id]:
             data = dict(labels)
             if isinstance(output.value, stp.stp.Result):
@@ -211,14 +217,23 @@ def _bind(resolver: ProofIndex, target: Target, value: object) -> None:
             if row.fields:
                 spans.update((identity, span) for span in row.spans)
                 spans.update((identity, token.span) for _, token in row.fields)
-            tokens = tuple(token for name, token in row.fields if name == field)
-            if (output.value.reason is None and row.reason is None and len(tokens) == 1
-                    and output.receipt.capture.integrity is k.IntegrityState.COMPLETE
-                    and output.receipt.parse.quality == "complete"):
-                positive.add((identity, tokens[0].span))
+            complete = (output.value.reason is None and row.reason is None
+                        and output.receipt.capture.integrity is k.IntegrityState.COMPLETE
+                        and output.receipt.parse.quality == "complete")
+            if isinstance(row, ec.parse_summary.Row) and reference.fact == ec.REPORTED_MEMBER_TOKENS:
+                claims = {span for member in row.members for span in (member.port.span, member.flag.span, member.span)}
+                spans.update((identity, span) for span in claims)
+                headers = tuple(tuple(token for name, token in row.fields if name == field) for field in ("group", "channel"))
+                if complete and row.members and all(len(tokens) == 1 for tokens in headers):
+                    positive.add((identity, row.members[0].port.span))
+                    required.update((identity, span) for span in claims | set(row.spans) | {tokens[0].span for tokens in headers})
+            else:
+                tokens = tuple(token for name, token in row.fields if name == field)
+                if complete and len(tokens) == 1:
+                    positive.add((identity, tokens[0].span))
         _need(reference not in resolver.bound, "population")
         resolver.bound[reference] = Scope(reference=reference, target=target, labels=labels,
-            declarations=resolver.declarations[target.id], spans=frozenset(spans), positive=frozenset(positive))
+            declarations=resolver.declarations[target.id], spans=frozenset(spans), positive=frozenset(positive), required=frozenset(required))
 
 
 def _capture_leaf(index: ProofIndex, ref: k.EvidenceRef, scope: Scope | None, positive: bool,

@@ -65,15 +65,18 @@ def test_registered_protocol_is_observed_without_membership_or_mode_inference(mo
     row, absent = result.rows
     assert (row.group, absent.group, absent.value.reason) == ("1", "2", U.SUBJECT_ABSENT_FROM_CAPTURE)
     assert row.value.value == value and type(row.value.value) is str and row.value.raw == token and row.value.basis is k.Basis.OBSERVED
-    assert result.store.owners == {b.REPORTED_PROTOCOL: b.STEP.id} and len(result.store.values) == 2
+    assert result.store.owners == {fact: b.STEP.id for fact in b.STEP.produces} and len(result.store.values) == 2 * len(b.STEP.produces)
+    assert set(result.store.values) == {k.FactRef(fact=fact, subject=b.subject(item, group)) for fact in b.STEP.produces for group in ("1", "2")}
     assert result.store.values[k.FactRef(fact=b.REPORTED_PROTOCOL, subject=row.subject)] is row.value
-    fact, = b.DECLARATION.facts
+    assert {fact.id for fact in b.DECLARATION.facts} == {b.REPORTED_PROTOCOL, b.REPORTED_MEMBER_TOKENS}
+    fact = next(fact for fact in b.DECLARATION.facts if fact.id == b.REPORTED_PROTOCOL)
     assert (fact.id, fact.step, fact.value_type) == (b.REPORTED_PROTOCOL, b.STEP.id, "text")
     output, = result.executed
     assert len(calls) == 1 and output.value is calls[0] and output.receipt.parse is output.value.parse
     assert output.receipt.capture is supplied.capture and output.receipt.context == item.context
     assert output.receipt.owner == b.STEP.id and output.receipt.registration_sha256 == compile_packs((b.DECLARATION,)).registration_sha256
     assert output.value.missing_ports == (PORTS[3],) and [m.flag.raw for m in output.value.rows[0].members] == ["P", "s", "D"]
+    assert row.member_tokens.value == "Gi1/0/1(P) Gi1/0/2(s) Gi1/0/3(D)"
     assert tuple(r for r in row.value.evidence if type(r) is k.RegistryRef) == A.declaration.evidence
     refs = [r for r in row.value.evidence if type(r) is k.EvidenceRef]
     assert len(refs) == 3
@@ -89,11 +92,16 @@ def test_registered_protocol_is_observed_without_membership_or_mode_inference(mo
     (table() + b"1 Po1(SU) LACP\n", COMPLETE, U.CONFLICTING_EVIDENCE),
     (table(), k.IntegrityState.ERROR, U.CAPTURE_ERROR), (table(), k.IntegrityState.TRUNCATED, U.CAPTURE_TRUNCATED),
     (table(), k.IntegrityState.PAGING_ARTIFACTS, U.CAPTURE_TRUNCATED), (b"", COMPLETE, U.EMPTY_UNREGISTERED),
+    (None, COMPLETE, U.NOT_COLLECTED),
+    *[(table().replace(b"LACP ", b"LACP" + gap), COMPLETE, U.PARSE_PARTIAL) for gap in (b"\xc2\xa0", b"\xe2\x80\x83")],
 ])
 def test_parser_damage_and_conflicts_dominate_plausible_protocol(raw, integrity, reason):
     item = target()
-    result = b.build_reported_protocol((item,), (request(item, raw, integrity=integrity),))
+    result = b.build_reported_protocol((item,), () if raw is None else (request(item, raw, integrity=integrity),))
     assert all(type(row.value) is k.Unknown and row.value.reason is reason for row in result.rows)
+    assert all(type(row.member_tokens) is k.Unknown and row.member_tokens.reason is reason for row in result.rows)
+    member_need, = result.rows[0].member_tokens.next_evidence
+    assert (member_need.node, member_need.operation, member_need.params, member_need.resolves, member_need.reruns, member_need.after_s, member_need.unprintable) == (item.node.key, b.parse_summary.OP, (), (b.REPORTED_MEMBER_TOKENS,), (b.STEP.id,), None, ())
     need, = result.rows[0].value.next_evidence
     assert (need.node, need.operation, need.params, need.resolves, need.reruns) == (A.key, b.parse_summary.OP, (), (b.REPORTED_PROTOCOL,), (b.STEP.id,))
 
@@ -153,7 +161,7 @@ def test_late_request_fault_never_follows_an_earlier_parser_or_writer(monkeypatc
 @pytest.mark.parametrize("plant,code", [("association", "etherchannel_receipt_parse"), ("result", "etherchannel_receipt_parse"),
     ("missing", "etherchannel_parser_population"), ("extra", "etherchannel_parser_population"),
     ("duplicate", "etherchannel_parser_population"), ("rowtype", "etherchannel_parser_population"),
-    ("enum", "etherchannel_protocol_value"), ("neighbor", "etherchannel_protocol_record")])
+    ("enum", "etherchannel_protocol_value"), ("neighbor", "etherchannel_members_record")])
 def test_late_rich_or_same_value_wrong_group_proof_refuses_before_writer(monkeypatch, plant, code):
     first, last = target(), target(node=B)
     actual = b.execute_parsers

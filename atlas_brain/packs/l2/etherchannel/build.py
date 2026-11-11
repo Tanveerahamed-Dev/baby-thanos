@@ -1,4 +1,4 @@
-"""Observed EtherChannel summary protocols for trusted declared nodes and groups."""
+"""EtherChannel protocol and derived member-token observations for declared groups."""
 import re
 from dataclasses import dataclass
 from hashlib import sha256
@@ -27,17 +27,19 @@ from atlas_brain.runner.pack_runtime import (
 
 PACK = k.PackId("l2.etherchannel")
 REPORTED_PROTOCOL = k.FactId("l2.etherchannel.reported_protocol")
+REPORTED_MEMBER_TOKENS = k.FactId("l2.etherchannel.reported_member_tokens")
 STEP = StepSpec(id=StepId("l2.etherchannel/parse_protocol"), pack=PACK, kind="parse_build", scope="device",
-                reads=(), produces=(REPORTED_PROTOCOL,), evaluator="l2.etherchannel.build_reported_protocol")
+                reads=(), produces=tuple(sorted((REPORTED_PROTOCOL, REPORTED_MEMBER_TOKENS))), evaluator="l2.etherchannel.build_reported_protocol")
 BINDING = pack_registration.OperationBinding(operation=parse_summary.OP, step=STEP.id)
 DECLARATION = pack_registration.PackDeclaration(pack=PACK, entity_kinds=(EntityKindSpec(id="etherchannel_group", pack=PACK, root=False),),
-    facts=(FactSpec(id=REPORTED_PROTOCOL, pack=PACK, subject="etherchannel_group", value_type="text", step=STEP.id),),
+    facts=(FactSpec(id=REPORTED_MEMBER_TOKENS, pack=PACK, subject="etherchannel_group", value_type="text", step=STEP.id),
+           FactSpec(id=REPORTED_PROTOCOL, pack=PACK, subject="etherchannel_group", value_type="text", step=STEP.id)),
     relations=(), steps=(STEP,), operations=(BINDING,))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Target:
-    """The caller supplies an admitted node and independent expected populations."""
+    """The caller supplies node and group/port census, never membership intent."""
     context: str
     node: Node
     groups: tuple[str, ...]
@@ -72,6 +74,7 @@ class Row:
     group: str
     subject: k.EntityKey
     value: k.Known[str] | k.Unknown
+    member_tokens: k.Known[str] | k.Unknown
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -127,6 +130,21 @@ def _observed(target: Target, row: parse_summary.Row, output: Executed[parse_sum
     return k.Known(value=value, raw=token.raw, basis=k.Basis.OBSERVED, evidence=target.node.declaration.evidence + declared + refs)
 
 
+def _unknown_members(target: Target, reason: k.UnknownReason, evidence: tuple[k.Evidence, ...]) -> k.Unknown:
+    need = k.EvidenceNeed(node=target.node.key, operation=parse_summary.OP, params=(), resolves=(REPORTED_MEMBER_TOKENS,),
+                         reruns=(STEP.id,), after_s=None, unprintable=())
+    return k.Unknown(reason=reason, detail="etherchannel_member_tokens_unresolved", evidence=evidence, candidates=(), next_evidence=(need,))
+
+
+def _member_state(target: Target, proof: MemberProof, capture: Capture, declared: tuple[k.RegistryRef, ...],
+                  evidence: tuple[k.Evidence, ...]) -> k.Known[str] | k.Unknown:
+    if proof.text is None:
+        return _unknown_members(target, k.UnknownReason.FIELD_NOT_PRINTED, evidence)
+    refs = tuple(k.EvidenceRef(capture=capture.id, locator=span, role=k.EvidenceRole.SUBJECT,
+                 excerpt_sha256=sha256(capture.raw[span.start:span.end]).hexdigest()) for span in proof.spans)
+    return k.Known(value=proof.text, raw=None, basis=k.Basis.DERIVED, evidence=target.node.declaration.evidence + declared + refs)
+
+
 def _rows(target: Target, output: Executed[parse_summary.Result] | None, declared: tuple[k.RegistryRef, ...]) -> tuple[Row, ...]:
     needs = (k.EvidenceNeed(node=target.node.key, operation=parse_summary.OP, params=(), resolves=(REPORTED_PROTOCOL,),
                             reruns=(STEP.id,), after_s=None, unprintable=()),)
@@ -136,6 +154,7 @@ def _rows(target: Target, output: Executed[parse_summary.Result] | None, declare
         evidence += (k.EvidenceRef(capture=capture.id, locator=k.WholeCapture(), role=k.EvidenceRole.WITNESS,
                                    excerpt_sha256=capture.bytes_sha256),)
     group_records = () if output is None else tuple(r for r in output.receipt.parse.records if r.rule_id == "group")
+    proofs: dict[str, MemberProof] = {} if output is None else {proof.group: proof for proof in reported_member_proofs(target, output)}
     rows: list[Row] = []
     for i, group in enumerate(target.groups):
         key = subject(target, group)
@@ -146,16 +165,18 @@ def _rows(target: Target, output: Executed[parse_summary.Result] | None, declare
             if reason is None and output.receipt.parse.quality != "complete":
                 reason = k.UnknownReason.PARSE_PARTIAL
             if reason is None:
-                rows.append(Row(target=target, group=group, subject=key, value=_observed(target, row, output, group_records, declared)))
+                protocol = _observed(target, row, output, group_records, declared)
+                members = _member_state(target, proofs[group], output.receipt.capture, declared, evidence)
+                rows.append(Row(target=target, group=group, subject=key, value=protocol, member_tokens=members))
                 continue
         unknown = k.Unknown(reason=reason, detail="etherchannel_protocol_unresolved", evidence=evidence,
                             candidates=(), next_evidence=needs)
-        rows.append(Row(target=target, group=group, subject=key, value=unknown))
+        rows.append(Row(target=target, group=group, subject=key, value=unknown, member_tokens=_unknown_members(target, reason, evidence)))
     return tuple(rows)
 
 
 def build_reported_protocol(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> Result:
-    """Build only reported protocol facts; registry provenance is structural without registry bytes."""
+    """Build protocol/token facts; registry provenance remains structural without registry bytes."""
     plan = _plan(targets, requests, None)
     handler = Handler(binding=BINDING, parser=_Adapter(plan.by_capture))
     executed = execute_parsers((DECLARATION,), (handler,), plan.requests)
@@ -222,6 +243,7 @@ def _materialize(plan: _Plan, executed: tuple[Executed[parse_summary.Result], ..
     writer = bind_writer(store, step=STEP)
     for row in rows:
         writer.write(fact=REPORTED_PROTOCOL, subject=row.subject, value=row.value)
+        writer.write(fact=REPORTED_MEMBER_TOKENS, subject=row.subject, value=row.member_tokens)
     return Result(store=store, rows=rows, executed=executed)
 
 
@@ -339,9 +361,9 @@ def fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[str] | k.Unk
     """Expose original owning rows/states for trusted projection; this is not result admission."""
     k.require(type(result) is Result and type(result.rows) is tuple and all(type(row) is Row for row in result.rows),
               "etherchannel_fact_rows")
-    k.require(REPORTED_PROTOCOL in STEP.produces and any(spec.id == REPORTED_PROTOCOL for spec in DECLARATION.facts),
-              "etherchannel_fact_rows")
-    return tuple((REPORTED_PROTOCOL, row, row.value) for row in result.rows)
+    k.require(set(STEP.produces) == {REPORTED_PROTOCOL, REPORTED_MEMBER_TOKENS}
+              and set(STEP.produces) == {spec.id for spec in DECLARATION.facts}, "etherchannel_fact_rows")
+    return tuple(item for row in result.rows for item in ((REPORTED_PROTOCOL, row, row.value), (REPORTED_MEMBER_TOKENS, row, row.member_tokens)))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

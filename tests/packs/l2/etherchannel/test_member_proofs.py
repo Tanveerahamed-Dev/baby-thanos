@@ -137,7 +137,9 @@ def test_mutated_rich_members_are_refused_atomically_by_accessor(monkeypatch, pl
         value = replace(original.value, rows=tuple(changed if i == selected else original_row for i, original_row in enumerate(original.value.rows)))
         return (replace(original, value=value),) + outputs[1:]
     monkeypatch.setattr(ec, "execute_parsers", forged)
-    out = ec.build_reported_protocol((item,), (request(item, raw),)).executed[0]
+    plan = ec._plan((item,), (request(item, raw),), None)
+    handler = ec.Handler(binding=ec.BINDING, parser=ec._Adapter(plan.by_capture))
+    out, = forged((ec.DECLARATION,), (handler,), plan.requests)
     monkeypatch.setattr(ec, "bind_writer", lambda *args, **kwargs: pytest.fail("proof accessor wrote facts"))
     monkeypatch.setattr(ec.parse_summary, "parse_capture", lambda *args: pytest.fail("proof accessor reparsed capture"))
     with pytest.raises(ValueError, match="^etherchannel_members_"):
