@@ -116,13 +116,14 @@ def test_registry_subsequence_requires_exact_three_order_and_count(tmp_path, pla
         foreign = (next(t for t in tree.execution.envelope.targets if t.id == "ec").node.declaration.evidence[0] if plant == "node" else
             next(t for t in tree.execution.envelope.targets if t.id == "cold").declaration.evidence[0] if plant == "target" else
             replace(refs[0], **({"citation": "/nodes/999"} if plant == "citation" else {"table": "foreign.nodes"} if plant == "table" else {"table_digest": "0" * 64})))
-        changed = refs + (foreign,)
+        changed = (refs[0], refs[1], foreign) if plant == "target" else (foreign, refs[1], refs[2])
     with pytest.raises(r.RunnerRefused, match="^p4_projection_registry$"):
         index.resolve(scope, changed + row.value.evidence[3:], positive=True)
 
 
 @pytest.mark.parametrize("kind", ["tree", "ec"])
-def test_same_capture_same_value_different_cell_cannot_be_resolved(tmp_path, kind):
+@pytest.mark.parametrize("positive", [False, True])
+def test_same_capture_same_value_different_cell_cannot_be_resolved(tmp_path, kind, positive):
     estate(tmp_path)
     tree, channels = execute(tmp_path)
     index = r.ProofIndex(tree.execution, LIMITS)
@@ -130,7 +131,7 @@ def test_same_capture_same_value_different_cell_cannot_be_resolved(tmp_path, kin
     fact = stp.ROOT_GUARD if kind == "tree" else ec.REPORTED_PROTOCOL
     assert rows[0].value.value == rows[1].value.value
     with pytest.raises(r.RunnerRefused, match="^p4_projection_scope$"):
-        index.resolve(index.scope(fact, rows[0].subject), rows[1].value.evidence, positive=True)
+        index.resolve(index.scope(fact, rows[0].subject), rows[1].value.evidence, positive=positive)
 
 
 @pytest.mark.parametrize("plant", ["declared", "whole", "empty", "subspan", "hash", "capture", "factref", "pointer", "xml", "role", "fallback"])
