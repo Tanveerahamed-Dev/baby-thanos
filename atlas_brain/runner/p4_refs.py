@@ -1,4 +1,4 @@
-"""Proof indexes and subject scopes for trusted completed STP/EC runs; no leaf or state projection."""
+"""Bound leaf proofs for trusted completed STP/EC runs; no fact values, state or output projection."""
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import cast
@@ -89,6 +89,8 @@ class ProofIndex:
         targets = _table(side["targets"], ("id", "node", "operation", "params"), "synthetic_p4.targets", "targets", self.registry_sha256)
         context = k.RegistryRef(table="synthetic_p4.context", row_id=envelope.context, table_digest=self.registry_sha256, citation="/context")
         _declared(envelope.declaration, envelope.context, context)
+        self.records = {ref: canonical(row) for table in (nodes, targets) for ref, row in table.values()}
+        self.records[context] = canonical(envelope.context)
         _need(type(envelope.base.nodes) is tuple and all(type(n) is Node for n in envelope.base.nodes)
               and {n.id for n in envelope.base.nodes} == set(nodes) and len(envelope.base.nodes) == len(nodes), "registry")
         _need(type(envelope.targets) is tuple and all(type(t) is Target for t in envelope.targets)
@@ -109,6 +111,7 @@ class ProofIndex:
                   and type(o.receipt.capture) is Capture for o in execution.executed), "capture")
         self.members = {m.id: m for m in envelope.captures}
         self.snapshots = {o.receipt.capture.id: o.receipt.capture for o in execution.executed}
+        self.receipts = {o.receipt.capture.id: o.receipt for o in execution.executed}
         _need(len(self.members) == len(envelope.captures) and len(self.snapshots) == len(execution.executed)
               and set(self.members) == set(self.snapshots), "capture")
         rows = _rows(side["captures"], ("target", "path", "sha256"))
@@ -148,6 +151,32 @@ class ProofIndex:
         reference = k.FactRef(fact=fact, subject=subject)
         _need(reference in self.bound, "scope")
         return self.bound[reference]
+
+    def resolve(self, scope: Scope, evidence: tuple[k.Evidence, ...], *, positive: bool = False) -> list[dict[str, object]]:
+        """Positive requests mean any Known observation, including Known(False), never the fact's truthiness."""
+        _need(type(scope) is Scope and type(scope.reference) is k.FactRef and type(positive) is bool, "scope")
+        _need(self.scope(scope.reference.fact, scope.reference.subject) is scope, "scope")
+        _need(type(evidence) is tuple and all(type(ref) in (k.RegistryRef, k.EvidenceRef) for ref in evidence), "reference")
+        _need(tuple(ref for ref in evidence if type(ref) is k.RegistryRef) == scope.declarations, "registry")
+        result: list[dict[str, object]] = []
+        for ref in evidence:
+            if type(ref) is k.RegistryRef:
+                _need(ref in self.records, "registry")
+                result.append({"kind": "registry", "table": ref.table, "row_id": ref.row_id, "table_digest": ref.table_digest,
+                    "citation": ref.citation, "value": strict_json(self.records[ref], self.budgets.nesting_depth, self.budgets.numeric_digits)})
+            elif type(ref) is k.EvidenceRef:
+                result.append(_capture_leaf(self, ref, scope, positive, None))
+            else:
+                raise RunnerRefused("p4_projection_reference")
+        _need(not positive or any(type(ref) is k.EvidenceRef and ref.role is k.EvidenceRole.SUBJECT
+                  and type(ref.locator) is k.ByteSpan and (ref.capture, ref.locator) in scope.positive for ref in evidence), "positive")
+        return result
+
+    def metadata_evidence(self, identity: k.CaptureId, evidence: tuple[k.Evidence, ...]) -> list[dict[str, object]]:
+        """Resolve capture-local SUBJECT byte/whole leaves, with no subject or positive request."""
+        _need(identity in self.members, "capture")
+        _need(type(evidence) is tuple and all(type(ref) is k.EvidenceRef for ref in evidence), "reference")
+        return [_capture_leaf(self, ref, None, False, identity) for ref in evidence if type(ref) is k.EvidenceRef]
 
 
 def _bind(resolver: ProofIndex, target: Target, value: object) -> None:
@@ -190,3 +219,31 @@ def _bind(resolver: ProofIndex, target: Target, value: object) -> None:
         _need(reference not in resolver.bound, "population")
         resolver.bound[reference] = Scope(reference=reference, target=target, labels=labels,
             declarations=resolver.declarations[target.id], spans=frozenset(spans), positive=frozenset(positive))
+
+
+def _capture_leaf(index: ProofIndex, ref: k.EvidenceRef, scope: Scope | None, positive: bool,
+                  identity: k.CaptureId | None) -> dict[str, object]:
+    _need(ref.capture in index.members and type(ref.role) is k.EvidenceRole, "scope")
+    member, capture = index.members[ref.capture], index.snapshots[ref.capture]
+    _need(member.target is scope.target if scope is not None else ref.capture == identity, "scope")
+    _need(not positive or capture.integrity is k.IntegrityState.COMPLETE
+              and index.receipts[ref.capture].parse.quality == "complete", "capture")
+    leaf: dict[str, object] = {"kind": "capture", "capture": str(capture.id), "source": str(capture.source),
+        "target": member.target.id, "path": member.path, "operation": capture.operation, "rendered": capture.rendered,
+        "role": str(ref.role), "sha256": ref.excerpt_sha256, "capture_sha256": index.hashes[capture.id]}
+    if type(ref.locator) is k.ByteSpan:
+        _need(ref.role is k.EvidenceRole.SUBJECT, "role")
+        span = ref.locator
+        _need(type(span.start) is int and type(span.end) is int and 0 <= span.start < span.end <= len(capture.raw), "span")
+        _need(scope is None or (ref.capture, span) in scope.spans, "scope")
+        actual = sha256(capture.raw[span.start:span.end]).hexdigest()
+        leaf.update(locator="bytes", start=span.start, end=span.end)
+    elif type(ref.locator) is k.WholeCapture:
+        _need(ref.role is (k.EvidenceRole.WITNESS if scope is not None else k.EvidenceRole.SUBJECT), "role")
+        _need(not positive, "reference")
+        actual = index.hashes[capture.id]
+        leaf["locator"] = "whole_capture"
+    else:
+        raise RunnerRefused("p4_projection_reference")
+    _need(actual == ref.excerpt_sha256, "span")
+    return leaf
