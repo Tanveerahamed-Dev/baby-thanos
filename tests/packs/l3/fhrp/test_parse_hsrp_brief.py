@@ -211,3 +211,12 @@ def test_allowlisted_provenance_is_pinned_to_the_four_read_only_format_floors():
               "src/genie/libs/parser/iosxe/tests/ShowStandbyBrief/cli/equal/")
     assert parser.SOURCES == tuple(prefix + f"golden_output{number}_output.txt" for number in (1, 2, 3, 4))
     assert parser.VARIANT_SUPPORT == "allowlisted"
+
+@pytest.mark.parametrize("extra,reason", [(b"", k.UnknownReason.CONFLICTING_EVIDENCE),
+    (b"unrecognised synthetic line\n", k.UnknownReason.PARSE_PARTIAL)])
+def test_format_then_conflict_then_unresolved_identity_precedence(extra, reason):
+    raw = BODY + ACTIVE + INIT.replace(b"203.0.113.1", b"unknown") + extra
+    result = parser.parse_capture(capture(raw))
+    assert result.reason is reason and result.parse.quality == "partial"
+    assert len(result.rows) == 5 and all(row.reason is reason for row in result.rows)
+    assert_columns(raw, result)
