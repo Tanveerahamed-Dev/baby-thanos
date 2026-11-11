@@ -1,6 +1,7 @@
 """Production EtherChannel preparation for one trusted, declared-synthetic global parser run."""
 import re
 from hashlib import sha256
+from typing import cast
 
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence import p4_admission as p4
@@ -30,17 +31,15 @@ class _Adapter(Parser[parse_summary.Result]):
 def _strings(value: object) -> tuple[str, ...]:
     if type(value) is not list:
         raise ValueError("etherchannel_folder_strings")
-    items: list[object] = value
-    k.require(all(type(item) is str for item in items), "etherchannel_folder_strings")
-    return tuple(item for item in items if type(item) is str)
+    k.require(all(type(item) is str for item in cast(list[object], value)), "etherchannel_folder_strings")
+    return tuple(item for item in cast(list[object], value) if type(item) is str)
 
 
 def _records(value: object, fields: tuple[str, ...], key: str) -> dict[str, tuple[int, dict[str, object]]]:
     if type(value) is not list:
         raise ValueError("etherchannel_folder_registry")
-    items: list[object] = value
     rows: dict[str, tuple[int, dict[str, object]]] = {}
-    for index, item in enumerate(items):
+    for index, item in enumerate(cast(list[object], value)):
         row = record(item, fields)
         identity = string(row, key)
         k.require(identity not in rows, "etherchannel_folder_registry")
