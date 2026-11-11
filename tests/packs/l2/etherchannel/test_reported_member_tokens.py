@@ -21,6 +21,7 @@ def test_real_member_fact_consumes_original_accessor_once_and_closes_proofs_at_w
     peer, tree = build(tmp_path)
     original = next(item for item in tree.execution.executed if item.receipt.capture.operation == ec.parse_summary.OP)
     index = ProofIndex(tree.execution, LIMITS)
+    assert all(not scope.required for scope in index.scopes if scope.reference.fact in (p4.stp.ROOT_GUARD, ec.REPORTED_PROTOCOL))
     expected = {(original.receipt.capture.id, span) for span in required(raw).values()}
     calls, writes, accessor, write = [], [], ec.reported_member_proofs, FactWriter.write
     def checked_accessor(domain, output):
@@ -34,6 +35,8 @@ def test_real_member_fact_consumes_original_accessor_once_and_closes_proofs_at_w
             assert tuple(ref for ref in value.evidence if type(ref) is k.RegistryRef) == scope.declarations
             if type(value) is k.Known:
                 refs = tuple(ref for ref in value.evidence if type(ref) is k.EvidenceRef)
+                assert type(scope.required) is frozenset
+                assert scope.positive == {(original.receipt.capture.id, required(raw)["port0"])}
                 assert {(ref.capture, ref.locator) for ref in refs} == scope.required == expected
                 assert tuple((ref.capture, ref.locator) for ref in refs) == tuple(sorted(expected, key=lambda pair: (pair[1].start, pair[1].end)))
                 assert all(ref.role is k.EvidenceRole.SUBJECT and ref.excerpt_sha256 == sha256(raw[ref.locator.start:ref.locator.end]).hexdigest() for ref in refs)
