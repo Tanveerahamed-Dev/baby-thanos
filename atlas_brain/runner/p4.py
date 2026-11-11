@@ -34,7 +34,7 @@ def _unknown(value: k.Unknown, evidence: list[dict[str, object]]) -> dict[str, o
             for need in value.next_evidence]}
 
 
-def _state(index: ProofIndex, scope: Scope, value: State, expected: type[bool] | type[str]) -> dict[str, object]:
+def _state(index: ProofIndex, scope: Scope, value: State, expected: type[bool | str]) -> dict[str, object]:
     _need(type(value) in (k.Known, k.Unknown), "state")
     if isinstance(value, k.Known):
         _need(type(value.value) is expected, "value")

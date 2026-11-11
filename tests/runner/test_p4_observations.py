@@ -6,14 +6,14 @@ from dataclasses import replace
 from hashlib import sha256
 
 import pytest
+from test_p4_leaf_refs import assert_leaf
+from test_p4_proof_index import LIMITS, P, estate
 
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.kernel import states as k
 from atlas_brain.kernel.time import BoundSource, TimeInterval
 from atlas_brain.model.store import FactReader
 from atlas_brain.runner import p4 as m
-from test_p4_proof_index import LIMITS, P, estate
-from test_p4_leaf_refs import assert_leaf
 
 FACTS = ("facts/stp_port_vlan.jsonl", "facts/etherchannel_group.jsonl")
 
