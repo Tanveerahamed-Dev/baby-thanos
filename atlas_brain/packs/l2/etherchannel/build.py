@@ -2,17 +2,21 @@
 import re
 from dataclasses import dataclass
 from hashlib import sha256
+from typing import cast
 
 from atlas_brain.contract.canonical import canonical
+from atlas_brain.evidence import p4_admission as p4
+from atlas_brain.evidence.admission import Budgets, record, strict_json, string
 from atlas_brain.evidence.capture import Scope
 from atlas_brain.evidence.parsekit.rules import Record
-from atlas_brain.evidence.synthetic import Node, endpoint
+from atlas_brain.evidence.synthetic import SCHEMA as BASE_SCHEMA
+from atlas_brain.evidence.synthetic import Node, SyntheticGroup, endpoint
 from atlas_brain.kernel import states as k
 from atlas_brain.model import pack_registration
 from atlas_brain.model.specs import EntityKindSpec, FactSpec, StepId, StepSpec
 from atlas_brain.model.store import FactStore, bind_writer
 from atlas_brain.packs.l2.etherchannel import parse_summary
-from atlas_brain.runner.pack_receipts import CaptureRequest
+from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
 from atlas_brain.runner.pack_runtime import (
     Executed,
     Handler,
@@ -88,7 +92,7 @@ class _Adapter(Parser[parse_summary.Result]):
 
 
 def _observed(target: Target, row: parse_summary.Row, output: Executed[parse_summary.Result],
-              group_records: tuple[Record, ...]) -> k.Known[str]:
+              group_records: tuple[Record, ...], declared: tuple[k.RegistryRef, ...]) -> k.Known[str]:
     capture = output.receipt.capture
     records = [rec for rec in group_records if rec.span in row.spans or any(n == "group" and f.raw == row.group for n, f in rec.fields)]
     k.require(len(records) == 1 and records[0].span in row.spans, "etherchannel_protocol_record")
@@ -120,13 +124,13 @@ def _observed(target: Target, row: parse_summary.Row, output: Executed[parse_sum
               and (token.span.end == span.end or raw[token.span.end:token.span.end + 1] in (b" ", b"\t")), "etherchannel_protocol_witness")
     refs = tuple(k.EvidenceRef(capture=capture.id, locator=s, role=k.EvidenceRole.SUBJECT,
                  excerpt_sha256=sha256(raw[s.start:s.end]).hexdigest()) for s in (group.span, token.span, span))
-    return k.Known(value=value, raw=token.raw, basis=k.Basis.OBSERVED, evidence=target.node.declaration.evidence + refs)
+    return k.Known(value=value, raw=token.raw, basis=k.Basis.OBSERVED, evidence=target.node.declaration.evidence + declared + refs)
 
 
-def _rows(target: Target, output: Executed[parse_summary.Result] | None) -> tuple[Row, ...]:
+def _rows(target: Target, output: Executed[parse_summary.Result] | None, declared: tuple[k.RegistryRef, ...]) -> tuple[Row, ...]:
     needs = (k.EvidenceNeed(node=target.node.key, operation=parse_summary.OP, params=(), resolves=(REPORTED_PROTOCOL,),
                             reruns=(STEP.id,), after_s=None, unprintable=()),)
-    evidence = target.node.declaration.evidence
+    evidence = target.node.declaration.evidence + declared
     if output is not None:
         capture = output.receipt.capture
         evidence += (k.EvidenceRef(capture=capture.id, locator=k.WholeCapture(), role=k.EvidenceRole.WITNESS,
@@ -142,7 +146,7 @@ def _rows(target: Target, output: Executed[parse_summary.Result] | None) -> tupl
             if reason is None and output.receipt.parse.quality != "complete":
                 reason = k.UnknownReason.PARSE_PARTIAL
             if reason is None:
-                rows.append(Row(target=target, group=group, subject=key, value=_observed(target, row, output, group_records)))
+                rows.append(Row(target=target, group=group, subject=key, value=_observed(target, row, output, group_records, declared)))
                 continue
         unknown = k.Unknown(reason=reason, detail="etherchannel_protocol_unresolved", evidence=evidence,
                             candidates=(), next_evidence=needs)
@@ -152,6 +156,25 @@ def _rows(target: Target, output: Executed[parse_summary.Result] | None) -> tupl
 
 def build_reported_protocol(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> Result:
     """Build only reported protocol facts; registry provenance is structural without registry bytes."""
+    plan = _plan(targets, requests, None)
+    handler = Handler(binding=BINDING, parser=_Adapter(plan.by_capture))
+    executed = execute_parsers((DECLARATION,), (handler,), plan.requests)
+    return _materialize(plan, executed, pack_registration.compile_packs((DECLARATION,)).registration_sha256)
+
+
+type _Key = tuple[str, k.EntityKey]
+type _Proofs = dict[_Key, tuple[k.RegistryRef, ...]]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Plan:
+    indexed: dict[_Key, Target]
+    by_capture: dict[k.CaptureId, Target]
+    requests: tuple[CaptureRequest, ...]
+    proofs: _Proofs | None
+
+
+def _plan(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...], proofs: _Proofs | None) -> _Plan:
     k.require(type(targets) is tuple and all(type(t) is Target for t in targets), "etherchannel_targets")
     k.require(type(requests) is tuple and all(type(r) is CaptureRequest for r in requests), "etherchannel_requests")
     indexed: dict[tuple[str, k.EntityKey], Target] = {}
@@ -174,11 +197,13 @@ def build_reported_protocol(targets: tuple[Target, ...], requests: tuple[Capture
         k.require(key not in supplied, "etherchannel_duplicate_target_capture")
         supplied.add(key)
         by_capture[capture.id] = indexed[key]
-    handler = Handler(binding=BINDING, parser=_Adapter(by_capture))
-    executed = execute_parsers((DECLARATION,), (handler,), requests)
-    expected = {r.capture.id: r for r in requests}
+    return _Plan(indexed=indexed, by_capture=by_capture, requests=requests, proofs=proofs)
+
+
+def _materialize(plan: _Plan, executed: tuple[Executed[parse_summary.Result], ...], registration: str) -> Result:
+    indexed, by_capture = plan.indexed, plan.by_capture
+    expected = {r.capture.id: r for r in plan.requests}
     k.require(len(executed) == len(expected) and {o.receipt.capture.id for o in executed} == set(expected), "etherchannel_receipt_coverage")
-    registration = pack_registration.compile_packs((DECLARATION,)).registration_sha256
     outcomes: dict[tuple[str, k.EntityKey], Executed[parse_summary.Result] | None] = {key: None for key in indexed}
     for output in executed:
         receipt = output.receipt
@@ -191,10 +216,120 @@ def build_reported_protocol(targets: tuple[Target, ...], requests: tuple[Capture
                   for row in output.value.rows) and tuple(row.group for row in output.value.rows) == target.groups,
                   "etherchannel_parser_population")
         outcomes[(target.context, target.node.key)] = output
-    rows = tuple(row for key in sorted(indexed) for row in _rows(indexed[key], outcomes[key]))
+    rows = tuple(row for key in sorted(indexed) for row in _rows(indexed[key], outcomes[key], () if plan.proofs is None else plan.proofs[key]))
     k.require(len({r.subject for r in rows}) == len(rows), "etherchannel_subject_collision")
     store = FactStore()
     writer = bind_writer(store, step=STEP)
     for row in rows:
         writer.write(fact=REPORTED_PROTOCOL, subject=row.subject, value=row.value)
     return Result(store=store, rows=rows, executed=executed)
+
+
+def _declared(state: k.Known[str], table: str, identity: str, digest: str, pointer: str) -> k.RegistryRef:
+    ref = k.RegistryRef(table=table, row_id=identity, table_digest=digest, citation=pointer)
+    k.require(type(state) is k.Known and state.basis is k.Basis.DECLARED and state.raw == state.value == identity
+              and state.evidence == (ref,), "etherchannel_global_provenance")
+    return ref
+
+
+def _proofs(envelope: p4.Envelope, budgets: Budgets, indexed: dict[_Key, Target]) -> _Proofs:
+    k.require(type(envelope) is p4.Envelope and type(envelope.raw) is bytes and type(envelope.base) is SyntheticGroup
+              and type(envelope.base.raw) is bytes, "etherchannel_global_provenance")
+    base, context = envelope.base, envelope.context
+    digest, base_digest = sha256(envelope.raw).hexdigest(), sha256(base.raw).hexdigest()
+    side = record(strict_json(envelope.raw, budgets.nesting_depth, budgets.numeric_digits),
+                  ("schema", "semantic_group", "context", "base_sha256", "targets", "captures"))
+    registry = record(strict_json(base.raw, budgets.nesting_depth, budgets.numeric_digits),
+                      ("schema", "semantic_group", "group", "nodes", "captures"))
+    k.require(side["schema"] == p4.SCHEMA and side["semantic_group"] == "declared_synthetic" and side["context"] == context
+              and side["base_sha256"] == base_digest and registry["schema"] == base.schema == BASE_SCHEMA
+              and registry["semantic_group"] == "declared_synthetic" and registry["group"] == base.id, "etherchannel_global_provenance")
+    _declared(base.declaration, "synthetic_p2.groups", base.id, base_digest, "/group")
+    context_ref = _declared(envelope.declaration, "synthetic_p4.context", context, digest, "/context")
+    k.require(type(registry["nodes"]) is list and type(side["targets"]) is list, "etherchannel_global_provenance")
+    nodes = tuple(record(row, ("id", "discovery_id", "ports")) for row in cast(list[object], registry["nodes"]))
+    rows = tuple(record(row, ("id", "node", "operation", "params")) for row in cast(list[object], side["targets"]))
+    k.require(len({string(row, "id") for row in nodes}) == len(nodes)
+              and len({string(row, "id") for row in rows}) == len(rows), "etherchannel_global_provenance")
+    k.require(type(envelope.targets) is tuple and all(type(t) is p4.Target for t in envelope.targets)
+              and type(base.nodes) is tuple and all(type(n) is Node for n in base.nodes), "etherchannel_global_provenance")
+    declared = {t.id: t for t in envelope.targets if t.operation == parse_summary.OP}
+    own = tuple((i, row) for i, row in enumerate(rows) if row["operation"] == parse_summary.OP)
+    k.require(len(declared) == len(own) == len(indexed) and {string(row, "id") for _, row in own} == set(declared),
+              "etherchannel_global_provenance")
+    proofs: _Proofs = {}
+    for index, row in own:
+        identifier, node_id = string(row, "id"), string(row, "node")
+        item = declared[identifier]
+        key = (context, item.node.key)
+        k.require(key in indexed and key not in proofs and indexed[key].node is item.node and item.node.id == node_id
+                  and item.owner == STEP.id and type(item.params) is bytes and canonical(row["params"]) == item.params
+                  and any(item.node is node for node in base.nodes), "etherchannel_global_provenance")
+        target = indexed[key]
+        params = record(row["params"], ("groups", "ports"))
+        for field, expected in (("groups", target.groups), ("ports", target.ports)):
+            value = params[field]
+            k.require(type(value) is list and all(type(v) is str for v in cast(list[object], value))
+                      and tuple(sorted(cast(list[str], value))) == expected, "etherchannel_global_provenance")
+        matches = tuple((i, n) for i, n in enumerate(nodes) if n["id"] == node_id)
+        k.require(len(matches) == 1, "etherchannel_global_provenance")
+        node_index, node = matches[0]
+        ports = node["ports"]
+        k.require(item.node.group == base.id and item.node.discovery_id == node["discovery_id"] and type(ports) is list
+                  and all(type(p) is str for p in cast(list[object], ports))
+                  and tuple(sorted(cast(list[str], ports))) == item.node.ports, "etherchannel_global_provenance")
+        _declared(item.node.declaration, "synthetic_p2.nodes", node_id, base_digest, f"/nodes/{node_index}")
+        proofs[key] = (context_ref, _declared(item.declaration, "synthetic_p4.targets", identifier, digest, f"/targets/{index}"))
+    return proofs
+
+
+class ProtocolOwner(Parser[parse_summary.Result]):
+    """Own parsing/projection for trusted, admitted, SummaryPack-classified inputs.
+
+    Registry declarations are rechecked; only finish verifies receipt metadata.
+    Raw member-ID/hash/framing admission and global-run attestation remain outside this helper.
+    """
+
+    def __init__(self, envelope: p4.Envelope, budgets: Budgets, targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> None:
+        plan = _plan(targets, requests, None)
+        self.plan = _Plan(indexed=plan.indexed, by_capture=plan.by_capture, requests=plan.requests,
+                          proofs=_proofs(envelope, budgets, plan.indexed))
+        self.registration = envelope.registration_sha256
+        k.digest(self.registration)
+        members = {m.id: m for m in envelope.captures if m.target.operation == parse_summary.OP}
+        k.require(len(members) == len(requests) and set(members) == {r.capture.id for r in requests}, "etherchannel_global_provenance")
+        for request in requests:
+            capture, member = request.capture, members[request.capture.id]
+            k.require(capture.source == member.target.node.key and capture.raw == member.raw
+                      and capture.bytes_sha256 == member.sha256, "etherchannel_global_provenance")
+        self.produced: dict[k.CaptureId, parse_summary.Result] = {}
+        self.finished = False
+
+    def parse(self, request: CaptureRequest) -> Parsed[parse_summary.Result]:
+        expected = {r.capture.id: r for r in self.plan.requests}
+        k.require(request.capture.id in expected and request.capture is expected[request.capture.id].capture
+                  and request.context == expected[request.capture.id].context, "etherchannel_global_capture")
+        k.require(request.capture.id not in self.produced, "etherchannel_global_value")
+        target = self.plan.by_capture[request.capture.id]
+        value = parse_summary.parse_capture(request.capture, target.groups, target.ports)
+        self.produced[request.capture.id] = value
+        return value, value.parse
+
+    def own[T](self, output: Executed[T]) -> Executed[parse_summary.Result]:
+        k.require(type(output) is Executed and type(output.receipt) is ParseReceipt, "etherchannel_global_receipt")
+        receipt = output.receipt
+        expected = {r.capture.id: r for r in self.plan.requests}
+        k.require(receipt.capture.id in expected and receipt.capture is expected[receipt.capture.id].capture, "etherchannel_global_capture")
+        k.require(receipt.capture.id in self.produced, "etherchannel_global_value")
+        value = self.produced[receipt.capture.id]
+        k.require(output.value is value and receipt.parse is value.parse, "etherchannel_global_value")
+        return Executed(receipt=receipt, value=value)
+
+    def finish(self, executed: tuple[Executed[parse_summary.Result], ...]) -> Result:
+        k.require(type(executed) is tuple, "etherchannel_global_receipt")
+        k.require(not self.finished, "etherchannel_global_run")
+        k.require(set(self.produced) == {r.capture.id for r in self.plan.requests}, "etherchannel_global_value")
+        checked = tuple(self.own(output) for output in executed)
+        result = _materialize(self.plan, checked, self.registration)
+        self.finished = True
+        return result
