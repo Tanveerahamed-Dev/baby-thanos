@@ -1,5 +1,6 @@
-"""Production EtherChannel preparation for one trusted, declared-synthetic global parser run."""
+"""Production EC preparation and owned fact finishing for one declared-synthetic global run."""
 import re
+from dataclasses import dataclass
 from hashlib import sha256
 from typing import cast
 
@@ -14,18 +15,8 @@ from atlas_brain.kernel import states as k
 from atlas_brain.model.pack_registration import PackDeclaration
 from atlas_brain.packs.l2.etherchannel import build, parse_summary
 from atlas_brain.runner import p4_pipeline
-from atlas_brain.runner.pack_receipts import CaptureRequest
-from atlas_brain.runner.pack_runtime import Handler, Parsed, Parser
-
-
-class _Adapter(Parser[parse_summary.Result]):
-    def __init__(self, targets: dict[k.CaptureId, build.Target]) -> None:
-        self.targets = targets
-
-    def parse(self, request: CaptureRequest) -> Parsed[parse_summary.Result]:
-        target = self.targets[request.capture.id]
-        value = parse_summary.parse_capture(request.capture, target.groups, target.ports)
-        return value, value.parse
+from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
+from atlas_brain.runner.pack_runtime import Executed, Handler
 
 
 def _strings(value: object) -> tuple[str, ...]:
@@ -93,7 +84,7 @@ def _integrity(raw: bytes) -> k.IntegrityState:
 
 
 def _scope(envelope: p4.Envelope, budgets: Budgets) -> tuple[
-    tuple[p4.Target, ...], dict[k.CaptureId, build.Target], tuple[CaptureRequest, ...],
+    tuple[p4.Target, ...], tuple[build.Target, ...], tuple[CaptureRequest, ...],
 ]:
     k.require(type(envelope) is p4.Envelope and type(envelope.raw) is bytes
               and type(envelope.base) is SyntheticGroup and type(envelope.base.raw) is bytes, "etherchannel_folder_registry")
@@ -141,7 +132,6 @@ def _scope(envelope: p4.Envelope, budgets: Budgets) -> tuple[
     k.require(type(envelope.captures) is tuple and all(type(m) is p4.CaptureMember and type(m.raw) is bytes for m in envelope.captures)
               and {m.path for m in envelope.captures} == set(capture_rows) and len(envelope.captures) == len(capture_rows), "etherchannel_folder_member")
     requests: list[CaptureRequest] = []
-    by_capture: dict[k.CaptureId, build.Target] = {}
     supplied: set[k.EntityKey] = set()
     for member in envelope.captures:
         _, row = capture_rows[member.path]
@@ -156,17 +146,34 @@ def _scope(envelope: p4.Envelope, budgets: Budgets) -> tuple[
             capture = Capture(id=member.id, source=target.node.key, operation=parse_summary.OP, rendered=parse_summary.COMMAND,
                               raw=member.raw, codec="utf-8", integrity=_integrity(member.raw), lines=text_lines(member.raw, "utf-8"),
                               read_scope=k.ReadScope.UNKNOWN, view=k.ViewConsistency.UNKNOWN)
-            by_capture[member.id] = target
             requests.append(CaptureRequest(capture=capture, context=context))
-    return tuple(item for item in envelope.targets if item.id in targets), by_capture, tuple(requests)
+    return tuple(item for item in envelope.targets if item.id in targets), tuple(targets[name] for name in targets), tuple(requests)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Run:
+    envelope: p4.Envelope
+    registration: str
+    owner: build.ProtocolOwner
 
 
 class SummaryPack[Peer](p4_pipeline.Pack[parse_summary.Result | Peer]):
-    """Classify synthetic artifact framing; neither collector identity nor network health is established."""
+    """Prepare once and finish EC facts from the original global run.
+
+    Artifact framing establishes neither collector identity nor network health.
+    """
 
     def __init__(self, budgets: Budgets) -> None:
         self.budgets = budgets
-        self.attempted = False
+        self.attempted = self.finished = False
+        self.run: _Run | None = None
+
+    @property
+    def owner(self) -> build.ProtocolOwner:
+        run = self.run
+        if run is None:
+            raise ValueError("etherchannel_global_run")
+        return run.owner
 
     def declaration(self) -> PackDeclaration:
         return build.DECLARATION
@@ -174,6 +181,33 @@ class SummaryPack[Peer](p4_pipeline.Pack[parse_summary.Result | Peer]):
     def prepare(self, envelope: p4.Envelope) -> p4_pipeline.Prepared[parse_summary.Result | Peer]:
         k.require(not self.attempted, "etherchannel_global_run")
         self.attempted = True
-        targets, by_capture, requests = _scope(envelope, self.budgets)
-        handler = Handler[parse_summary.Result | Peer](binding=build.BINDING, parser=_Adapter(by_capture))
-        return p4_pipeline.Prepared[parse_summary.Result | Peer](targets=targets, handlers=(handler,), requests=requests)
+        targets, domains, requests = _scope(envelope, self.budgets)
+        owner = build.ProtocolOwner(envelope, self.budgets, domains, requests)
+        handler = Handler[parse_summary.Result | Peer](binding=build.BINDING, parser=owner)
+        batch = p4_pipeline.Prepared[parse_summary.Result | Peer](targets=targets, handlers=(handler,), requests=requests)
+        self.run = _Run(envelope=envelope, registration=envelope.registration_sha256, owner=owner)
+        return batch
+
+    def finish(self, execution: p4_pipeline.Result[parse_summary.Result | Peer]) -> build.Result:
+        """Close every global receipt before materializing EC's original parsed values."""
+        run = self.run
+        if (self.finished or run is None or type(execution) is not p4_pipeline.Result
+                or execution.envelope is not run.envelope or run.envelope.registration_sha256 != run.registration):
+            raise ValueError("etherchannel_global_run")
+        envelope, owner = run.envelope, run.owner
+        outputs = execution.executed
+        k.require(type(outputs) is tuple and all(type(o) is Executed and type(o.receipt) is ParseReceipt
+                  and type(o.receipt.capture) is Capture for o in outputs), "etherchannel_global_receipt")
+        members = {m.id: m for m in envelope.captures}
+        k.require(len(outputs) == len(members) and {o.receipt.capture.id for o in outputs} == set(members), "etherchannel_global_coverage")
+        for output in outputs:
+            receipt, capture = output.receipt, output.receipt.capture
+            member = members[capture.id]
+            k.require(receipt.owner == member.target.owner and receipt.context == envelope.context
+                      and receipt.registration_sha256 == run.registration and capture.source == member.target.node.key
+                      and capture.operation == member.target.operation and type(capture.raw) is bytes
+                      and capture.raw == member.raw and capture.bytes_sha256 == member.sha256, "etherchannel_global_receipt")
+        owned = tuple(owner.own(output) for output in outputs if output.receipt.capture.operation == parse_summary.OP)
+        result = owner.finish(owned)
+        self.finished = True
+        return result
