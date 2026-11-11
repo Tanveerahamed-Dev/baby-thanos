@@ -7,8 +7,8 @@ from typing import cast
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence import p4_admission as p4
 from atlas_brain.evidence.admission import Budgets, record, strict_json, string
-from atlas_brain.evidence.capture import Scope
-from atlas_brain.evidence.parsekit.rules import Record
+from atlas_brain.evidence.capture import Capture, Scope
+from atlas_brain.evidence.parsekit.rules import Captured, Record
 from atlas_brain.evidence.synthetic import SCHEMA as BASE_SCHEMA
 from atlas_brain.evidence.synthetic import Node, SyntheticGroup, endpoint
 from atlas_brain.kernel import states as k
@@ -342,3 +342,117 @@ def fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[str] | k.Unk
     k.require(REPORTED_PROTOCOL in STEP.produces and any(spec.id == REPORTED_PROTOCOL for spec in DECLARATION.facts),
               "etherchannel_fact_rows")
     return tuple((REPORTED_PROTOCOL, row, row.value) for row in result.rows)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MemberProof:
+    """Raw reported-token proof only; an empty artifact is not positive absence."""
+    group: str
+    text: str | None
+    spans: tuple[k.ByteSpan, ...]
+    anchor: k.ByteSpan | None
+
+
+def _sections(output: Executed[parse_summary.Result]) -> dict[str, tuple[Record, ...]]:
+    groups: dict[str, list[Record]] = {}
+    current = ""
+    previous = 0
+    closed = False
+    for item in (rec for rec in output.receipt.parse.records if rec.rule_id in ("group", "wrap", "prompt")):
+        k.require(not closed and previous <= item.span.start < item.span.end <= len(output.receipt.capture.raw), "etherchannel_members_record")
+        previous = item.span.end
+        if item.rule_id == "group":
+            fields = dict(item.fields)
+            k.require("group" in fields, "etherchannel_members_record")
+            current = fields["group"].raw
+            k.require(current not in groups, "etherchannel_members_record")
+            groups[current] = [item]
+        elif item.rule_id == "wrap":
+            k.require(current in groups, "etherchannel_members_record")
+            groups[current].append(item)
+        elif item.rule_id == "prompt":
+            closed = True
+    return {group: tuple(groups[group]) for group in groups}
+
+
+def _member_proof(target: Target, row: parse_summary.Row, output: Executed[parse_summary.Result],
+                  section: tuple[Record, ...]) -> MemberProof:
+    raw = output.receipt.capture.raw
+    k.require(bool(section) and tuple(item.span for item in section) == row.spans, "etherchannel_members_record")
+    k.require(type(row.members) is tuple and all(type(member) is parse_summary.Member and type(member.port) is Captured
+              and type(member.flag) is Captured and type(member.span) is k.ByteSpan
+              and type(member.port.span) is k.ByteSpan and type(member.flag.span) is k.ByteSpan for member in row.members), "etherchannel_members_record")
+    fields, head = dict(row.fields), dict(section[0].fields)
+    k.require(len(fields) == len(row.fields) and len(head) == len(section[0].fields)
+              and all(name in fields and name in head and fields[name] is head[name] for name in ("group", "channel", "protocol")),
+              "etherchannel_members_record")
+    group, channel, protocol = fields["group"], fields["channel"], fields["protocol"]
+    k.require(group.raw == group.value == row.group and channel.raw == channel.value == "Po" + row.group,
+              "etherchannel_members_record")
+    for token in (group, channel, protocol):
+        k.require(type(token) is Captured and type(token.raw) is str and token.raw.isascii()
+                  and section[0].span.start <= token.span.start < token.span.end <= section[0].span.end
+                  and raw[token.span.start:token.span.end] == token.raw.encode("ascii"), "etherchannel_members_witness")
+    k.require(group.span.start == section[0].span.start
+              and re.fullmatch(rb"[ \t]+", raw[group.span.end:channel.span.start]) is not None
+              and re.fullmatch(rb"\([A-Za-z]+\)[ \t]+", raw[channel.span.end:protocol.span.start]) is not None,
+              "etherchannel_members_witness")
+    spans = {group.span, channel.span}
+    consumed: list[parse_summary.Member] = []
+    for item in section:
+        start, end = item.span.start, item.span.end
+        k.require(0 <= start < end <= len(raw) and (start == 0 or raw[start - 1] == 10)
+                  and (end == len(raw) or raw.startswith((b"\n", b"\r\n"), end))
+                  and b"\n" not in raw[start:end] and b"\r" not in raw[start:end], "etherchannel_members_witness")
+        cells = dict(item.fields)
+        k.require(len(cells) == len(item.fields) and "members" in cells, "etherchannel_members_record")
+        column = cells["members"]
+        k.require(type(column.raw) is str and column.raw.isascii() and column.value == column.raw
+                  and start <= column.span.start <= column.span.end == end
+                  and raw[column.span.start:column.span.end] == column.raw.encode("ascii"), "etherchannel_members_witness")
+        k.require(column.span.start == cells["protocol"].span.end if item.rule_id == "group" else
+                  re.fullmatch(rb"[ \t]+", raw[start:column.span.start]) is not None, "etherchannel_members_record")
+        cursor = column.span.start
+        for member in row.members:
+            if not column.span.start <= member.span.start < member.span.end <= column.span.end:
+                continue
+            port, flag = member.port, member.flag
+            k.require(type(port.value) is str and port.value == port.raw and port.raw in target.ports
+                      and type(flag.value) is str and flag.value == flag.raw and flag.raw in parse_summary.MEMBER_FLAGS,
+                      "etherchannel_members_value")
+            gap = rb"[ \t]+" if item.rule_id == "group" or cursor != column.span.start else rb"[ \t]*"
+            k.require(cursor <= member.span.start == port.span.start and port.span.end + 1 == flag.span.start
+                      and flag.span.end + 1 == member.span.end and re.fullmatch(gap, raw[cursor:member.span.start]) is not None
+                      and raw[port.span.start:port.span.end] == port.raw.encode("ascii")
+                      and raw[flag.span.start:flag.span.end] == flag.raw.encode("ascii")
+                      and raw[member.span.start:member.span.end] == (port.raw + "(" + flag.raw + ")").encode("ascii"),
+                      "etherchannel_members_witness")
+            spans.update((member.span, port.span, flag.span))
+            consumed.append(member)
+            cursor = member.span.end
+        k.require(re.fullmatch(rb"[ \t]*", raw[cursor:column.span.end]) is not None, "etherchannel_members_witness")
+        spans.add(item.span)
+    k.require(tuple(consumed) == row.members, "etherchannel_members_record")
+    if not consumed:
+        return MemberProof(group=row.group, text=None, spans=(), anchor=None)
+    text = " ".join(raw[member.span.start:member.span.end].decode("ascii") for member in consumed)
+    return MemberProof(group=row.group, text=text, spans=tuple(sorted(spans, key=lambda span: (span.start, span.end))), anchor=consumed[0].port.span)
+
+
+def reported_member_proofs(target: Target, output: Executed[parse_summary.Result]) -> tuple[MemberProof, ...]:
+    """Validate a trusted matching parse's entire roster; no owner/registry/global-run admission or replay."""
+    k.require(type(target) is Target and type(output) is Executed and type(output.receipt) is ParseReceipt
+              and type(output.value) is parse_summary.Result and type(output.receipt.capture) is Capture,
+              "etherchannel_members_record")
+    capture, value = output.receipt.capture, output.value
+    k.require(output.receipt.parse is value.parse and capture.operation == parse_summary.OP
+              and capture.rendered == parse_summary.COMMAND and capture.codec in ("utf-8", "ascii"), "etherchannel_members_record")
+    k.require(type(value.rows) is tuple and all(type(row) is parse_summary.Row and type(row.group) is str for row in value.rows)
+              and tuple(row.group for row in value.rows) == tuple(sorted(target.groups)), "etherchannel_members_record")
+    empty = tuple(MemberProof(group=row.group, text=None, spans=(), anchor=None) for row in value.rows)
+    if value.reason is not None or value.parse.quality != "complete" or capture.integrity is not k.IntegrityState.COMPLETE or capture.error is not None:
+        return empty
+    sections = _sections(output)
+    k.require(set(sections) == {row.group for row in value.rows if row.reason is None}, "etherchannel_members_record")
+    return tuple(_member_proof(target, row, output, sections[row.group]) if row.reason is None else vacant
+                 for row, vacant in zip(value.rows, empty, strict=True))
