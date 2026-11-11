@@ -1,0 +1,85 @@
+name: P4 pinned output baseline
+on:
+  push:
+    branches: [codex/p4-byte-baseline]
+permissions:
+  contents: read
+jobs:
+  baseline:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      WORKFLOW_SHA: ${{ github.sha }}
+      BASELINE_OS: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 2442488dd01c2f5526387511172f518bc3ecd099
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        with:
+          version: '0.13.1'
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Record exact native P4 output bytes
+        shell: bash
+        run: |
+          uv run --no-sync python - <<'PY'
+          import json, os, subprocess, sys, tempfile
+          from hashlib import sha1, sha256
+          from pathlib import Path
+          
+          SOURCE = "2442488dd01c2f5526387511172f518bc3ecd099"
+          TREE = "446a6879cb1c1a3fe7d02f90048c199576ad2bc5"
+          assert subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() == SOURCE
+          assert subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip() == TREE
+          subprocess.run(["git", "diff", "--exit-code", "--"], check=True)
+          fixture = Path("tests/runner/test_p4_proof_index.py").read_bytes()
+          assert sha1(b"blob " + str(len(fixture)).encode() + b"\0" + fixture).hexdigest() == "fd7c425d1b576430f3c1398efaffa02943e7af7e"
+          sys.path.insert(0, str(Path("tests/runner").resolve()))
+          from test_p4_proof_index import LIMITS, estate
+          from atlas_brain.contract.canonical import canonical
+          from atlas_brain.contract.manifest import manifest
+          from atlas_brain.runner.p4 import analyse_folder
+          
+          NAMES = {"result.json", "facts/stp_port_vlan.jsonl", "facts/etherchannel_group.jsonl", "MANIFEST.sha256"}
+          def receipt(files):
+              assert set(files) == NAMES
+              assert canonical(json.loads(files["result.json"])) == files["result.json"]
+              assert files["MANIFEST.sha256"] == manifest({n: b for n, b in files.items() if n != "MANIFEST.sha256"})
+              return {"sha256": {n: sha256(files[n]).hexdigest() for n in sorted(files)}, "manifest_utf8": files["MANIFEST.sha256"].decode("ascii")}
+          
+          cases = (("disabled-dash-lf", b"disabled", b"-", b"\n"), ("missing-guard-pagp-crlf", None, b"PAgP", b"\r\n"))
+          with tempfile.TemporaryDirectory() as temporary:
+              root = Path(temporary)
+              for label, guard, protocol, ending in cases:
+                  evidence = root / label / "evidence"
+                  evidence.mkdir(parents=True)
+                  estate(evidence, guard, protocol, ending)
+                  before = {p.name: p.read_bytes() for p in evidence.iterdir()}
+                  pure = analyse_folder(evidence, LIMITS)
+                  pure_receipt = receipt(pure)
+                  cli_receipts = []
+                  for workers, seed in ((1, "1"), (4, "83")):
+                      out = root / label / ("out-" + str(workers))
+                      command = [sys.executable, "-m", "atlas_brain.runner", "--format", "p4-observations", "--evidence", str(evidence), "--out", str(out), "--workers", str(workers)]
+                      result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=180, env={**os.environ, "PYTHONHASHSEED": seed})
+                      assert result.stdout.strip() == "runner: ok egress_denied=40", result.stdout
+                      files = {p.relative_to(out).as_posix(): p.read_bytes() for p in out.rglob("*") if p.is_file()}
+                      current = receipt(files)
+                      head = json.loads(files["result.json"])
+                      execution = head.pop("execution")
+                      assert head == json.loads(pure["result.json"])
+                      assert execution == {"schema": "atlas-brain.runner-witness/1", "plan": {"steps": 8, "witness_attempts": 4}, "egress": {"parent_denied": 4, "coordinator_denied": 4, "worker_denied": 32, "denied": 40}, "steps": [{"denied": 4, "id": f"witness/{i:02d}"} for i in range(8)]}
+                      assert all(files[n] == pure[n] for n in NAMES if n.startswith("facts/"))
+                      cli_receipts.append(current)
+                  assert cli_receipts[0] == cli_receipts[1]
+                  assert {p.name: p.read_bytes() for p in evidence.iterdir()} == before
+                  result = {"schema": "atlas-brain.p4-byte-baseline/1", "source_sha": SOURCE, "source_tree": TREE, "workflow_sha": os.environ["WORKFLOW_SHA"], "platform": os.environ["BASELINE_OS"], "fixture_blob": "fd7c425d1b576430f3c1398efaffa02943e7af7e", "case": label, "inputs_sha256": {n: sha256(before[n]).hexdigest() for n in sorted(before)}, "pure": pure_receipt, "cli": cli_receipts[0], "cli_workers": [1, 4], "cli_seeds": ["1", "83"]}
+                  print("P4_BYTE_BASELINE " + json.dumps(result, sort_keys=True, separators=(",", ":")), flush=True)
+          subprocess.run(["git", "diff", "--exit-code", "--"], check=True)
+          PY
