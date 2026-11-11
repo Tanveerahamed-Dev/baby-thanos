@@ -179,7 +179,7 @@ def build_reported_protocol(targets: tuple[Target, ...], requests: tuple[Capture
     expected = {r.capture.id: r for r in requests}
     k.require(len(executed) == len(expected) and {o.receipt.capture.id for o in executed} == set(expected), "etherchannel_receipt_coverage")
     registration = pack_registration.compile_packs((DECLARATION,)).registration_sha256
-    outcomes: dict[tuple[str, k.EntityKey], Executed[parse_summary.Result]] = {}
+    outcomes: dict[tuple[str, k.EntityKey], Executed[parse_summary.Result] | None] = {key: None for key in indexed}
     for output in executed:
         receipt = output.receipt
         request = expected[receipt.capture.id]
@@ -191,7 +191,7 @@ def build_reported_protocol(targets: tuple[Target, ...], requests: tuple[Capture
                   for row in output.value.rows) and tuple(row.group for row in output.value.rows) == target.groups,
                   "etherchannel_parser_population")
         outcomes[(target.context, target.node.key)] = output
-    rows = tuple(row for key in sorted(indexed) for row in _rows(indexed[key], outcomes[key] if key in outcomes else None))
+    rows = tuple(row for key in sorted(indexed) for row in _rows(indexed[key], outcomes[key]))
     k.require(len({r.subject for r in rows}) == len(rows), "etherchannel_subject_collision")
     store = FactStore()
     writer = bind_writer(store, step=STEP)
