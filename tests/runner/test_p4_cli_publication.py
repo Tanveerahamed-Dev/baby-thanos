@@ -106,7 +106,7 @@ def test_all_analysis_profile_and_witnesses_close_before_any_stage(tmp_path, mon
             if fault == "missing_file":
                 files.pop("facts/fhrp_local.jsonl")
             else:
-                files["foreign.txt"] = b"extra"
+                files["facts/foreign.jsonl"] = b"extra"
             files["MANIFEST.sha256"] = manifest({name: raw for name, raw in files.items() if name != "MANIFEST.sha256"})
         return files
     monkeypatch.setattr(p4, "analyse_folder", analyse)
