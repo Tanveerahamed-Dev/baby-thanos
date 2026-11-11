@@ -5,6 +5,7 @@ from typing import cast
 
 from atlas_brain.contract.bundle import result_bundle
 from atlas_brain.evidence.admission import Budgets, record, strict_json, string
+from atlas_brain.evidence.synthetic import Node
 from atlas_brain.kernel import states as k
 from atlas_brain.model.pack_registration import PackDeclaration
 from atlas_brain.model.specs import EntityKindSpec, FactSpec, StepId, StepSpec
@@ -77,10 +78,10 @@ def _strings(value: object) -> tuple[str, ...]:
     return tuple(v for v in cast(list[object], value) if type(v) is str)
 
 
-def _subjects(index: ProofIndex) -> dict[k.PackId, set[k.EntityKey]]:
-    """Independently close the declared subject census before consuming adapter or Store rows."""
+def _subjects(index: ProofIndex) -> tuple[set[k.EntityKey], set[k.EntityKey]]:
     envelope = index.execution.envelope
-    result: dict[k.PackId, set[k.EntityKey]] = {stp.PACK: set(), ec.PACK: set()}
+    trees: set[k.EntityKey] = set()
+    channels: set[k.EntityKey] = set()
     for target in envelope.targets:
         params = strict_json(target.params, index.budgets.nesting_depth, index.budgets.numeric_digits)
         if target.operation == stp.stp.OP:
@@ -89,30 +90,38 @@ def _subjects(index: ProofIndex) -> dict[k.PackId, set[k.EntityKey]]:
             _need(type(values) is list and all(type(v) is int for v in cast(list[object], values)), "population")
             domain = stp.Target(context=envelope.context, node=target.node, port=string(fields, "port"),
                                 vlans=tuple(v for v in cast(list[object], values) if type(v) is int))
-            pack, step = stp.PACK, stp.STEP.id
+            step, selected = stp.STEP.id, trees
             subjects = {stp.subject(domain, vlan) for vlan in domain.vlans}
         elif target.operation == ec.parse_summary.OP:
             fields = record(params, ("groups", "ports"))
             channel = ec.Target(context=envelope.context, node=target.node, groups=_strings(fields["groups"]), ports=_strings(fields["ports"]))
-            pack, step = ec.PACK, ec.STEP.id
+            step, selected = ec.STEP.id, channels
             subjects = {ec.subject(channel, group) for group in channel.groups}
         else:
             raise RunnerRefused("p4_observations_profile")
-        _need(target.owner == step and not result[pack].intersection(subjects), "population")
-        result[pack].update(subjects)
-    return result
+        _need(target.owner == step and not selected & subjects, "population")
+        selected |= subjects
+    return trees, channels
 
 
-def _facts(index: ProofIndex, owner: Owner, pack: k.PackId,
+def _cell(row: stp.Row | ec.Row) -> tuple[k.EntityKey, Node, str, State]:
+    match row:
+        case (stp.Row(subject=subject, target=stp.Target(node=node, context=context), value=value)
+              | ec.Row(subject=subject, target=ec.Target(node=node, context=context), value=value)):
+            return subject, node, context, value
+        case _:
+            raise RunnerRefused("p4_observations_row")
+
+
+def _facts(index: ProofIndex, owner: Owner, tree: bool,
            subjects: set[k.EntityKey]) -> tuple[str, dict[tuple[str, str], dict[str, object]]]:
-    tree = pack == stp.PACK
     baseline = _spec(stp.ROOT_GUARD if tree else ec.REPORTED_PROTOCOL)
     identities = (stp.ROOT_GUARD,) if tree else ec.STEP.produces
-    specs = {fact: _spec(fact) for fact in identities}
+    specs = tuple(_spec(fact) for fact in identities)
     owner_type, row_type = (stp.Result, stp.Row) if tree else (ec.Result, ec.Row)
     _need(type(owner) is owner_type and type(owner.store) is FactStore and type(owner.rows) is tuple
           and all(type(row) is row_type for row in owner.rows), "owner")
-    _need(len(owner.rows) == len(subjects) and {row.subject for row in owner.rows} == subjects, "population")
+    _need(len(owner.rows) == len(subjects) and {_cell(row)[0] for row in owner.rows} == subjects, "population")
     expected = {k.FactRef(fact=fact, subject=subject) for fact in identities for subject in subjects}
     operation = stp.stp.OP if tree else ec.parse_summary.OP
     _need(type(index.scopes) is tuple and all(type(scope) is Scope and type(scope.reference) is k.FactRef for scope in index.scopes), "population")
@@ -122,29 +131,30 @@ def _facts(index: ProofIndex, owner: Owner, pack: k.PackId,
     _need(len(scopes) == len(expected) and {scope.reference for scope in scopes} == expected, "population")
     items: tuple[Item, ...]
     if isinstance(owner, stp.Result):
-        items = tuple((stp.ROOT_GUARD, row, row.value) for row in owner.rows)
+        items = tuple((stp.ROOT_GUARD, row, _cell(row)[3]) for row in owner.rows)
     else:
         items = ec.fact_rows(owner)
     _need(type(items) is tuple and all(type(item) is tuple and len(item) == 3 for item in items), "row")
     _need(len(items) == len(expected), "population")
     _need(type(owner.store.owners) is dict and type(owner.store.values) is dict
-          and owner.store.owners == {fact: spec[2] for fact, spec in specs.items()}
+          and owner.store.owners == {spec[0]: spec[2] for spec in specs}
           and set(owner.store.values) == expected, "store")
-    originals = {row.subject: row for row in owner.rows}
+    originals = {_cell(row)[0]: row for row in owner.rows}
     reader = bind_reader(owner.store, step=PROJECT)
     result: dict[tuple[str, str], dict[str, object]] = {}
     for fact, row, value in items:
-        _need(type(fact) is str and fact in specs and type(row) is row_type
-              and originals.get(row.subject) is row, "row")
-        reference = k.FactRef(fact=fact, subject=row.subject)
-        _need(reference in expected and (str(row.subject), str(fact)) not in result, "population")
-        scope = index.scope(fact, row.subject)
-        _need(row.target.node is scope.target.node and row.target.context == index.execution.envelope.context, "scope")
-        _need(reader.read(fact=fact, subject=row.subject) is value, "store")
-        _, declared_pack, _, kind, value_type = specs[fact]
+        _need(type(fact) is str and fact in identities and type(row) is row_type, "row")
+        subject, node, context, _ = _cell(row)
+        _need(originals.get(subject) is row, "row")
+        reference = k.FactRef(fact=fact, subject=subject)
+        _need(reference in expected and (str(subject), str(fact)) not in result, "population")
+        scope = index.scope(fact, subject)
+        _need(node is scope.target.node and context == index.execution.envelope.context, "scope")
+        _need(reader.read(fact=fact, subject=subject) is value, "store")
+        _, declared_pack, _, kind, value_type = next(spec for spec in specs if spec[0] == fact)
         _need(kind == baseline[3], "spec")
-        result[(str(row.subject), str(fact))] = {"pack": str(declared_pack), "fact": str(fact),
-            "subject": str(row.subject), **dict(scope.labels), **_state(index, scope, value, value_type)}
+        result[(str(subject), str(fact))] = {"pack": str(declared_pack), "fact": str(fact),
+            "subject": str(subject), **dict(scope.labels), **_state(index, scope, value, value_type)}
     return baseline[3], result
 
 
@@ -175,14 +185,14 @@ def analyse_folder(root: Path, budgets: Budgets) -> dict[str, bytes]:
     finished = channel.finish(tree.execution)
     index = ProofIndex(tree.execution, budgets)
     _need(index.execution is tree.execution, "profile")
-    subjects = _subjects(index)
-    tree_kind, trees = _facts(index, tree.result, stp.PACK, subjects[stp.PACK])
-    channel_kind, channels = _facts(index, finished, ec.PACK, subjects[ec.PACK])
+    tree_subjects, channel_subjects = _subjects(index)
+    tree_kind, trees = _facts(index, tree.result, True, tree_subjects)
+    channel_kind, channels = _facts(index, finished, False, channel_subjects)
     _need(tree_kind != channel_kind, "spec")
     result: dict[str, object] = {"schema": SCHEMA, "semantic_group": "declared_synthetic", "scope": "observations_only",
         "checks": "not_implemented", "variant_support": "allowlisted", "group": index.execution.envelope.base.id,
         "context": index.execution.envelope.context, "registration_sha256": index.execution.envelope.registration_sha256,
         "registry_sha256": index.registry_sha256, "base_registry_sha256": index.base_registry_sha256,
         "capture_scope": "p4_members_only", "base_capture_scope": "admitted_discovery_context_only",
-        "denominator": {str(stp.PACK): len(subjects[stp.PACK]), str(ec.PACK): len(subjects[ec.PACK])}, "captures": _metadata(index)}
+        "denominator": {str(stp.PACK): len(tree_subjects), str(ec.PACK): len(channel_subjects)}, "captures": _metadata(index)}
     return result_bundle(result, facts={tree_kind: trees, channel_kind: channels}, checks={})
