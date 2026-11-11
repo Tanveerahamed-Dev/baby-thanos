@@ -365,3 +365,14 @@ def fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[str] | k.Unk
     _need(type(result) is Result and type(result.rows) is tuple and all(type(row) is Row for row in result.rows), "fact_rows")
     _need(STEP.produces == (REPORTED_STATE,) and tuple(spec.id for spec in DECLARATION.facts) == STEP.produces, "fact_rows")
     return tuple((REPORTED_STATE, row, row.value) for row in result.rows)
+
+
+def reported_state_proofs[T](output: Executed[T]) -> tuple[tuple[hsrp.Row, tuple[k.ByteSpan, ...]], ...]:
+    """Authenticate raw rows/claims only; callers close registration, owner and admission."""
+    if (type(output) is not Executed or type(output.receipt) is not ParseReceipt
+            or type(output.receipt.capture) is not Capture):
+        raise ValueError("hsrp_proof_input")
+    value = output.value
+    if type(value) is not hsrp.Result or output.receipt.parse is not value.parse:
+        raise ValueError("hsrp_proof_input")
+    return _claims(Executed(receipt=output.receipt, value=value))

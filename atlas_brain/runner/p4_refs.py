@@ -1,4 +1,4 @@
-"""Bound leaf proofs for trusted completed STP/EC runs; no fact values, state or output projection."""
+"""Bound leaf proofs for trusted completed STP/EC/HSRP runs; no fact values, state or output projection."""
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import cast
@@ -8,18 +8,20 @@ from atlas_brain.evidence.admission import Budgets, record, strict_json, string
 from atlas_brain.evidence.capture import Capture
 from atlas_brain.evidence.p4_admission import SCHEMA as P4_SCHEMA
 from atlas_brain.evidence.p4_admission import CaptureMember, Envelope, Target
+from atlas_brain.evidence.parsekit.rules import Captured
 from atlas_brain.evidence.synthetic import SCHEMA as BASE_SCHEMA
 from atlas_brain.evidence.synthetic import Node, SyntheticGroup
 from atlas_brain.kernel import states as k
 from atlas_brain.model.pack_registration import compile_packs
 from atlas_brain.packs.l2.etherchannel import build as ec
 from atlas_brain.packs.l2.stp import build as stp
+from atlas_brain.packs.l3.fhrp import build as fhrp
 from atlas_brain.runner import p4_pipeline as pipe
 from atlas_brain.runner.pack_receipts import ParseReceipt
 from atlas_brain.runner.pack_runtime import Executed
 from atlas_brain.runner.records import RunnerRefused
 
-type Value = stp.stp.Result | ec.parse_summary.Result
+type Value = stp.stp.Result | ec.parse_summary.Result | fhrp.hsrp.Result
 
 
 def _need(condition: bool, code: str) -> None:
@@ -51,6 +53,7 @@ class Scope:
     spans: frozenset[tuple[k.CaptureId, k.ByteSpan]]
     positive: frozenset[tuple[k.CaptureId, k.ByteSpan]]
     required: frozenset[tuple[k.CaptureId, k.ByteSpan]] = frozenset()
+    witnesses: frozenset[tuple[k.CaptureId, k.ByteSpan]] = frozenset()
 
 
 def _table(value: object, fields: tuple[str, ...], table: str,
@@ -73,8 +76,12 @@ class ProofIndex:
         envelope = execution.envelope
         _need(type(envelope.raw) is bytes and type(envelope.base) is SyntheticGroup
               and type(envelope.base.raw) is bytes, "registry")
-        _need(envelope.registration_sha256 == compile_packs((stp.DECLARATION, ec.DECLARATION)).registration_sha256,
-              "profile")
+        legacy = compile_packs((stp.DECLARATION, ec.DECLARATION)).registration_sha256
+        full = compile_packs((stp.DECLARATION, ec.DECLARATION, fhrp.DECLARATION)).registration_sha256
+        _need(envelope.registration_sha256 in (legacy, full), "profile")
+        owners = {stp.BINDING.operation: stp.BINDING.step, ec.BINDING.operation: ec.BINDING.step}
+        if envelope.registration_sha256 == full:
+            owners[fhrp.BINDING.operation] = fhrp.BINDING.step
         self.registry_sha256, self.base_registry_sha256 = sha256(envelope.raw).hexdigest(), sha256(envelope.base.raw).hexdigest()
         base = record(strict_json(envelope.base.raw, budgets.nesting_depth, budgets.numeric_digits),
                       ("schema", "semantic_group", "group", "nodes", "captures"))
@@ -98,6 +105,7 @@ class ProofIndex:
               and {t.id for t in envelope.targets} == set(targets) and len(envelope.targets) == len(targets), "registry")
         self.declarations: dict[str, tuple[k.RegistryRef, ...]] = {}
         for target in envelope.targets:
+            _need(target.operation in owners and target.owner == owners[target.operation], "profile")
             _need(target.node.id in nodes and any(target.node is node for node in envelope.base.nodes), "registry")
             node_ref, node = nodes[target.node.id]
             target_ref, row = targets[target.id]
@@ -132,7 +140,8 @@ class ProofIndex:
                   and receipt.registration_sha256 == envelope.registration_sha256 and capture.source == member.target.node.key
                   and capture.operation == member.target.operation and capture.raw == member.raw, "capture")
             valid = capture.operation == stp.stp.OP and type(output.value) is stp.stp.Result or (
-                capture.operation == ec.parse_summary.OP and type(output.value) is ec.parse_summary.Result)
+                capture.operation == ec.parse_summary.OP and type(output.value) is ec.parse_summary.Result) or (
+                capture.operation == fhrp.hsrp.OP and type(output.value) is fhrp.hsrp.Result)
             _need(valid and receipt.parse is output.value.parse, "capture")
             self.by_target[member.target.id].append(output)
         self.bound: dict[k.FactRef, Scope] = {}
@@ -198,6 +207,9 @@ def _bind(resolver: ProofIndex, target: Target, value: object) -> None:
         cases = tuple((k.FactRef(fact=fact, subject=ec.subject(channel, group)),
             (("context", channel.context), ("group", group), ("node", channel.node.id), ("target", target.id)))
             for group in channel.groups for fact in (ec.REPORTED_PROTOCOL, ec.REPORTED_MEMBER_TOKENS))
+    elif target.operation == fhrp.hsrp.OP:
+        _bind_hsrp(resolver, target, value)
+        return
     else:
         raise RunnerRefused("p4_projection_scope")
     for reference, labels in cases:
@@ -214,9 +226,11 @@ def _bind(resolver: ProofIndex, target: Target, value: object) -> None:
             if isinstance(output.value, stp.stp.Result):
                 rows = tuple(r for r in output.value.rows if r.port == data["port"] and r.vlan == data["vlan"])
                 field = "root_guard"
-            else:
+            elif isinstance(output.value, ec.parse_summary.Result):
                 rows = tuple(r for r in output.value.rows if r.group == data["group"])
                 field = "protocol"
+            else:
+                raise RunnerRefused("p4_projection_scope")
             _need(len(rows) == 1, "scope")
             row, identity = rows[0], output.receipt.capture.id
             if row.fields:
@@ -241,6 +255,57 @@ def _bind(resolver: ProofIndex, target: Target, value: object) -> None:
             declarations=resolver.declarations[target.id], spans=frozenset(spans), positive=frozenset(positive), required=frozenset(required))
 
 
+def _hsrp_selector(row: fhrp.hsrp.Row) -> tuple[str, str]:
+    match row:
+        case fhrp.hsrp.Row(interface=Captured(raw=interface), group=Captured(raw=group)):
+            return interface, group
+        case _:
+            raise RunnerRefused("p4_projection_scope")
+
+
+def _bind_hsrp(resolver: ProofIndex, target: Target, value: object) -> None:
+    pairs = record(value, ("groups",))["groups"]
+    _need(type(pairs) is list and all(type(pair) is list and len(cast(list[object], pair)) == 2
+          and all(type(item) is str for item in cast(list[object], pair)) for pair in cast(list[object], pairs)), "scope")
+    domain = fhrp.Target(context=resolver.execution.envelope.context, node=target.node,
+                        groups=tuple((cast(list[str], pair)[0], cast(list[str], pair)[1]) for pair in cast(list[object], pairs)))
+    _need(target.owner == fhrp.STEP.id, "scope")
+    cells: dict[tuple[str, str], list[tuple[k.CaptureId, k.ByteSpan, k.ByteSpan, tuple[k.ByteSpan, ...], bool]]] = {}
+    for output in resolver.by_target[target.id]:
+        claims = fhrp.reported_state_proofs(output)
+        _need(output.value.reason is not None or all(_hsrp_selector(rich) in domain.groups for rich, _ in claims),
+              "population")
+        complete = (output.value.reason is None and output.receipt.parse.quality == "complete"
+                    and output.receipt.capture.integrity is k.IntegrityState.COMPLETE)
+        for rich, points in claims:
+            match rich:
+                case fhrp.hsrp.Row(interface=Captured(raw=interface), group=Captured(raw=group),
+                                   state=Captured(span=anchor), span=record_span, reason=reason,
+                                   address_family=family, af_spans=af):
+                    eligible = complete and reason is None and family == "ipv4" and bool(af)
+                    cells.setdefault((interface, group), []).append((output.receipt.capture.id, record_span, anchor, points, eligible))
+                case _:
+                    raise RunnerRefused("p4_projection_scope")
+    for interface, group in domain.groups:
+        reference = k.FactRef(fact=fhrp.REPORTED_STATE, subject=fhrp.subject(domain, interface, group))
+        labels: tuple[tuple[str, str | int], ...] = (("address_family", "ipv4"), ("context", domain.context),
+            ("group", group), ("interface", interface), ("node", domain.node.id), ("protocol", "hsrp"), ("target", target.id))
+        rows = cells.get((interface, group), [])
+        spans: set[tuple[k.CaptureId, k.ByteSpan]] = set()
+        positive: set[tuple[k.CaptureId, k.ByteSpan]] = set()
+        witnesses: set[tuple[k.CaptureId, k.ByteSpan]] = set()
+        if len(rows) == 1 and rows[0][4]:
+            identity, _, anchor, points, _ = rows[0]
+            spans.update((identity, point) for point in points)
+            positive.add((identity, anchor))
+        else:
+            witnesses.update((identity, record_span) for identity, record_span, _, _, _ in rows)
+        _need(reference not in resolver.bound, "population")
+        resolver.bound[reference] = Scope(reference=reference, target=target, labels=labels,
+            declarations=resolver.declarations[target.id], spans=frozenset(spans), positive=frozenset(positive),
+            required=frozenset(spans), witnesses=frozenset(witnesses))
+
+
 def _capture_leaf(index: ProofIndex, ref: k.EvidenceRef, scope: Scope | None, positive: bool,
                   identity: k.CaptureId | None) -> dict[str, object]:
     _need(ref.capture in index.members and type(ref.role) is k.EvidenceRole, "scope")
@@ -252,10 +317,11 @@ def _capture_leaf(index: ProofIndex, ref: k.EvidenceRef, scope: Scope | None, po
         "target": member.target.id, "path": member.path, "operation": capture.operation, "rendered": capture.rendered,
         "role": str(ref.role), "sha256": ref.excerpt_sha256, "capture_sha256": index.hashes[capture.id]}
     if type(ref.locator) is k.ByteSpan:
-        _need(ref.role is k.EvidenceRole.SUBJECT, "role")
+        _need(ref.role is k.EvidenceRole.SUBJECT or (scope is not None and not positive
+              and ref.role is k.EvidenceRole.WITNESS and (ref.capture, ref.locator) in scope.witnesses), "role")
         span = ref.locator
         _need(type(span.start) is int and type(span.end) is int and 0 <= span.start < span.end <= len(capture.raw), "span")
-        _need(scope is None or (ref.capture, span) in scope.spans, "scope")
+        _need(scope is None or (ref.capture, span) in (scope.spans if ref.role is k.EvidenceRole.SUBJECT else scope.witnesses), "scope")
         actual = sha256(capture.raw[span.start:span.end]).hexdigest()
         leaf.update(locator="bytes", start=span.start, end=span.end)
     elif type(ref.locator) is k.WholeCapture:
