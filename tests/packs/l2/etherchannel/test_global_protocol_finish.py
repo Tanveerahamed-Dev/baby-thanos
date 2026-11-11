@@ -14,7 +14,6 @@ from atlas_brain.model.store import FactWriter
 from atlas_brain.packs.l2.etherchannel import build as ec
 from atlas_brain.packs.l2.etherchannel import global_parse as gp
 from atlas_brain.packs.l2.stp import build as stp
-from atlas_brain.runner import p4_pipeline as pipe
 
 P = "GigabitEthernet1/0/1"
 LIMITS = gp.Budgets(1000000, 1000000, 1000)
