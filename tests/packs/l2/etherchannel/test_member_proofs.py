@@ -8,7 +8,6 @@ from atlas_brain.evidence.parsekit.rules import Captured
 from atlas_brain.kernel import states as k
 from atlas_brain.packs.l2.etherchannel import build as ec
 
-
 FLAGS = ("P", "bndl", "D", "I", "s", "susp", "H", "hot-sby", "u", "w", "d", "f")
 
 
@@ -145,3 +144,28 @@ def test_mutated_rich_members_are_refused_atomically_by_accessor(monkeypatch, pl
         ec.reported_member_proofs(item, out)
 
 
+@pytest.mark.parametrize("plant", ["association", "operation", "rendered", "codec", "missing", "extra", "reordered", "capture", "partial"])
+def test_public_accessor_enforces_shape_and_returns_no_positive_claims_for_damage(monkeypatch, plant):
+    item = target()
+    output, = ec.build_reported_protocol((item,), (request(item),)).executed
+    if plant == "association":
+        output = replace(output, receipt=replace(output.receipt, parse=replace(output.receipt.parse)))
+    elif plant in ("operation", "rendered", "codec", "capture"):
+        change = {"operation": {"operation": "synthetic.other"}, "rendered": {"rendered": "show etherchannel"},
+                  "codec": {"codec": "latin-1"}, "capture": {"integrity": k.IntegrityState.TRUNCATED}}[plant]
+        output = replace(output, receipt=replace(output.receipt, capture=replace(output.receipt.capture, **change)))
+    elif plant == "partial":
+        parsed = replace(output.value.parse, quality="partial")
+        output = replace(output, value=replace(output.value, parse=parsed), receipt=replace(output.receipt, parse=parsed))
+    else:
+        rows = output.value.rows
+        rows = rows[:-1] if plant == "missing" else rows + (replace(rows[0], group="3"),) if plant == "extra" else tuple(reversed(rows))
+        output = replace(output, value=replace(output.value, rows=rows))
+    monkeypatch.setattr(ec, "bind_writer", lambda *args, **kwargs: pytest.fail("proof accessor wrote facts"))
+    monkeypatch.setattr(ec.parse_summary, "parse_capture", lambda *args: pytest.fail("proof accessor reparsed capture"))
+    if plant in ("capture", "partial"):
+        proofs = ec.reported_member_proofs(item, output)
+        assert tuple(proof.group for proof in proofs) == ("1", "2") and all(proof.text is proof.anchor is None and proof.spans == () for proof in proofs)
+    else:
+        with pytest.raises(ValueError, match="^etherchannel_members_record$"):
+            ec.reported_member_proofs(item, output)

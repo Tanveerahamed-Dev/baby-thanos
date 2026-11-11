@@ -358,7 +358,7 @@ def _sections(output: Executed[parse_summary.Result]) -> dict[str, tuple[Record,
     current = ""
     previous = 0
     closed = False
-    for item in (record for record in output.receipt.parse.records if record.rule_id in ("group", "wrap", "prompt")):
+    for item in (rec for rec in output.receipt.parse.records if rec.rule_id in ("group", "wrap", "prompt")):
         k.require(not closed and previous <= item.span.start < item.span.end <= len(output.receipt.capture.raw), "etherchannel_members_record")
         previous = item.span.end
         if item.rule_id == "group":
