@@ -169,9 +169,9 @@ def test_peer_failure_never_opens_a_fact_writer_and_a_fresh_retry_succeeds(tmp_p
 
 @pytest.mark.parametrize("plant,code", [("environment", "stp_global_run"), ("missing", "stp_global_coverage"),
     ("missing-peer", "stp_global_coverage"), ("duplicate", "stp_global_coverage"), ("extra", "stp_global_coverage"), ("owner", "stp_global_receipt"),
-    ("operation", "stp_global_receipt"), ("raw", "stp_global_receipt"), ("context", "stp_global_receipt"),
-    ("registration", "stp_global_receipt"), *[(f"peer-{field}", "stp_global_receipt") for field in ("owner", "operation", "raw", "context", "registration")], ("capture", "stp_global_capture"), ("value", "stp_global_value"),
-    ("unknown", "stp_global_value"), ("coherent", "stp_global_value"), ("parse", "stp_global_value"), ("containers", None)])
+    ("operation", "stp_global_receipt"), ("source", "stp_global_receipt"), ("raw", "stp_global_receipt"), ("context", "stp_global_receipt"),
+    ("registration", "stp_global_receipt"), *[(f"peer-{field}", "stp_global_receipt") for field in ("owner", "operation", "source", "raw", "context", "registration")], ("capture", "stp_global_capture"), ("value", "stp_global_value"),
+    ("unknown", "stp_global_value"), ("coherent", "stp_global_value"), ("parse", "stp_global_value"), ("containers", None), ("foreign-value", None)])
 def test_returned_global_result_is_checked_before_fact_writing(tmp_path, monkeypatch, plant, code):
     write(tmp_path, *scenario())
     execute = b.p4_pipeline.execute_p4_folder
@@ -191,9 +191,9 @@ def test_returned_global_result_is_checked_before_fact_writing(tmp_path, monkeyp
         if plant == "extra":
             receipt = replace(item.receipt, capture=replace(item.receipt.capture, id=k.CaptureId("cap:extra")))
             return replace(run, executed=entries + (replace(item, receipt=receipt),))
-        if plant in ("owner", "operation", "raw", "context", "registration", "capture"):
+        if plant in ("owner", "operation", "source", "raw", "context", "registration", "capture"):
             receipt = item.receipt
-            changes = {"owner": {"owner": b.STEP.id if receipt.owner == ec.STEP.id else ec.STEP.id}, "context": {"context": "other"},
+            changes = {"source": {"capture": replace(receipt.capture, source=k.EntityKey("node:other"))}, "owner": {"owner": b.STEP.id if receipt.owner == ec.STEP.id else ec.STEP.id}, "context": {"context": "other"},
                 "registration": {"registration_sha256": "0" * 64},
                 "operation": {"capture": replace(receipt.capture, operation=b.stp.OP if receipt.capture.operation == channel.OP else channel.OP)},
                 "raw": {"capture": replace(receipt.capture, raw=BODY + b"changed", lines=text_lines(BODY + b"changed", "utf-8"))},
@@ -206,13 +206,14 @@ def test_returned_global_result_is_checked_before_fact_writing(tmp_path, monkeyp
         elif plant in ("value", "unknown", "parse"):
             value = item.value if plant == "parse" else replace(item.value, **({"reason": k.UnknownReason.PARSE_PARTIAL} if plant == "unknown" else {}))
             item = replace(item, value=value, receipt=replace(item.receipt, parse=replace(item.receipt.parse)) if plant == "parse" else item.receipt)
-        elif plant == "containers":
-            return replace(run, executed=tuple(replace(e) for e in entries))
+        elif plant in ("containers", "foreign-value"):
+            return replace(run, executed=tuple(replace(e, value=item.value) if plant == "foreign-value" and e.receipt.capture.operation == channel.OP else replace(e) for e in entries))
         return replace(run, executed=tuple(item if i == index else e for i, e in enumerate(entries)))
     monkeypatch.setattr(b.p4_pipeline, "execute_p4_folder", forged)
     if code is None:
         result = b.build_root_guard_global(tmp_path, LIMITS, peers=(Peer([]),))
-        assert len(result.result.rows) == 3
+        assert len(result.result.rows) == 3 and len(result.result.executed) == 1 and len(result.execution.executed) == 2
+        assert plant != "foreign-value" or all(type(e.value) is b.stp.Result for e in result.execution.executed)
     else:
         monkeypatch.setattr(b, "bind_writer", lambda *args, **kwargs: pytest.fail("writer before returned-run validation"))
         with pytest.raises(ValueError, match="^" + code + "$"):

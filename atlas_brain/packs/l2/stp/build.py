@@ -449,10 +449,7 @@ class _GlobalSTP[Peer](p4_pipeline.Pack[stp.Result | Peer]):
 def build_root_guard_global[Peer](
     root: Path, budgets: Budgets, *, peers: tuple[p4_pipeline.Pack[stp.Result | Peer], ...],
 ) -> GlobalFacts[Peer]:
-    """Run a trusted composition once; only this invocation's original STP captures/values close facts.
-
-    Peer values remain opaque and the complete global execution remains unchanged.
-    """
+    """Run once; STP facts need original captures/values from this invocation, and peers stay opaque."""
     k.require(type(peers) is tuple, "stp_global_peers")
     owner = _GlobalSTP[Peer](budgets)
     packs: tuple[p4_pipeline.Pack[stp.Result | Peer], ...] = (owner, *peers)
