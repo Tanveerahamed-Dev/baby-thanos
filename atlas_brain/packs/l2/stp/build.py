@@ -305,7 +305,7 @@ def build_root_guard_folder(root: Path, budgets: Budgets) -> FolderResult:
     return FolderResult(envelope=envelope, result=_local(_scope(envelope, budgets, singleton=True)))
 
 
-def _scope(envelope: p4_admission.Envelope, budgets: Budgets, *, singleton: bool) -> _Plan:
+def _scope(envelope: p4_admission.Envelope, budgets: Budgets, *, singleton: bool, capture_requests: bool = True) -> _Plan:
     k.require(type(envelope) is p4_admission.Envelope and type(envelope.raw) is bytes
               and type(envelope.base) is SyntheticGroup and type(envelope.base.raw) is bytes, "stp_folder_registry")
     registration = envelope.registration_sha256
@@ -373,6 +373,8 @@ def _scope(envelope: p4_admission.Envelope, budgets: Budgets, *, singleton: bool
         key = canonical((p4_admission.SCHEMA, p4_digest, base_digest, context, identifier, member.path, digest, registration))
         k.require(identifier in declared and member.target is declared[identifier] and digest == member.sha256 == row["sha256"]
                   and member.id == "cap:" + sha256(key).hexdigest(), "stp_folder_member")
+    if not capture_requests:
+        return _plan(tuple(targets[name] for name in targets), (), proofs)
     requests: list[CaptureRequest] = []
     for member in envelope.captures:
         if member.target.id not in targets:
@@ -455,3 +457,29 @@ def build_root_guard_global[Peer](
     packs: tuple[p4_pipeline.Pack[stp.Result | Peer], ...] = (owner, *peers)
     execution = p4_pipeline.execute_p4_folder(root, budgets, packs=packs)
     return GlobalFacts[Peer](execution=execution, result=owner.finish(execution))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DeclaredRootGuard:
+    source: p4_admission.Target
+    target: Target
+    evidence: tuple[k.RegistryRef, ...]
+
+
+def declared_root_guard_targets(envelope: p4_admission.Envelope, budgets: Budgets) -> tuple[DeclaredRootGuard, ...]:
+    """Trusted after composition-profile validation; not standalone profile admission."""
+    plan = _scope(envelope, budgets, singleton=False, capture_requests=False)
+    proofs = plan.proofs
+    if proofs is None:
+        raise ValueError("stp_guard_policy_selector")
+    sources = {source.id: source for source in envelope.targets}
+    result: list[DeclaredRootGuard] = []
+    for key, target in sorted(plan.indexed.items()):
+        match target.node.declaration.evidence + proofs[key]:
+            case (k.RegistryRef() as node_ref, k.RegistryRef() as context_ref,
+                  k.RegistryRef(row_id=identifier) as target_ref):
+                result.append(DeclaredRootGuard(source=sources[identifier], target=target,
+                                                evidence=(node_ref, context_ref, target_ref)))
+            case _:
+                raise ValueError("stp_guard_policy_selector")
+    return tuple(result)
