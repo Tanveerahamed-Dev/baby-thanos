@@ -8,7 +8,7 @@ from typing import cast
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence import p4_admission
 from atlas_brain.evidence.admission import Budgets, record, strict_json, string
-from atlas_brain.evidence.capture import Capture, Scope
+from atlas_brain.evidence.capture import Capture, CaptureMetadata, Scope
 from atlas_brain.evidence.synthetic import SCHEMA as BASE_SCHEMA
 from atlas_brain.evidence.synthetic import Node, SyntheticGroup, endpoint
 from atlas_brain.evidence.text import text_lines
@@ -105,8 +105,8 @@ def _line(raw: bytes, span: k.ByteSpan) -> bytes:
     return raw[span.start:span.end]
 
 
-def _observed(target: Target, row: stp.Row, output: Executed[stp.Result], provenance: tuple[k.Evidence, ...]) -> k.Known[bool]:
-    capture = output.receipt.capture
+def _guard_claims(target: Target, row: stp.Row, capture: Capture,
+                  parsed: stp.ParseResult) -> tuple[bool, str, tuple[k.ByteSpan, ...], stp.Record, stp.Record]:
     fields = dict(row.fields)
     names = tuple(name for name, _ in row.fields)
     k.require(all(names.count(name) == 1 for name in ("port", "vlan", "root_guard")), "stp_guard_fields")
@@ -114,7 +114,7 @@ def _observed(target: Target, row: stp.Row, output: Executed[stp.Result], proven
     k.require(token.value is stp.Switch.ENABLED or token.value is stp.Switch.DISABLED, "stp_guard_value")
     enabled = token.value is stp.Switch.ENABLED
     k.require(token.raw == ("enabled" if enabled else "disabled"), "stp_guard_value")
-    records = output.receipt.parse.records
+    records = parsed.records
     guards = [r for r in records if r.rule_id == "root_guard" and r.span in row.spans]
     k.require(len(guards) == 1 and guards[0].fields == (("root_guard", token),), "stp_guard_record")
     guard = guards[0].span
@@ -145,9 +145,15 @@ def _observed(target: Target, row: stp.Row, output: Executed[stp.Result], proven
               and token.span.start == guard.start + len(line) - len(line.lstrip(b" \t")) + len(prefix)
               and token.span.end == token.span.start + len(word)
               and capture.raw[token.span.start:token.span.end] == word, "stp_guard_witness")
+    return enabled, token.raw, (token.span, guard, port.span, vid.span, header), nearest, guards[0]
+
+
+def _observed(target: Target, row: stp.Row, output: Executed[stp.Result], provenance: tuple[k.Evidence, ...]) -> k.Known[bool]:
+    capture = output.receipt.capture
+    enabled, raw, spans, _, _ = _guard_claims(target, row, capture, output.receipt.parse)
     refs = tuple(k.EvidenceRef(capture=capture.id, locator=s, role=k.EvidenceRole.SUBJECT,
-                 excerpt_sha256=sha256(capture.raw[s.start:s.end]).hexdigest()) for s in (token.span, guard, port.span, vid.span, header))
-    return k.Known(value=enabled, basis=k.Basis.OBSERVED, evidence=provenance + refs, raw=token.raw)
+                 excerpt_sha256=sha256(capture.raw[s.start:s.end]).hexdigest()) for s in spans)
+    return k.Known(value=enabled, basis=k.Basis.OBSERVED, evidence=provenance + refs, raw=raw)
 
 
 def _rows(target: Target, outputs: list[Executed[stp.Result]], declared: tuple[k.RegistryRef, ...]) -> tuple[Row, ...]:
@@ -483,3 +489,81 @@ def declared_root_guard_targets(envelope: p4_admission.Envelope, budgets: Budget
             case _:
                 raise ValueError("stp_guard_policy_selector")
     return tuple(result)
+
+
+def _proof_fields(fields: tuple[tuple[str, stp.Captured], ...]) -> bool:
+    return type(fields) is tuple and all(type(pair) is tuple and len(pair) == 2 and type(pair[0]) is str
+        and type(pair[1]) is stp.Captured and type(pair[1].raw) is str and type(pair[1].span) is k.ByteSpan for pair in fields)
+
+
+def _header_claims(row: stp.Row, header: stp.Record, guard: stp.Record, raw: bytes) -> tuple[k.ByteSpan, k.ByteSpan]:
+    names = ("number", "port", "vlan", "role", "state")
+    fields, cells = dict(row.fields), dict(header.fields)
+    k.require(len(cells) == len(header.fields) == len(names) and set(cells) == set(names)
+              and all(tuple(name for name, _ in row.fields).count(name) == 1 and fields[name] is cells[name] for name in names)
+              and any(span is header.span for span in row.spans)
+              and guard.fields[0][1] is fields["root_guard"] and any(span is guard.span for span in row.spans), "stp_proof_header")
+    number, port, vlan, role, state = tuple(cells[name] for name in names)
+    rv, sv = role.value, state.value
+    if type(rv) is not stp.Role or type(sv) is not stp.State:
+        raise ValueError("stp_proof_header")
+    k.require(all(token.raw.isascii() for token in cells.values())
+              and all(type(token.value) is str and token.value == token.raw for token in (number, port, vlan))
+              and number.raw.isdigit(), "stp_proof_header")
+    line = _line(raw, header.span)
+    prefix = b"Port " + number.raw.encode("ascii") + b" (" + port.raw.encode("ascii") + b") of VLAN" + vlan.raw.encode("ascii") + b" is "
+    k.require(line.strip(b" \t") == prefix + role.raw.encode("ascii") + b" " + state.raw.encode("ascii"), "stp_proof_header")
+    first = header.span.start + len(line) - len(line.lstrip(b" \t"))
+    for token, expected, start in ((number, number.raw, first + len(b"Port ")),
+                                   (role, rv.value, first + len(prefix)),
+                                   (state, sv.value, first + len(prefix) + len(role.raw) + 1)):
+        k.require(token.raw == expected and token.span.start == start and token.span.end == start + len(expected)
+                  and raw[token.span.start:token.span.end] == expected.encode("ascii"), "stp_proof_header")
+    return role.span, state.span
+
+
+def reported_root_guard_proofs[T](target: Target, output: Executed[T]) -> tuple[tuple[stp.Row, tuple[k.ByteSpan, ...]], ...]:
+    """Raw reported guard/header claims only; trusted after composition/owner finish, not a producer seal."""
+    if (type(target) is not Target or type(output) is not Executed or type(output.receipt) is not ParseReceipt
+            or type(output.receipt.capture) is not Capture):
+        raise ValueError("stp_proof_input")
+    value, receipt = output.value, output.receipt
+    if (type(value) is not stp.Result or type(value.parse) is not stp.ParseResult
+            or receipt.parse is not value.parse):
+        raise ValueError("stp_proof_input")
+    try:
+        Target(context=target.context, node=target.node, port=target.port, vlans=target.vlans)
+    except ValueError as error:
+        raise ValueError("stp_proof_input") from error
+    capture, parsed = receipt.capture, value.parse
+    k.require(type(capture.id) is str and bool(capture.id) and type(capture.raw) is bytes and type(capture.lines) is tuple
+              and type(capture.integrity) is k.IntegrityState
+              and type(capture.read_scope) is k.ReadScope and type(capture.view) is k.ViewConsistency
+              and (capture.metadata is None or type(capture.metadata) is CaptureMetadata), "stp_proof_input")
+    k.require(receipt.owner == STEP.id and receipt.context == target.context and capture.source == target.node.key
+              and capture.operation == stp.OP and capture.rendered == stp.command(target.port)
+              and capture.codec in ("ascii", "utf-8"), "stp_proof_binding")
+    metadata = capture.metadata
+    if metadata is not None:
+        expected = Scope(node=target.node.key, plane="exec", vrf=None, context=None, vdc=None, tenant=None, afi=None, instance=None)
+        k.require(type(metadata.scope) is Scope and metadata.scope == expected, "stp_proof_binding")
+    k.require(type(value.rows) is tuple and all(type(row) is stp.Row and type(row.port) is str
+              and row.port == target.port and type(row.vlan) is int for row in value.rows)
+              and tuple(row.vlan for row in value.rows) == tuple(sorted(target.vlans)), "stp_proof_population")
+    k.require(parsed.quality in ("complete", "partial") and (value.reason is None or type(value.reason) is k.UnknownReason)
+              and _proof_fields(parsed.tokens) and type(parsed.records) is tuple and all(type(record) is stp.Record and type(record.span) is k.ByteSpan
+                  and type(record.rule_id) is str and _proof_fields(record.fields) for record in parsed.records)
+              and all(_proof_fields(row.fields) and type(row.spans) is tuple and all(type(span) is k.ByteSpan for span in row.spans)
+                  and (row.reason is None or type(row.reason) is k.UnknownReason) for row in value.rows), "stp_proof_input")
+    eligible = (value.reason is None and parsed.quality == "complete" and capture.integrity is k.IntegrityState.COMPLETE
+                and (metadata is None or metadata.error is None)
+                and not any(isinstance(token.value, k.Unknown) for _, token in parsed.tokens))
+    checked: list[tuple[stp.Row, tuple[k.ByteSpan, ...]]] = []
+    for row in value.rows:
+        spans: tuple[k.ByteSpan, ...] = ()
+        if (eligible and row.reason is None and "root_guard" in dict(row.fields)
+                and not any(name in ("root_guard", "role", "state") and isinstance(token.value, k.Unknown) for name, token in row.fields)):
+            _, _, guard_spans, header, guard = _guard_claims(target, row, capture, parsed)
+            spans = tuple(sorted(guard_spans + _header_claims(row, header, guard, capture.raw), key=lambda point: (point.start, point.end)))
+        checked.append((row, spans))
+    return tuple(checked)
