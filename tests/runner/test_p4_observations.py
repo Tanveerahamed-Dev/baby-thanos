@@ -12,6 +12,7 @@ from test_p4_proof_index import LIMITS, P, estate, expected_references
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.kernel import states as k
 from atlas_brain.kernel.time import BoundSource, TimeInterval
+from atlas_brain.model.pack_registration import compile_packs
 from atlas_brain.model.store import FactReader
 from atlas_brain.runner import p4 as m
 
@@ -174,12 +175,15 @@ def test_unknown_detail_candidates_and_all_need_fields_are_lossless(tmp_path, mo
     assert row["detail"] == "explicit_uncertainty" and row["candidates"] == ["node:demo:a", "node:demo:b"] and row["next_evidence"] == [expected]
 
 
-@pytest.mark.parametrize("plant", ["declaration_type", "declaration_subject", "declaration_root", "budget", "late_finish", "ec_bool", "owner", "read", "positive", "mismatch", "missing", "duplicate", "extra", "scope", "swap", "int", "registry", "citation", "target", "capture", "span", "hash", "factref", "absent", "na"])
+@pytest.mark.parametrize("plant", ["declaration_type", "declaration_subject", "declaration_root", "budget", "late_finish", "ec_bool", "member_store", "member_type", "member_spec", "owner", "read", "positive", "mismatch", "missing", "duplicate", "extra", "scope", "swap", "int", "registry", "citation", "target", "capture", "span", "hash", "factref", "absent", "na"])
 def test_forged_owner_state_inventory_or_proof_never_reaches_bundle(tmp_path, monkeypatch, plant):
     estate(tmp_path, guard=b"disabled" if plant == "positive" else b"enabled")
     factory, seen = m.stp.build_root_guard_global, []
     if plant == "budget":
         monkeypatch.setattr(m.stp.p4_pipeline, "execute_parsers", lambda *args: pytest.fail("parser before whole-folder budget"))
+    if plant == "member_spec":
+        declaration = replace(m.ec.DECLARATION, facts=tuple(replace(fact, value_type="boolean") if fact.id == m.ec.REPORTED_MEMBER_TOKENS else fact for fact in m.ec.DECLARATION.facts))
+        monkeypatch.setattr(m.ec, "DECLARATION", declaration)
     if plant.startswith("declaration_"):
         declaration = m.stp.DECLARATION
         facts = tuple(replace(f, **({"value_type": "text"} if plant == "declaration_type" else {"subject": "etherchannel_group"})) if f.id == m.stp.ROOT_GUARD else f for f in declaration.facts) if plant != "declaration_root" else declaration.facts
@@ -190,7 +194,7 @@ def test_forged_owner_state_inventory_or_proof_never_reaches_bundle(tmp_path, mo
         if plant == "late_finish":
             seen.append(out)
             return out
-        if plant == "ec_bool" or plant.startswith("declaration_"):
+        if plant == "ec_bool" or plant.startswith(("declaration_", "member_")):
             return out
         built, row = out.result, out.result.rows[0]
         value, ref = row.value, k.FactRef(fact=m.stp.ROOT_GUARD, subject=row.subject)
@@ -239,14 +243,20 @@ def test_forged_owner_state_inventory_or_proof_never_reaches_bundle(tmp_path, mo
             value = replace(value, evidence=tuple(leaf if i == index else e for i, e in enumerate(value.evidence)))
         built.store.values[ref] = value
         return replace(out, result=replace(built, rows=(replace(row, value=value),) + built.rows[1:]))
-    if plant == "ec_bool":
+    if plant in ("ec_bool", "member_store", "member_type"):
         finish = m.SummaryPack.finish
         def corrupted_ec(self, execution):
             out = finish(self, execution)
-            row = next(r for r in out.rows if type(r.value) is k.Known)
-            value = replace(row.value, value=False)
-            out.store.values[k.FactRef(fact=m.ec.REPORTED_PROTOCOL, subject=row.subject)] = value
-            return replace(out, rows=tuple(replace(r, value=value) if r is row else r for r in out.rows))
+            field = "value" if plant == "ec_bool" else "member_tokens"
+            fact = m.ec.REPORTED_PROTOCOL if plant == "ec_bool" else m.ec.REPORTED_MEMBER_TOKENS
+            row = next(row for row in out.rows if type(getattr(row, field)) is k.Known)
+            reference = k.FactRef(fact=fact, subject=row.subject)
+            if plant == "member_store":
+                out.store.values.pop(reference)
+                return out
+            value = replace(getattr(row, field), value=False)
+            out.store.values[reference] = value
+            return replace(out, rows=tuple(replace(original, **{field: value}) if original is row else original for original in out.rows))
         monkeypatch.setattr(m.SummaryPack, "finish", corrupted_ec)
     elif plant == "late_finish":
         def failed(*args):
@@ -257,6 +267,8 @@ def test_forged_owner_state_inventory_or_proof_never_reaches_bundle(tmp_path, mo
     monkeypatch.setattr(m.stp, "build_root_guard_global", corrupted)
     monkeypatch.setattr(m, "result_bundle", lambda *args, **kwargs: pytest.fail("bundle before ownership/custody closure"))
     pattern = "^p4_observations_spec$" if plant.startswith("declaration_") else "^budget_exceeded$" if plant == "budget" else "^EC finish failed$" if plant == "late_finish" else "^p4_observations_value$" if plant == "ec_bool" else "^(p4_(observations|projection)_|undeclared_read:)"
+    if plant.startswith("member_"):
+        pattern = "^p4_observations_" + {"member_store": "store", "member_type": "value", "member_spec": "spec"}[plant] + "$"
     with pytest.raises(RuntimeError if plant == "late_finish" else ValueError, match=pattern):
         m.analyse_folder(tmp_path, replace(LIMITS, artifact_bytes=1) if plant == "budget" else LIMITS)
 
@@ -325,7 +337,8 @@ def test_ec_adapter_cannot_define_its_own_census_or_bypass_original_rows_and_sto
         row = next(row for row in out.rows if row.group == "4") if plant == "coupled_census_drop" else out.rows[0]
         reference = k.FactRef(fact=m.ec.REPORTED_PROTOCOL, subject=row.subject)
         if plant == "coupled_census_drop":
-            out.store.values.pop(reference)
+            for fact in m.ec.STEP.produces:
+                out.store.values.pop(k.FactRef(fact=fact, subject=row.subject))
             return replace(out, rows=tuple(original for original in out.rows if original is not row))
         if plant == "store_missing":
             out.store.values.pop(reference)
@@ -413,7 +426,7 @@ def test_empty_owner_population_keeps_registered_fact_profile_and_four_files(tmp
     assert snapshot(tmp_path) == before
 
 
-# Primary baseline: native 2442488, workflow 43004211674, both OS jobs passed.
+# Native 2442488 receipts: the new member catalogue intentionally changes P4 bytes; input pins remain.
 @pytest.mark.parametrize("guard,protocol,ending,inputs,pure,cli", [
     (b"disabled", b"-", b"\n",
         {
@@ -452,12 +465,23 @@ def test_empty_owner_population_keeps_registered_fact_profile_and_four_files(tmp
             "MANIFEST.sha256": "67b8729099cd102cee2e272642c30da74235e0c3661003d8b8c396e033084781",
         }),
 ])
-def test_exact_native105_output_bytes_survive_refactor_in_pure_and_cli_modes(tmp_path, guard, protocol, ending, inputs, pure, cli):
+def test_member_profile_changes_previous_p4_bytes_with_independent_content_and_cli_checks(tmp_path, guard, protocol, ending, inputs, pure, cli):
     estate(tmp_path, guard, protocol, ending)
     before = snapshot(tmp_path)
     assert {name: sha256(raw).hexdigest() for name, raw in before.items()} == inputs
     files = m.analyse_folder(tmp_path, LIMITS)
-    assert {name: sha256(raw).hexdigest() for name, raw in files.items()} == pure
+    current = {name: sha256(raw).hexdigest() for name, raw in files.items()}
+    assert set(current) == set(pure) and all(current[name] != pure[name] for name in pure)
+    head, rows = unpack(files)
+    assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4} and len(rows) == 11
+    assert head["registration_sha256"] == compile_packs((m.stp.DECLARATION, m.ec.DECLARATION)).registration_sha256
+    assert {row["fact"] for row in rows} == {m.stp.ROOT_GUARD, m.ec.REPORTED_PROTOCOL, m.ec.REPORTED_MEMBER_TOKENS}
+    members = {row["group"]: row for row in rows if row["fact"] == m.ec.REPORTED_MEMBER_TOKENS}
+    assert set(members) == {"1", "2", "3", "4"}
+    for group, token in (("1", "Gi1/0/1(P)"), ("2", "Gi1/0/2(D)")):
+        assert (members[group]["state"], members[group]["value"], members[group]["raw"], members[group]["basis"]) == ("known", token, None, "derived")
+    assert members["3"]["reason"] == "subject_absent_from_capture" and members["4"]["reason"] == "not_collected"
+    previous = None
     for workers, seed in ((1, "1"), (4, "83")):
         out = tmp_path.with_name(tmp_path.name + "-cli-" + str(workers))
         command = [sys.executable, "-m", "atlas_brain.runner", "--format", "p4-observations",
@@ -465,5 +489,14 @@ def test_exact_native105_output_bytes_survive_refactor_in_pure_and_cli_modes(tmp
         child = subprocess.run(command, env=dict(os.environ, PYTHONHASHSEED=seed), capture_output=True, text=True, check=True, timeout=60)
         published = {path.relative_to(out).as_posix(): path.read_bytes() for path in out.rglob("*") if path.is_file()}
         assert child.stdout.strip() == "runner: ok egress_denied=40"
-        assert {name: sha256(raw).hexdigest() for name, raw in published.items()} == pure | cli
+        old_cli = pure | cli
+        assert set(published) == set(old_cli) and all(sha256(published[name]).hexdigest() != old_cli[name] for name in old_cli)
+        published_head, published_rows = unpack(published)
+        execution = published_head.pop("execution")
+        assert published_head == head and published_rows == rows
+        assert execution == {"schema": "atlas-brain.runner-witness/1", "plan": {"steps": 8, "witness_attempts": 4},
+            "egress": {"parent_denied": 4, "coordinator_denied": 4, "worker_denied": 32, "denied": 40},
+            "steps": [{"denied": 4, "id": f"witness/{i:02d}"} for i in range(8)]}
+        assert previous is None or previous == published
+        previous = published
     assert snapshot(tmp_path) == before

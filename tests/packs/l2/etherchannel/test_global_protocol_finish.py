@@ -91,7 +91,7 @@ def test_two_real_owners_keep_global_identity_and_declared_proofs_at_ec_write(tm
     original = next(e for e in out.execution.executed if e.receipt.capture.operation == ec.parse_summary.OP)
     assert own.receipt is original.receipt and own.value is original.value is seen["ec"][0] and own.receipt.parse is own.value.parse
     assert own.receipt.registration_sha256 == out.execution.envelope.registration_sha256 == out.result.executed[0].receipt.registration_sha256
-    assert facts.store.owners == {ec.REPORTED_PROTOCOL: ec.STEP.id} and out.result.store.owners == {stp.ROOT_GUARD: stp.STEP.id}
+    assert facts.store.owners == {fact: ec.STEP.id for fact in ec.STEP.produces} and out.result.store.owners == {stp.ROOT_GUARD: stp.STEP.id}
     cold, known, absent = facts.rows
     assert cold.value.reason is k.UnknownReason.NOT_COLLECTED
     assert known.value.value == expected and known.value.raw == word.decode() and known.value.basis is k.Basis.OBSERVED and own.value.missing_ports == ("Gi1/0/2",)
@@ -109,6 +109,7 @@ def test_removed_ec_capture_preserves_population_and_an_ec_free_run_is_empty(tmp
     peer, out = build(tmp_path)
     missing = peer.finish(out.execution)
     assert [r.subject for r in missing.rows] == [r.subject for r in before.rows]
+    assert all(row.member_tokens.reason is k.UnknownReason.NOT_COLLECTED for row in missing.rows)
     assert all(r.value.reason is k.UnknownReason.NOT_COLLECTED and {"synthetic_p2.nodes", "synthetic_p4.context", "synthetic_p4.targets"} == {p.table for p in r.value.evidence if type(p) is k.RegistryRef} for r in missing.rows)
     assert all(p.table_digest == sha256((tmp_path / "p2.json").read_bytes() if p.table == "synthetic_p2.nodes" else canonical(side)).hexdigest() for row in missing.rows for p in row.value.evidence if type(p) is k.RegistryRef)
     side["targets"] = side["targets"][:1]
