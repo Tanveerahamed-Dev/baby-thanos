@@ -83,7 +83,7 @@ def _rules() -> tuple[Rule, ...]:
         fields = ("interface", "group", "priority") + (("preempt",) if preempt else ()) + ("state", "active", "standby", "virtual_ip")
         rules.append(Rule(rule_id, "body",
             r"(?P<interface>[A-Za-z][A-Za-z0-9./:_-]{0,63}+)[ \t]++(?P<group>[0-9]{1,4}+)[ \t]++"
-            r"(?P<priority>[0-9]{1,3}+)[ \t]++" + preempt + r"(?P<state>[A-Za-z]{1,16}+)[ \t]++"
+            r"(?P<priority>[0-9]{1,3}+)[ \t]++" + preempt + r"(?P<state>[A-Za-z]{2,16}+)[ \t]++"
             + "(?P<active>" + _ENDPOINT + r")[ \t]++(?P<standby>" + _ENDPOINT
             + r")[ \t]++(?P<virtual_ip>" + _VIP + r")[ \t]*+", "record", "body", "", fields))
     return tuple(rules)
