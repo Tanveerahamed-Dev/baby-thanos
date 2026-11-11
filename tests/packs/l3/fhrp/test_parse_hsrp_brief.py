@@ -1,6 +1,7 @@
 """Synthetic HSRP brief format twins; no imported device capture or train claims."""
 from dataclasses import replace
 from hashlib import sha256
+from itertools import pairwise
 
 import pytest
 
@@ -38,7 +39,7 @@ def assert_columns(raw, result):
         for token in tokens:
             assert row.span.start <= token.span.start < token.span.end <= row.span.end
             assert raw[token.span.start:token.span.end] == token.raw.encode("ascii")
-        for left, right in zip(tokens, tokens[1:], strict=False):
+        for left, right in pairwise(tokens):
             gap = raw[left.span.end:right.span.start]
             assert gap and not gap.strip(b" \t")
 
@@ -211,6 +212,7 @@ def test_allowlisted_provenance_is_pinned_to_the_four_read_only_format_floors():
               "src/genie/libs/parser/iosxe/tests/ShowStandbyBrief/cli/equal/")
     assert parser.SOURCES == tuple(prefix + f"golden_output{number}_output.txt" for number in (1, 2, 3, 4))
     assert parser.VARIANT_SUPPORT == "allowlisted"
+
 
 @pytest.mark.parametrize("extra,reason", [(b"", k.UnknownReason.CONFLICTING_EVIDENCE),
     (b"unrecognised synthetic line\n", k.UnknownReason.PARSE_PARTIAL)])

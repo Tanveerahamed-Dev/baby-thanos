@@ -4,7 +4,14 @@ from enum import StrEnum
 from typing import Literal
 
 from atlas_brain.evidence.capture import Capture
-from atlas_brain.evidence.parsekit.rules import Captured, ParseResult, Record, Rule, TokenMap, run_rules
+from atlas_brain.evidence.parsekit.rules import (
+    Captured,
+    ParseResult,
+    Record,
+    Rule,
+    TokenMap,
+    run_rules,
+)
 from atlas_brain.kernel import states as k
 
 OP, COMMAND = "iosxe.show_standby_brief", "show standby brief"
