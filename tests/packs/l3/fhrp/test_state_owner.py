@@ -145,7 +145,7 @@ def test_late_raw_registry_or_declared_census_fault_precedes_all_parsers_and_wri
     ("registration", "hsrp_receipt_owner"), ("missing", "hsrp_receipt_coverage"), ("duplicate", "hsrp_receipt_coverage")])
 def test_failed_finish_can_retry_genuine_leaves_and_only_one_success_escapes(tmp_path, monkeypatch, plant, code):
     estate(tmp_path)
-    pack, tree, own = run(tmp_path)
+    pack, _, own = run(tmp_path)
     output = own[0]
     if plant == "capture":
         output = replace(output, receipt=replace(output.receipt, capture=replace(output.receipt.capture)))
@@ -171,7 +171,7 @@ def test_failed_finish_can_retry_genuine_leaves_and_only_one_success_escapes(tmp
 def test_zero_own_population_and_uncaptured_locals_stay_declared_without_replay(tmp_path, monkeypatch, mode):
     estate(tmp_path, mode)
     monkeypatch.setattr(b.hsrp, "parse_capture", lambda *args: pytest.fail("uncaptured HSRP parsed"))
-    pack, tree, own = run(tmp_path)
+    pack, _, own = run(tmp_path)
     result = pack.owner.finish(own)
     assert own == result.executed == () and len(result.rows) == (0 if mode == "no_targets" else 5)
     assert all(row.value.reason is k.UnknownReason.NOT_COLLECTED and len(row.value.evidence) == 3 for row in result.rows)
@@ -179,7 +179,7 @@ def test_zero_own_population_and_uncaptured_locals_stay_declared_without_replay(
 
 def test_manual_parse_replay_and_failed_parse_leave_no_complete_cache(tmp_path, monkeypatch):
     estate(tmp_path)
-    pack, tree, own = run(tmp_path)
+    pack, _, _ = run(tmp_path)
     with pytest.raises(ValueError, match="^hsrp_global_value$"):
         pack.owner.parse(pack.requests[0])
     fresh = b.StateOwner(pack.envelope, LIMITS, pack.domains, pack.requests)
