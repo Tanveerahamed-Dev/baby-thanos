@@ -333,3 +333,12 @@ class ProtocolOwner(Parser[parse_summary.Result]):
         result = _materialize(self.plan, checked, self.registration)
         self.finished = True
         return result
+
+
+def fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[str] | k.Unknown], ...]:
+    """Expose original owning rows/states for trusted projection; this is not result admission."""
+    k.require(type(result) is Result and type(result.rows) is tuple and all(type(row) is Row for row in result.rows),
+              "etherchannel_fact_rows")
+    k.require(REPORTED_PROTOCOL in STEP.produces and any(spec.id == REPORTED_PROTOCOL for spec in DECLARATION.facts),
+              "etherchannel_fact_rows")
+    return tuple((REPORTED_PROTOCOL, row, row.value) for row in result.rows)

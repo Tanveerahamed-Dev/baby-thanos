@@ -46,24 +46,47 @@ def execute(root, *extra):
     return tree, peer.finish(tree.execution)
 
 
+def expected_references(side, envelope):
+    nodes = {node.id: node for node in envelope.base.nodes}
+    assert set(ec.STEP.produces) == {fact.id for fact in ec.DECLARATION.facts}
+    result = set()
+    for item in side["targets"]:
+        params, node = item["params"], nodes[item["node"]]
+        if item["operation"] == stp.stp.OP:
+            target = stp.Target(context=side["context"], node=node, port=params["port"], vlans=tuple(params["vlans"]))
+            subjects = tuple(stp.subject(target, vlan) for vlan in params["vlans"])
+            facts = (stp.ROOT_GUARD,)
+        else:
+            assert item["operation"] == ec.parse_summary.OP
+            target = ec.Target(context=side["context"], node=node, groups=tuple(params["groups"]), ports=tuple(params["ports"]))
+            subjects = tuple(ec.subject(target, group) for group in params["groups"])
+            facts = ec.STEP.produces
+        result.update(k.FactRef(fact=fact, subject=subject) for fact in facts for subject in subjects)
+    return result
+
+
 @pytest.mark.parametrize("guard,protocol", [(b"enabled", b"LACP"), (b"disabled", b"-")])
 @pytest.mark.parametrize("ending", [b"\n", b"\r\n"])
 def test_actual_run_builds_bound_immutable_cell_scopes_and_preserves_false_dash(tmp_path, monkeypatch, guard, protocol, ending):
-    estate(tmp_path, guard, protocol, ending)
+    side = estate(tmp_path, guard, protocol, ending)
     tree, channel = execute(tmp_path)
     for module in (stp.stp, ec.parse_summary):
         monkeypatch.setattr(module, "parse_capture", lambda *args: pytest.fail("index reparsed evidence"))
     index = r.ProofIndex(tree.execution, LIMITS)
-    rows = [(stp.ROOT_GUARD, row) for row in tree.result.rows] + [(ec.REPORTED_PROTOCOL, row) for row in channel.rows]
-    assert index.execution is tree.execution and {s.reference for s in index.scopes} == {k.FactRef(fact=f, subject=row.subject) for f, row in rows}
-    assert len(index.scopes) == 7 and type(index.scopes) is type(index.captures) is tuple
-    for fact, row in rows:
+    rows = [(stp.ROOT_GUARD, row, row.value) for row in tree.result.rows] + list(ec.fact_rows(channel))
+    expected = expected_references(side, tree.execution.envelope)
+    assert index.execution is tree.execution and {s.reference for s in index.scopes} == expected
+    assert {k.FactRef(fact=fact, subject=row.subject) for fact, row, _ in rows} == expected
+    assert len(index.scopes) == 3 + 4 * len(ec.STEP.produces) and type(index.scopes) is type(index.captures) is tuple
+    for fact, row, value in rows:
         scope = index.scope(fact, row.subject)
-        assert index.scope(fact, row.subject) is scope and scope.declarations == row.value.evidence[:3]
+        assert index.scope(fact, row.subject) is scope and scope.declarations == value.evidence[:3]
         assert dict(scope.labels)["node"] == row.target.node.id and scope.target.node is row.target.node
-        if type(row.value) is k.Known:
-            pairs = {(e.capture, e.locator) for e in row.value.evidence if type(e) is k.EvidenceRef}
-            assert len(scope.positive) == 1 and scope.positive <= pairs <= scope.spans
+        if type(value) is k.Known:
+            pairs = {(e.capture, e.locator) for e in value.evidence if type(e) is k.EvidenceRef}
+            assert scope.positive and scope.positive <= pairs <= scope.spans
+            if fact in (stp.ROOT_GUARD, ec.REPORTED_PROTOCOL):
+                assert len(scope.positive) == 1
         else:
             assert not scope.positive and not scope.spans
     original = {e.receipt.capture.id: e.receipt.capture for e in tree.execution.executed}
@@ -182,7 +205,8 @@ def test_zero_one_pack_targets_and_uncaptured_declared_scopes_survive(tmp_path, 
     (tmp_path / "p4.json").write_bytes(canonical(side))
     tree, _ = execute(tmp_path)
     index = r.ProofIndex(tree.execution, LIMITS)
-    assert len(index.scopes) == (4 if removed == "tree" else 3 if removed == "ec" else 7)
+    assert {scope.reference for scope in index.scopes} == expected_references(side, tree.execution.envelope)
+    assert len(index.scopes) == (4 * len(ec.STEP.produces) if removed == "tree" else 3 if removed == "ec" else 3 + 4 * len(ec.STEP.produces))
     if removed == "captures":
         assert index.captures == () and all(not scope.spans and not scope.positive and len(scope.declarations) == 3 for scope in index.scopes)
 
