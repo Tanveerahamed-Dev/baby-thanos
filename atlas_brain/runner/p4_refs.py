@@ -21,7 +21,8 @@ from atlas_brain.runner.pack_receipts import ParseReceipt
 from atlas_brain.runner.pack_runtime import Executed
 from atlas_brain.runner.records import RunnerRefused
 
-type Value = stp.stp.Result | ec.parse_summary.Result | fhrp.hsrp.Result
+type LegacyValue = stp.stp.Result | ec.parse_summary.Result
+type Value = LegacyValue | fhrp.hsrp.Result
 
 
 def _need(condition: bool, code: str) -> None:
@@ -67,10 +68,10 @@ def _table(value: object, fields: tuple[str, ...], table: str,
     return result
 
 
-class ProofIndex:
+class ProofIndex[T: Value = LegacyValue]:
     """Require admitted/completed owner inputs; check metadata and cell scope, not execution origin or fact values."""
 
-    def __init__(self, execution: pipe.Result[Value], budgets: Budgets) -> None:
+    def __init__(self, execution: pipe.Result[T], budgets: Budgets) -> None:
         _need(type(execution) is pipe.Result and type(execution.envelope) is Envelope, "capture")
         self.execution, self.budgets = execution, budgets
         envelope = execution.envelope
@@ -127,7 +128,7 @@ class ProofIndex:
         captures = {string(row, "path"): row for row in rows}
         _need(len(captures) == len(rows) == len(self.members) and set(captures) == {m.path for m in envelope.captures}, "capture")
         self.hashes = {m.id: sha256(m.raw).hexdigest() for m in envelope.captures}
-        self.by_target: dict[str, list[Executed[Value]]] = {t.id: [] for t in envelope.targets}
+        self.by_target: dict[str, list[Executed[T]]] = {t.id: [] for t in envelope.targets}
         for output in execution.executed:
             receipt, capture = output.receipt, output.receipt.capture
             member = self.members[capture.id]
@@ -192,7 +193,7 @@ class ProofIndex:
         return [_capture_leaf(self, ref, None, False, identity) for ref in evidence if type(ref) is k.EvidenceRef]
 
 
-def _bind(resolver: ProofIndex, target: Target, value: object) -> None:
+def _bind[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> None:
     if target.operation == stp.stp.OP:
         params = record(value, ("port", "vlans"))
         _need(type(params["vlans"]) is list and target.owner == stp.STEP.id, "scope")
@@ -255,15 +256,7 @@ def _bind(resolver: ProofIndex, target: Target, value: object) -> None:
             declarations=resolver.declarations[target.id], spans=frozenset(spans), positive=frozenset(positive), required=frozenset(required))
 
 
-def _hsrp_selector(row: fhrp.hsrp.Row) -> tuple[str, str]:
-    match row:
-        case fhrp.hsrp.Row(interface=Captured(raw=interface), group=Captured(raw=group)):
-            return interface, group
-        case _:
-            raise RunnerRefused("p4_projection_scope")
-
-
-def _bind_hsrp(resolver: ProofIndex, target: Target, value: object) -> None:
+def _bind_hsrp[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> None:
     pairs = record(value, ("groups",))["groups"]
     _need(type(pairs) is list and all(type(pair) is list and len(cast(list[object], pair)) == 2
           and all(type(item) is str for item in cast(list[object], pair)) for pair in cast(list[object], pairs)), "scope")
@@ -273,8 +266,6 @@ def _bind_hsrp(resolver: ProofIndex, target: Target, value: object) -> None:
     cells: dict[tuple[str, str], list[tuple[k.CaptureId, k.ByteSpan, k.ByteSpan, tuple[k.ByteSpan, ...], bool]]] = {}
     for output in resolver.by_target[target.id]:
         claims = fhrp.reported_state_proofs(output)
-        _need(output.value.reason is not None or all(_hsrp_selector(rich) in domain.groups for rich, _ in claims),
-              "population")
         complete = (output.value.reason is None and output.receipt.parse.quality == "complete"
                     and output.receipt.capture.integrity is k.IntegrityState.COMPLETE)
         for rich, points in claims:
@@ -282,6 +273,7 @@ def _bind_hsrp(resolver: ProofIndex, target: Target, value: object) -> None:
                 case fhrp.hsrp.Row(interface=Captured(raw=interface), group=Captured(raw=group),
                                    state=Captured(span=anchor), span=record_span, reason=reason,
                                    address_family=family, af_spans=af):
+                    _need(output.value.reason is not None or (interface, group) in domain.groups, "population")
                     eligible = complete and reason is None and family == "ipv4" and bool(af)
                     cells.setdefault((interface, group), []).append((output.receipt.capture.id, record_span, anchor, points, eligible))
                 case _:
@@ -306,7 +298,7 @@ def _bind_hsrp(resolver: ProofIndex, target: Target, value: object) -> None:
             required=frozenset(spans), witnesses=frozenset(witnesses))
 
 
-def _capture_leaf(index: ProofIndex, ref: k.EvidenceRef, scope: Scope | None, positive: bool,
+def _capture_leaf[T: Value](index: ProofIndex[T], ref: k.EvidenceRef, scope: Scope | None, positive: bool,
                   identity: k.CaptureId | None) -> dict[str, object]:
     _need(ref.capture in index.members and type(ref.role) is k.EvidenceRole, "scope")
     member, capture = index.members[ref.capture], index.snapshots[ref.capture]

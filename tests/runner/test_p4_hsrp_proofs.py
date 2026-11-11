@@ -133,7 +133,7 @@ def test_each_hsrp_known_leaf_is_mandatory(tmp_path, missing):
     (BODY + ACTIVE, k.UnknownReason.CONFLICTING_EVIDENCE),
     (BODY + INIT.replace(b"203.0.113.1", b"unknown"), k.UnknownReason.IDENTITY_UNRESOLVED),
     (BODY + b"unrecognized trailer\n", k.UnknownReason.PARSE_PARTIAL),
-    (BODY.replace(b"Active", b"Listen"), k.UnknownReason.PARSE_PARTIAL),
+    (BODY.replace(ACTIVE, ACTIVE.replace(b"Active", b"Listen")), k.UnknownReason.PARSE_PARTIAL),
     (b"fixture#show standby brief\n" + BODY + b"--More--\n", k.UnknownReason.CAPTURE_TRUNCATED),
     (b"fixture#show standby brief\n" + BODY + b"% Invalid input\n", k.UnknownReason.CAPTURE_ERROR),
 ])
