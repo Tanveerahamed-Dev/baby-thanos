@@ -201,6 +201,11 @@ def _bind(resolver: ProofIndex, target: Target, value: object) -> None:
     else:
         raise RunnerRefused("p4_projection_scope")
     for reference, labels in cases:
+        match reference:
+            case k.FactRef(fact=selected_fact):
+                roster = selected_fact == ec.REPORTED_MEMBER_TOKENS
+            case _:
+                raise RunnerRefused("p4_projection_scope")
         spans: set[tuple[k.CaptureId, k.ByteSpan]] = set()
         positive: set[tuple[k.CaptureId, k.ByteSpan]] = set()
         required: set[tuple[k.CaptureId, k.ByteSpan]] = set()
@@ -220,7 +225,7 @@ def _bind(resolver: ProofIndex, target: Target, value: object) -> None:
             complete = (output.value.reason is None and row.reason is None
                         and output.receipt.capture.integrity is k.IntegrityState.COMPLETE
                         and output.receipt.parse.quality == "complete")
-            if isinstance(row, ec.parse_summary.Row) and reference.fact == ec.REPORTED_MEMBER_TOKENS:
+            if isinstance(row, ec.parse_summary.Row) and roster:
                 claims = {span for member in row.members for span in (member.port.span, member.flag.span, member.span)}
                 spans.update((identity, span) for span in claims)
                 headers = tuple(tuple(token for name, token in row.fields if name == field) for field in ("group", "channel"))
