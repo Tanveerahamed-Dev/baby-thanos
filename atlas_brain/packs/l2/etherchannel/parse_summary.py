@@ -22,6 +22,7 @@ _PORT = r"[A-Za-z][A-Za-z0-9./:_-]{0,63}+"
 _PORT_TOKEN = compile_pattern(_PORT)
 _MEMBER = compile_pattern("(?P<port>" + _PORT + r")\((?P<flag>[A-Za-z-]++)\)")
 _MEMBER_FLAGS = ("P", "bndl", "D", "I", "s", "susp", "H", "hot-sby", "u", "w", "d", "f")
+MEMBER_FLAGS = _MEMBER_FLAGS
 
 
 class Protocol(StrEnum):
