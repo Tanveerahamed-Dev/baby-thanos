@@ -10,7 +10,7 @@ from test_root_identity import MAC, block, oracle
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence.admission import Budgets
 from atlas_brain.kernel import states as k
-from atlas_brain.model.pack_registration import OperationBinding, PackDeclaration, compile_packs
+from atlas_brain.model import pack_registration as registration
 from atlas_brain.model.specs import StepId
 from atlas_brain.model.store import bind_reader
 from atlas_brain.packs.l2.stp import build as b
@@ -62,7 +62,7 @@ def test_root4_is_registered_before_one_parse_and_writes_exact_source_values_and
         assert specs == [(ROLE, "text", "l2.stp", "stp_port_vlan", STEP), (ADDRESS, "text", "l2.stp", "stp_port_vlan", STEP),
             (PRIORITY, "integer", "l2.stp", "stp_port_vlan", STEP), (ROOT, "boolean", "l2.stp", "stp_port_vlan", STEP)]
         assert b.ROOT_STEP.produces == IDS and handlers[0].binding.operation == "iosxe.show_spanning_tree_interface_detail"
-        assert compile_packs(declarations).registration_sha256 != compile_packs((b.DECLARATION,)).registration_sha256
+        assert registration.compile_packs(declarations).registration_sha256 != registration.compile_packs((b.DECLARATION,)).registration_sha256
         return execute(declarations, handlers, requests)
     def parsed(*args):
         calls.append(args)
@@ -82,7 +82,7 @@ def test_root4_is_registered_before_one_parse_and_writes_exact_source_values_and
     old_reader = bind_reader(result.store, step=p4.PROJECT)
     output, = result.executed
     assert output.receipt.capture is supplied.capture and output.receipt.parse is output.value.parse
-    assert output.receipt.registration_sha256 == compile_packs((b.ROOT_DECLARATION,)).registration_sha256
+    assert output.receipt.registration_sha256 == registration.compile_packs((b.ROOT_DECLARATION,)).registration_sha256
     for row in result.rows:
         for fact, state in cells(row):
             assert reader.read(fact=k.FactId(fact), subject=row.subject) is state
@@ -196,12 +196,12 @@ def test_legacy_two_fact_and_all_five_output_bytes_stay_unchanged(tmp_path, case
 
 def test_root_profile_is_not_implicitly_composable_or_an_old_projection(tmp_path):
     with pytest.raises(ValueError, match="^duplicate_pack$"):
-        compile_packs((b.DECLARATION, b.ROOT_DECLARATION))
+        registration.compile_packs((b.DECLARATION, b.ROOT_DECLARATION))
     other_step = replace(b.ROOT_STEP, id=StepId("l2.other/parse"), pack=k.PackId("l2.other"), produces=(), evaluator="l2.other.parse")
-    other = PackDeclaration(pack=k.PackId("l2.other"), entity_kinds=(), facts=(), relations=(), steps=(other_step,),
-        operations=(OperationBinding(operation="iosxe.show_spanning_tree_interface_detail", step=other_step.id),))
+    other = registration.PackDeclaration(pack=k.PackId("l2.other"), entity_kinds=(), facts=(), relations=(), steps=(other_step,),
+        operations=(registration.OperationBinding(operation="iosxe.show_spanning_tree_interface_detail", step=other_step.id),))
     with pytest.raises(ValueError, match="^duplicate_operation$"):
-        compile_packs((b.ROOT_DECLARATION, other))
+        registration.compile_packs((b.ROOT_DECLARATION, other))
     files = estate.members(canonical, "missing")
     side = json.loads(files["p4.json"])
     side["captures"] = []
