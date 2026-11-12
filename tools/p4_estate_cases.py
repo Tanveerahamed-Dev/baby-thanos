@@ -48,6 +48,27 @@ def members(canonical, case):
     return {**files, "p4.json": canonical(side)}
 
 
+ROOT_CASES = (*CASES, "unprinted", "uncaptured")
+
+
+def root_members(canonical, case):
+    need(case in ROOT_CASES, "generated_source")
+    files = members(canonical, case if case in CASES else "baseline")
+    side = json.loads(files["p4.json"])
+    parts = []
+    for vlan, priority, address in ((1, 0, "ABCD.EF01.2345"), (2, 32769, "0011.2233.4455")):
+        parts.append(f"Port 1 ({PORT}) of VLAN{vlan:04d} is designated forwarding\n   Root guard is disabled on the port\n")
+        if case != "unprinted" or vlan != 1:
+            parts.append(f"   Designated root has priority {priority}, address {address}\n")
+    files["tree.txt"] = "".join(parts).encode("ascii")
+    side["captures"][0]["sha256"] = sha256(files["tree.txt"]).hexdigest()
+    if case == "uncaptured":
+        del files["tree.txt"]
+        side["captures"] = [item for item in side["captures"] if item["target"] != "tree"]
+    files["p4.json"] = canonical(side)
+    return files
+
+
 def _known(value, basis, evidence, raw):
     return {"state": "known", "value": value, "basis": basis, "evidence": evidence, "raw": raw}
 
@@ -79,14 +100,22 @@ def _line(raw, prefix):
 
 
 def validate(reports, inputs, case, canonical):
+    return _validate(reports, inputs, case, canonical, roots=False)
+
+
+def validate_root(reports, inputs, case, canonical):
+    return _validate(reports, inputs, case, canonical, roots=True)
+
+
+def _validate(reports, inputs, case, canonical, *, roots):
     from atlas_brain.model.pack_registration import compile_packs
     from atlas_brain.packs.l2.etherchannel import build as ec
     from atlas_brain.packs.l2.stp import build as stp
     from atlas_brain.packs.l3.fhrp import build as fhrp
-    need(case in CASES and inputs == members(canonical, case), "generated_source")
+    need(inputs == (root_members(canonical, case) if roots else members(canonical, case)), "generated_source")
     base, side = json.loads(inputs["p2.json"]), json.loads(inputs["p4.json"])
     p2hash, p4hash = sha256(inputs["p2.json"]).hexdigest(), sha256(inputs["p4.json"]).hexdigest()
-    profile = compile_packs((stp.DECLARATION, ec.DECLARATION, fhrp.DECLARATION)).registration_sha256
+    profile = compile_packs((stp.ROOT_DECLARATION if roots else stp.DECLARATION, ec.DECLARATION, fhrp.DECLARATION)).registration_sha256
     definitions = {STP: ("l2.stp", str(stp.STEP.id), f"show spanning-tree interface {PORT} detail"),
         EC: ("l2.etherchannel", str(ec.STEP.id), "show etherchannel summary"),
         HSRP: ("l3.fhrp", str(fhrp.STEP.id), "show standby brief")}
@@ -130,6 +159,9 @@ def validate(reports, inputs, case, canonical):
                 subject = "stp_port_vlan:" + sha256(canonical(("atlas-brain.stp-port-vlan/1", side["context"], node, PORT, vlan))).hexdigest()
                 row = _line(raw, f"Port 1 ({PORT}) of VLAN{vlan:04d} ".encode("ascii"))
                 identities = (("l2.stp.root_guard", "stp_root_guard_unresolved"), ("l2.stp.reported_role", "stp_reported_role_unresolved"))
+                if roots:
+                    identities += tuple((name, "stp_reported_root_unresolved") for name in
+                                        ("l2.stp.reported_root_priority", "l2.stp.reported_root_mac"))
                 if row is not None:
                     header, words, tokens = row
                     port, vid = (tokens[2][0] + 1, tokens[2][1] - 1), (tokens[4][0] + 4, tokens[4][1])
@@ -142,6 +174,20 @@ def validate(reports, inputs, case, canonical):
                              identities[1][0]: (header, port, vid, tokens[6], tokens[7])}
                     values = {identities[0][0]: (guard_words[3] == b"enabled", guard_words[3].decode("ascii"), "observed"),
                               identities[1][0]: (words[6].decode("ascii"), words[6].decode("ascii"), "observed")}
+                    if roots:
+                        start = header[1] + 1
+                        stop = raw.find(b"Port ", start)
+                        root = _line(raw[start:None if stop == -1 else stop], b"   Designated root has priority ")
+                        if root is not None:
+                            record, root_words, points = root
+                            record = tuple(position + start for position in record)
+                            priority = points[4][0] + start, points[4][1] + start - 1
+                            mac = tuple(position + start for position in points[6])
+                            raw_priority, raw_mac = root_words[4][:-1].decode("ascii"), root_words[6].decode("ascii")
+                            for fact in ("l2.stp.reported_root_priority", "l2.stp.reported_root_mac"):
+                                spans[fact] = (header, port, vid, record, priority, mac)
+                            values["l2.stp.reported_root_priority"] = int(raw_priority), raw_priority, "observed"
+                            values["l2.stp.reported_root_mac"] = raw_mac, raw_mac, "observed"
             elif op == EC:
                 group, = key
                 labels.update(group=group)
@@ -178,8 +224,12 @@ def validate(reports, inputs, case, canonical):
                 params = [["port", PORT]] if op == STP else ([["group", group], ["interface", interface]] if op == HSRP else [])
                 need_record = {"node": node, "operation": op, "params": params, "resolves": [fact],
                                "reruns": [step], "after_s": None, "unprintable": []}
+                if roots and fact in ("l2.stp.reported_root_priority", "l2.stp.reported_root_mac"):
+                    need_record["resolves"] = ["l2.stp.reported_root_mac", "l2.stp.reported_root_priority"]
                 if row is None:
                     state = _unknown("not_collected" if capture is None else "subject_absent_from_capture", detail, witness, [need_record])
+                elif fact not in values:
+                    state = _unknown("field_not_printed", detail, witness, [need_record])
                 else:
                     value, token, basis = values[fact]
                     state = _known(value, basis, registry + [_leaf(capture, raw, span) for span in spans[fact]], token)
@@ -190,12 +240,17 @@ def validate(reports, inputs, case, canonical):
         "capture_scope": "p4_members_only", "base_capture_scope": "admitted_discovery_context_only",
         "denominator": {"l2.stp": 3, "l2.etherchannel": 4, "l3.fhrp": 5},
         "captures": sorted(captures, key=lambda capture: capture["id"])}
+    if roots:
+        header.update(schema="atlas-brain.p4-root-observations/1",
+                      root_scope="local_reported_priority_and_mac_not_intended_root")
     expected = {"result.json": canonical(header), **{PATHS[pack]: b"".join(canonical(rows[key]) + b"\n" for key in sorted(rows))
                                                    for pack, rows in facts.items()}}
     expected["MANIFEST.sha256"] = b"".join(f"{sha256(expected[name]).hexdigest()}  {name}\n".encode("ascii") for name in sorted(expected))
     need(reports == expected, "report")
     known = sum(row["state"] == "known" for rows in facts.values() for row in rows.values())
-    need(sum(map(len, facts.values())) == 19 and known == (4 if case == "missing" else 11), "source_tokens")
-    return {"qualification": "synthetic_observations_only", "denominator": header["denominator"], "facts": 19,
-        "known": known, "unknown": 19 - known, "source": {name: sha256(raw).hexdigest() for name, raw in sorted(inputs.items())},
+    count = 25 if roots else 19
+    expected_known = {"baseline": 15, "pagp": 15, "missing": 8, "unprinted": 13, "uncaptured": 7} if roots else {"baseline": 11, "pagp": 11, "missing": 4}
+    need(sum(map(len, facts.values())) == count and known == expected_known[case], "source_tokens")
+    return {"qualification": "synthetic_observations_only", "denominator": header["denominator"], "facts": count,
+        "known": known, "unknown": count - known, "source": {name: sha256(raw).hexdigest() for name, raw in sorted(inputs.items())},
         "reports": {name: sha256(raw).hexdigest() for name, raw in sorted(reports.items())}}
