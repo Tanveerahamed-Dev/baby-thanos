@@ -19,7 +19,7 @@ from atlas_brain.model.pack_registration import (
     compile_packs,
 )
 from atlas_brain.model.specs import EntityKindSpec, FactSpec, StepId, StepSpec
-from atlas_brain.model.store import FactStore, bind_writer
+from atlas_brain.model.store import FactReader, FactStore, bind_writer
 from atlas_brain.packs.l2.stp import parse as stp
 from atlas_brain.runner import p4_pipeline
 from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
@@ -584,9 +584,10 @@ class GlobalFacts[Peer]:
 class _GlobalSTP[Peer](p4_pipeline.Pack[stp.Result | Peer]):
     """One invocation retains its admitted plan and the values its own parser actually produced."""
 
-    def __init__(self, budgets: Budgets) -> None:
+    def __init__(self, budgets: Budgets, *, roots: bool = False) -> None:
+        k.require(type(roots) is bool, "stp_producer_profile")
         self.budgets = budgets
-        self.producer = _legacy_producer()
+        self.producer = _root_producer() if roots else _legacy_producer()
         self.envelope: p4_admission.Envelope | None = None
         self.registration = ""
         self.plan: _Plan | None = None
@@ -642,6 +643,17 @@ def build_root_guard_global[Peer](
     """Run once; STP facts need original captures/values from this invocation, and peers stay opaque."""
     k.require(type(peers) is tuple, "stp_global_peers")
     owner = _GlobalSTP[Peer](budgets)
+    packs: tuple[p4_pipeline.Pack[stp.Result | Peer], ...] = (owner, *peers)
+    execution = p4_pipeline.execute_p4_folder(root, budgets, packs=packs)
+    return GlobalFacts[Peer](execution=execution, result=owner.finish(execution))
+
+
+def build_root_observations_global[Peer](
+    root: Path, budgets: Budgets, *, peers: tuple[p4_pipeline.Pack[stp.Result | Peer], ...],
+) -> GlobalFacts[Peer]:
+    """Own an extended run; callers still close every peer before consuming observations."""
+    k.require(type(peers) is tuple, "stp_global_peers")
+    owner = _GlobalSTP[Peer](budgets, roots=True)
     packs: tuple[p4_pipeline.Pack[stp.Result | Peer], ...] = (owner, *peers)
     execution = p4_pipeline.execute_p4_folder(root, budgets, packs=packs)
     return GlobalFacts[Peer](execution=execution, result=owner.finish(execution))
@@ -843,3 +855,98 @@ def projection_leaves[T](fact: k.FactId, domain: Target, vlan: int, output: Exec
     tokens = tuple(token for name, token in row.fields if name == "root_guard")
     positive: frozenset[k.ByteSpan] = frozenset((tokens[0].span,)) if complete and len(tokens) == 1 else frozenset()
     return spans, positive, frozenset()
+
+
+type RootProjectionSpec = tuple[k.FactId, k.PackId, StepId, str, type[bool | int | str]]
+
+
+def root_projection_contract() -> tuple[RootProjectionSpec, ...]:
+    return tuple(sorted(projection_contract() + (
+        (k.FactId("l2.stp.reported_root_mac"), k.PackId("l2.stp"), StepId("l2.stp/parse_root_guard"), "stp_port_vlan", str),
+        (k.FactId("l2.stp.reported_root_priority"), k.PackId("l2.stp"), StepId("l2.stp/parse_root_guard"), "stp_port_vlan", int)),
+        key=lambda spec: spec[0]))
+
+
+def root_original_state(fact: k.FactId, row: Row) -> k.Known[bool] | k.Known[int] | k.Known[str] | k.Unknown:
+    if type(fact) is not str:
+        raise ValueError("stp_projection_fact")
+    if fact in (k.FactId("l2.stp.root_guard"), k.FactId("l2.stp.reported_role")):
+        return original_state(fact, row)
+    if type(row) is not Row:
+        raise ValueError("stp_projection_rows")
+    if fact == k.FactId("l2.stp.reported_root_priority"):
+        return _root_pair(row)[0]
+    if fact == k.FactId("l2.stp.reported_root_mac"):
+        return _root_pair(row)[1]
+    raise ValueError("stp_projection_fact")
+
+
+def root_fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[bool] | k.Known[int] | k.Known[str] | k.Unknown], ...]:
+    legacy = fact_rows(result)
+    return legacy + tuple((fact, row, value) for row in result.rows
+        for fact, value in ((REPORTED_ROOT_PRIORITY, _root_pair(row)[0]), (REPORTED_ROOT_MAC, _root_pair(row)[1])))
+
+
+def root_projection_leaves[T](fact: k.FactId, domain: Target, vlan: int, output: Executed[T]) -> tuple[
+    frozenset[k.ByteSpan], frozenset[k.ByteSpan], frozenset[k.ByteSpan]
+]:
+    if type(fact) is not str:
+        raise ValueError("stp_projection_fact")
+    if fact in (ROOT_GUARD, REPORTED_ROLE):
+        return projection_leaves(fact, domain, vlan, output)
+    if fact not in (REPORTED_ROOT_PRIORITY, REPORTED_ROOT_MAC):
+        raise ValueError("stp_projection_fact")
+    if (type(domain) is not Target or type(vlan) is not int or vlan not in domain.vlans
+            or type(output) is not Executed):
+        raise ValueError("stp_projection_scope")
+    from atlas_brain.packs.l2.stp import root_identity
+
+    claims = root_identity.validate_root_identity_claims(domain, output,
+        root_identity.reported_root_identity_proofs(domain, output))
+    selected = tuple((root, points) for row, root, points in claims if row.vlan == vlan)
+    k.require(len(selected) == 1, "stp_projection_scope")
+    root, points = selected[0]
+    granted = frozenset(points)
+    anchor: frozenset[k.ByteSpan] = frozenset((points[-2 if fact == REPORTED_ROOT_PRIORITY else -1],)) if root is not None else frozenset()
+    return granted, anchor, granted
+
+
+def validate_root_observation_values[Peer](source: GlobalFacts[Peer], budgets: Budgets, reader: FactReader) -> None:
+    """Own value-to-source validation after caller-owned run/profile closure; emit no facts or verdicts."""
+    k.require(type(source.result) is Result and type(source.result.store) is FactStore
+        and type(source.result.rows) is tuple and all(type(row) is Row for row in source.result.rows)
+        and type(reader) is FactReader, "stp_root_observation_population")
+    plan = _scope(source.execution.envelope, budgets, _root_producer(), singleton=False, capture_requests=False)
+    grouped: dict[_Key, list[Executed[stp.Result]]] = {key: [] for key in plan.indexed}
+    for output in source.execution.executed:
+        if output.receipt.capture.operation == stp.OP:
+            value, receipt = output.value, output.receipt
+            k.require(type(value) is stp.Result, "stp_root_observation_source")
+            if type(value) is stp.Result:
+                key = (receipt.context or "", receipt.capture.source, receipt.capture.rendered)
+                k.require(key in grouped, "stp_root_observation_source")
+                grouped[key].append(Executed(receipt=receipt, value=value))
+    expected = tuple(row for key in sorted(plan.indexed) for row in _rows(plan.indexed[key], grouped[key],
+        () if plan.proofs is None else plan.proofs[key], ROOT_STEP, roots=True))
+    actual = {row.subject: row for row in source.result.rows}
+    k.require(len(source.result.rows) == len(actual) == len(expected) and set(actual) == {row.subject for row in expected}
+              and reader.store is source.result.store, "stp_root_observation_population")
+    for wanted in expected:
+        row = actual[wanted.subject]
+        k.require(row.target == wanted.target and row.vlan == wanted.vlan, "stp_root_observation_source")
+        for fact, value in ((ROOT_GUARD, wanted.value), (REPORTED_ROLE, wanted.role),
+                            (REPORTED_ROOT_PRIORITY, wanted.root_priority), (REPORTED_ROOT_MAC, wanted.root_mac)):
+            state = reader.read(fact=fact, subject=row.subject)
+            if isinstance(value, k.Known):
+                k.require(type(state) is k.Known and type(state.value) is type(value.value)
+                    and state.basis is value.basis and type(state.raw) is str and state == value,
+                    "stp_root_observation_value")
+            else:
+                k.require(type(state) is k.Unknown and isinstance(value, k.Unknown)
+                    and state.reason is value.reason and state == value, "stp_root_observation_value")
+
+
+def root_requires_all(fact: k.FactId) -> bool:
+    if type(fact) is not str:
+        raise ValueError("stp_projection_fact")
+    return True if fact in (REPORTED_ROOT_PRIORITY, REPORTED_ROOT_MAC) else requires_all(fact)
