@@ -142,6 +142,24 @@ parent. The command writes five files: `result.json`, `MANIFEST.sha256`,
 | EtherChannel | `reported_protocol`, `reported_member_tokens` | Local protocol observation and derived member-token text |
 | FHRP | `reported_state` | Local IPv4 HSRP state, keyed by context/node/exact interface/IPv4/HSRP/group |
 
+For the explicit seven-fact Root profile, use a separate output directory:
+
+```powershell
+uv run python -m atlas_brain.runner --format p4-root-observations --evidence p4-captures --out p4-root-output --workers 4
+```
+
+This fixed profile adds STP `reported_root_priority` and `reported_root_mac`,
+using `atlas-brain.p4-root-observations/1` with the same five filenames.
+Priority keeps the displayed integer, including extension bits; MAC text keeps
+its printed case. It does not determine configured base priority or intended root.
+An omitted root record in an otherwise complete port/VLAN record stays unknown.
+
+The Root CLI publishes the exact budget-checked API files. After publication,
+stdout emits `P4_ROOT_CLI_RECEIPT`, bound to the published manifest, followed by
+the usual runner status. Its `runner_witness_only` counts cover process witnesses;
+forwarded parent counts are metadata, not attestation. The receipt does not admit
+source evidence or establish protocol health. Keep the original pinned inputs.
+
 Facts retain their basis, raw token where applicable, exact evidence spans and
 unknowns with next evidence to collect. The denominator counts declared subjects,
 not fact cells. Declared targets without a capture entry stay `not_collected`;
@@ -175,7 +193,21 @@ hashes and zero additional tripwire denials. These receipts measure the API
 processes on synthetic fixtures; they do not qualify CLI workers or the whole host.
 Compare bytes across seeds/OS only for the same pinned inputs.
 
-Root identity, other guards/defaults/inheritance, explicit EtherChannel mode or
+The separate [Root observation workflow](.github/workflows/p4-root.yml) runs the
+[Root CLI demo](tools/p4_root_demo.py) on Linux and Windows. In an exact-commit
+successful run, inspect `P4_ROOT_RECEIPT` and the `p4-root-<OS>-<commit>` artifact.
+Its five cases cover baseline, PAgP, missing EC/HSRP captures, an unprinted root
+record and an uncaptured STP target. Each has 25 fact cells with subject
+denominators STP=3/EtherChannel=4/FHRP=5. Ten real CLI analyses pair seeds 1/83
+with worker counts 1/4, comparing all five report files for each pinned case.
+
+A successful Root run retains 98 files: original `<case>/inputs/`, both
+`<case>/out0/` and `<case>/out1/`, each case's batch stdout/stderr and root
+`DIGESTS.json`. Raw stdio keeps native line endings; cross-OS comparisons use
+report bytes and canonical receipt values. These runner-only receipts do not
+attest the parent or qualify the whole host, field behavior or protocol health.
+
+Intended root and synchronized topology, other guards/defaults/inheritance, explicit EtherChannel mode or
 expected membership, VRRP/VIP/version, FHRP peer/redundancy/anycast checks and the held-out
 pack admission proof remain open. This evidence does not complete P4, EX-02 or M1, or
 qualify field behavior. See [ADR-0023](docs/adr/0023-p4-pack-boundaries.md).
