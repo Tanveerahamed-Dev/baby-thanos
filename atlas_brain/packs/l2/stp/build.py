@@ -567,3 +567,42 @@ def reported_root_guard_proofs[T](target: Target, output: Executed[T]) -> tuple[
             spans = tuple(sorted(guard_spans + _header_claims(row, header, guard, capture.raw), key=lambda point: (point.start, point.end)))
         checked.append((row, spans))
     return tuple(checked)
+
+
+type ProjectionSpec = tuple[k.FactId, k.PackId, StepId, str, type[bool | str]]
+
+
+def projection_contract() -> tuple[ProjectionSpec, ...]:
+    """Trusted literal expectations, independent of the declaration metadata under validation."""
+    return ((k.FactId("l2.stp.root_guard"), k.PackId("l2.stp"), StepId("l2.stp/parse_root_guard"), "stp_port_vlan", bool),)
+
+
+def fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[bool] | k.Unknown], ...]:
+    """Expose original owning rows/states for trusted projection, not result admission."""
+    if type(result) is not Result or type(result.rows) is not tuple or not all(type(row) is Row for row in result.rows):
+        raise ValueError("stp_projection_rows")
+    return tuple((projection_contract()[0][0], row, row.value) for row in result.rows)
+
+
+def projection_leaves[T](fact: k.FactId, domain: Target, vlan: int, output: Executed[T]) -> tuple[
+    frozenset[k.ByteSpan], frozenset[k.ByteSpan], frozenset[k.ByteSpan]
+]:
+    """Legacy cell-local permission metadata only; not byte authentication or fact admission."""
+    if fact not in tuple(spec[0] for spec in projection_contract()):
+        raise ValueError("stp_projection_fact")
+    if (type(domain) is not Target or type(vlan) is not int or vlan not in domain.vlans
+            or type(output) is not Executed):
+        raise ValueError("stp_projection_scope")
+    value = output.value
+    if type(value) is not stp.Result:
+        raise ValueError("stp_projection_scope")
+    rows = tuple(row for row in value.rows if row.port == domain.port and row.vlan == vlan)
+    if len(rows) != 1:
+        raise ValueError("stp_projection_scope")
+    row, = rows
+    spans: frozenset[k.ByteSpan] = frozenset((*row.spans, *(token.span for _, token in row.fields))) if row.fields else frozenset()
+    complete = (value.reason is None and row.reason is None and output.receipt.capture.integrity is k.IntegrityState.COMPLETE
+                and output.receipt.parse.quality == "complete")
+    tokens = tuple(token for name, token in row.fields if name == "root_guard")
+    positive: frozenset[k.ByteSpan] = frozenset((tokens[0].span,)) if complete and len(tokens) == 1 else frozenset()
+    return spans, positive, frozenset()
