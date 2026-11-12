@@ -99,6 +99,10 @@ jobs:
         env:
           P3_REVIEWED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: uv run --no-sync python -m tools.p3_demo
+      - name: Demonstrate caller-declared P4 guard reports and required twins
+        env:
+          P4_REVIEWED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: uv run --no-sync python -m tools.p4_guard_demo
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
