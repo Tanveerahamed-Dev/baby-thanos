@@ -50,14 +50,14 @@ def _need(condition: bool) -> None:
 def _validate(value: StoredState, *, role: bool) -> None:
     if type(value) is k.Unknown:
         return
-    if not isinstance(value, k.Known):
-        raise ValueError("stp_guard_check_input")
-    _need(value.basis is k.Basis.OBSERVED)
-    if role:
-        _need(type(value.value) is str and value.value in ("designated", "root", "alternate", "backup", "disabled")
-              and value.raw == value.value)
-    else:
-        _need(type(value.value) is bool and value.raw == ("enabled" if value.value else "disabled"))
+    _need(isinstance(value, k.Known))
+    if isinstance(value, k.Known):
+        _need(value.basis is k.Basis.OBSERVED)
+        if role:
+            _need(type(value.value) is str and value.value in ("designated", "root", "alternate", "backup", "disabled")
+                  and value.raw == value.value)
+        else:
+            _need(type(value.value) is bool and value.raw == ("enabled" if value.value else "disabled"))
 
 
 def _needs(row: policy.GuardComparison) -> tuple[k.EvidenceNeed, ...]:
