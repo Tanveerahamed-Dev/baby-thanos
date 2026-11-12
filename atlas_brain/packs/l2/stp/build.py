@@ -934,8 +934,15 @@ def validate_root_observation_values[Peer](source: GlobalFacts[Peer], budgets: B
     for wanted in expected:
         row = actual[wanted.subject]
         k.require(row.target == wanted.target and row.vlan == wanted.vlan, "stp_root_observation_source")
-        for fact, value in ((ROOT_GUARD, wanted.value), (REPORTED_ROLE, wanted.role),
-                            (REPORTED_ROOT_PRIORITY, wanted.root_priority), (REPORTED_ROOT_MAC, wanted.root_mac)):
+        for fact in (ROOT_GUARD, REPORTED_ROLE, REPORTED_ROOT_PRIORITY, REPORTED_ROOT_MAC):
+            if fact == ROOT_GUARD:
+                value = wanted.value
+            elif fact == REPORTED_ROLE:
+                value = wanted.role
+            elif fact == REPORTED_ROOT_PRIORITY:
+                value = wanted.root_priority
+            else:
+                value = wanted.root_mac
             state = reader.read(fact=fact, subject=row.subject)
             if isinstance(value, k.Known):
                 k.require(type(state) is k.Known and type(state.value) is type(value.value)
