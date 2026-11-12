@@ -9,8 +9,8 @@ import pytest
 from test_build import P, body, request, target
 from test_folder import LIMITS, scenario, write
 from test_header_proofs import header_oracle, header_run
-from test_root_guard_proofs import token_plant
 from test_root_guard_proofs import oracle as root_oracle
+from test_root_guard_proofs import token_plant
 
 from atlas_brain.evidence.capture import ErrorKind
 from atlas_brain.kernel import states as k
@@ -222,3 +222,12 @@ def test_role_state_census_and_store_cannot_be_masked_by_root(tmp_path, monkeypa
     monkeypatch.setattr(m, "result_bundle", lambda *args, **kwargs: pytest.fail("bundle before role closure"))
     with pytest.raises(m.RunnerRefused, match="^p4_observations_" + code + "$"):
         m.analyse_folder(tmp_path, LIMITS)
+
+
+def test_fact_rows_exposes_original_fields_without_reusing_the_validation_hook(monkeypatch):
+    _, _, result = header_run()
+    expected = tuple((ROLE, row, row.role) for row in result.rows) + tuple((ROOT, row, row.value) for row in result.rows)
+    monkeypatch.setattr(b, "original_state", lambda *args: pytest.fail("fact tuple reused independent validation hook"))
+    actual = b.fact_rows(result)
+    assert len(actual) == len(expected) and all(fact == wanted and row is original and value is state
+        for (fact, row, value), (wanted, original, state) in zip(actual, expected, strict=True))

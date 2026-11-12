@@ -676,7 +676,8 @@ def fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[bool] | k.Kn
     """Expose original owning rows/states for trusted projection, not result admission."""
     if type(result) is not Result or type(result.rows) is not tuple or not all(type(row) is Row for row in result.rows):
         raise ValueError("stp_projection_rows")
-    return tuple((spec[0], row, original_state(spec[0], row)) for spec in projection_contract() for row in result.rows)
+    return tuple((k.FactId("l2.stp.reported_role"), row, row.role) for row in result.rows) + tuple(
+        (k.FactId("l2.stp.root_guard"), row, row.value) for row in result.rows)
 
 
 def projection_leaves[T](fact: k.FactId, domain: Target, vlan: int, output: Executed[T]) -> tuple[
