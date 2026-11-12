@@ -103,7 +103,7 @@ def project_declared(plan: policy.GuardPlan, result: check.Result, index: ProofI
             "gaps": list(finding.gaps), "hops": hops,
             "evidence": _resolve(finding.evidence, registry, facts, allowed, subjects), "next_evidence": [asdict(need) for need in finding.next_evidence]}
     coverage = _resolve(result.coverage.evidence, registry, facts, tuple(registry), ())
-    header = {"schema": SCHEMA, "semantic_group": "declared_synthetic", "scope": "conditional_reported_guard_comparisons",
+    header: dict[str, object] = {"schema": SCHEMA, "semantic_group": "declared_synthetic", "scope": "conditional_reported_guard_comparisons",
         "fact_scope": "stp_operands_only", "capture_scope": "p4_members_only", "source_required": "original_pinned_evidence_folder",
         "variant_support": "allowlisted", "context": plan.context, "registration_sha256": plan.registration_sha256,
         "registry_sha256": plan.registry_sha256, "base_registry_sha256": plan.base_registry_sha256,
