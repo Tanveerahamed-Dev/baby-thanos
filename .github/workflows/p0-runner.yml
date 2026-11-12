@@ -103,6 +103,10 @@ jobs:
         env:
           P4_REVIEWED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: uv run --no-sync python -m tools.p4_guard_demo
+      - name: Demonstrate three-pack generated P4 observations with retained sources
+        env:
+          P4_ESTATE_REVIEWED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: uv run --no-sync python -m tools.p4_estate_demo
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
