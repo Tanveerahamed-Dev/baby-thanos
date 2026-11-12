@@ -20,7 +20,8 @@ from atlas_brain.runner.records import RunnerRefused
 
 SCHEMA = "atlas-brain.p4-observations/1"
 PROJECT = StepSpec(id=StepId("l2.stp/project_p4_observations"), pack=stp.PACK, kind="derive", scope="estate",
-                   reads=tuple(sorted((stp.ROOT_GUARD, *ec.STEP.produces, *fhrp.STEP.produces))), produces=(), evaluator="l2.stp.project_p4_observations")
+                   reads=tuple(sorted(tuple(spec[0] for spec in stp.projection_contract()) + ec.STEP.produces + fhrp.STEP.produces)),
+                   produces=(), evaluator="l2.stp.project_p4_observations")
 type State = k.Known[bool] | k.Known[str] | k.Unknown
 type Owner = stp.Result | ec.Result | fhrp.Result
 type Spec = tuple[k.FactId, k.PackId, StepId, str, type[bool | str]]
@@ -53,22 +54,44 @@ def _state(index: ProofIndex[Value], scope: Scope, value: State, expected: type[
 
 def _spec(fact: k.FactId) -> Spec:
     _need(fact in PROJECT.reads, "spec")
-    tree = fact == stp.ROOT_GUARD
+    contracts = stp.projection_contract()
+    if any(spec[0] == fact for spec in contracts):
+        found: dict[k.FactId, Spec] = {}
+        match stp.STEP, stp.DECLARATION:
+            case (StepSpec(id=owner, pack=pack, produces=outputs),
+                  PackDeclaration(pack=dpack, facts=facts, entity_kinds=(EntityKindSpec(id=kind, pack=kpack, root=False),))):
+                _need(outputs == tuple(sorted(spec[0] for spec in contracts)), "spec")
+                for item in facts:
+                    match item:
+                        case FactSpec(id=fid, pack=fpack, subject=subj, value_type=vtype, step=step):
+                            wanted = tuple(spec for spec in contracts if spec[0] == fid)
+                            _need(len(wanted) == 1 and fid not in found, "spec")
+                            expected, = wanted
+                            _need(pack == dpack == kpack == fpack == expected[1] and owner == step == expected[2]
+                                  and kind == subj == expected[3] and expected[4] in (bool, str)
+                                  and vtype == ("boolean" if expected[4] is bool else "text"), "spec")
+                            found[fid] = expected
+                        case _:
+                            raise RunnerRefused("p4_observations_spec")
+                _need(tuple(sorted(found)) == outputs and fact in found, "spec")
+                return found[fact]
+            case _:
+                raise RunnerRefused("p4_observations_spec")
     channel = fact in ec.STEP.produces
-    producer = stp.STEP if tree else ec.STEP if channel else fhrp.STEP
-    declaration = stp.DECLARATION if tree else ec.DECLARATION if channel else fhrp.DECLARATION
-    subject, value_type = ("stp_port_vlan", "boolean") if tree else ("etherchannel_group", "text") if channel else ("fhrp_local", "text")
+    producer = ec.STEP if channel else fhrp.STEP
+    declaration = ec.DECLARATION if channel else fhrp.DECLARATION
+    subject = "etherchannel_group" if channel else "fhrp_local"
     match producer, declaration:
         case (StepSpec(id=owner, pack=pack, produces=outputs),
               PackDeclaration(pack=dpack, facts=facts, entity_kinds=(EntityKindSpec(id=kind, pack=kpack, root=False),))):
             _need(pack == dpack == kpack and kind == subject
-                  and (outputs == (stp.ROOT_GUARD,) if tree else ec.REPORTED_PROTOCOL in outputs if channel else outputs == (fhrp.REPORTED_STATE,)), "spec")
-            found: dict[k.FactId, Spec] = {}
+                  and (ec.REPORTED_PROTOCOL in outputs if channel else outputs == (fhrp.REPORTED_STATE,)), "spec")
+            found = {}
             for item in facts:
                 match item:
                     case FactSpec(id=fid, pack=fpack, subject=subj, value_type=vtype, step=step):
-                        _need(fid not in found and fpack == pack and subj == subject and vtype == value_type and step == owner, "spec")
-                        found[fid] = (fid, pack, step, subj, bool if vtype == "boolean" else str)
+                        _need(fid not in found and fpack == pack and subj == subject and vtype == "text" and step == owner, "spec")
+                        found[fid] = (fid, pack, step, subj, str)
                     case _:
                         raise RunnerRefused("p4_observations_spec")
             _need(tuple(sorted(found)) == outputs and fact in found, "spec")
@@ -134,7 +157,7 @@ def _facts(index: ProofIndex[Value], owner: Owner, family: Family,
            subjects: set[k.EntityKey]) -> tuple[str, dict[tuple[str, str], dict[str, object]]]:
     tree, channel = family == "stp", family == "etherchannel"
     baseline = _spec(stp.ROOT_GUARD if tree else ec.REPORTED_PROTOCOL if channel else fhrp.REPORTED_STATE)
-    identities = stp.STEP.produces if tree else ec.STEP.produces if channel else fhrp.STEP.produces
+    identities = tuple(spec[0] for spec in stp.projection_contract()) if tree else ec.STEP.produces if channel else fhrp.STEP.produces
     specs = tuple(_spec(fact) for fact in identities)
     owner_type, row_type = (stp.Result, stp.Row) if tree else (ec.Result, ec.Row) if channel else (fhrp.Result, fhrp.Row)
     _need(type(owner) is owner_type and type(owner.store) is FactStore and type(owner.rows) is tuple
@@ -149,7 +172,7 @@ def _facts(index: ProofIndex[Value], owner: Owner, family: Family,
     _need(len(scopes) == len(expected) and {scope.reference for scope in scopes} == expected, "population")
     items: tuple[Item, ...]
     if isinstance(owner, stp.Result):
-        items = tuple((stp.ROOT_GUARD, row, _cell(row)[3]) for row in owner.rows)
+        items = stp.fact_rows(owner)
     elif isinstance(owner, ec.Result):
         items = ec.fact_rows(owner)
     else:
@@ -170,7 +193,7 @@ def _facts(index: ProofIndex[Value], owner: Owner, family: Family,
         _need(reference in expected and (str(subject), str(fact)) not in result, "population")
         scope = index.scope(fact, subject)
         _need(node is scope.target.node and context == index.execution.envelope.context, "scope")
-        _need(reader.read(fact=fact, subject=subject) is value, "store")
+        _need((not tree or value is _cell(row)[3]) and reader.read(fact=fact, subject=subject) is value, "store")
         _, declared_pack, _, kind, value_type = next(spec for spec in specs if spec[0] == fact)
         _need(kind == baseline[3], "spec")
         result[(str(subject), str(fact))] = {"pack": str(declared_pack), "fact": str(fact),

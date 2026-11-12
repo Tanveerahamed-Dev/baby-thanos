@@ -194,13 +194,15 @@ class ProofIndex[T: Value = LegacyValue]:
 
 
 def _bind[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> None:
+    domain: stp.Target | None = None
     if target.operation == stp.stp.OP:
         params = record(value, ("port", "vlans"))
         _need(type(params["vlans"]) is list and target.owner == stp.STEP.id, "scope")
         domain = stp.Target(context=resolver.execution.envelope.context, node=target.node, port=string(params, "port"),
                             vlans=tuple(cast(list[int], params["vlans"])))
-        cases = tuple((k.FactRef(fact=stp.ROOT_GUARD, subject=stp.subject(domain, vlan)),
-            (("context", domain.context), ("node", domain.node.id), ("port", domain.port), ("target", target.id), ("vlan", vlan))) for vlan in domain.vlans)
+        cases = tuple((k.FactRef(fact=spec[0], subject=stp.subject(domain, vlan)),
+            (("context", domain.context), ("node", domain.node.id), ("port", domain.port), ("target", target.id), ("vlan", vlan)))
+            for vlan in domain.vlans for spec in stp.projection_contract())
     elif target.operation == ec.parse_summary.OP:
         params = record(value, ("groups", "ports"))
         _need(target.owner == ec.STEP.id, "scope")
@@ -234,6 +236,22 @@ def _bind[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> N
                 raise RunnerRefused("p4_projection_scope")
             _need(len(rows) == 1, "scope")
             row, identity = rows[0], output.receipt.capture.id
+            if isinstance(output.value, stp.stp.Result):
+                if domain is None or type(row) is not stp.stp.Row:
+                    raise RunnerRefused("p4_projection_scope")
+                try:
+                    leaves = stp.projection_leaves(selected_fact, domain, row.vlan, output)
+                except ValueError as error:
+                    raise RunnerRefused("p4_projection_scope") from error
+                allowed = frozenset((*row.spans, *(token.span for _, token in row.fields))) if row.fields else frozenset()
+                _need(type(leaves) is tuple and len(leaves) == 3 and all(type(points) is frozenset
+                      and all(type(point) is k.ByteSpan for point in points) for points in leaves), "scope")
+                granted, anchors, mandatory = leaves
+                _need(granted <= allowed and anchors <= granted and mandatory <= granted and not mandatory, "scope")
+                spans.update((identity, point) for point in granted)
+                positive.update((identity, point) for point in anchors)
+                required.update((identity, point) for point in mandatory)
+                continue
             if row.fields:
                 spans.update((identity, span) for span in row.spans)
                 spans.update((identity, token.span) for _, token in row.fields)
