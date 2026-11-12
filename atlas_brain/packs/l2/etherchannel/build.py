@@ -14,7 +14,7 @@ from atlas_brain.evidence.synthetic import Node, SyntheticGroup, endpoint
 from atlas_brain.kernel import states as k
 from atlas_brain.model import pack_registration
 from atlas_brain.model.specs import EntityKindSpec, FactSpec, StepId, StepSpec
-from atlas_brain.model.store import FactStore, bind_writer
+from atlas_brain.model.store import FactReader, FactStore, bind_writer
 from atlas_brain.packs.l2.etherchannel import parse_summary
 from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
 from atlas_brain.runner.pack_runtime import (
@@ -355,6 +355,37 @@ class ProtocolOwner(Parser[parse_summary.Result]):
         result = _materialize(self.plan, checked, self.registration)
         self.finished = True
         return result
+
+    def validate_reported_protocol_values[T](self, result: Result, reader: FactReader, outputs: tuple[Executed[T], ...]) -> tuple[Target, ...]:
+        """Check owning source values after application-owned whole-run/proof closure; no admission authority."""
+        k.require(self.finished and type(result) is Result and type(result.rows) is tuple
+                  and type(result.executed) is tuple
+                  and all(type(row) is Row for row in result.rows) and type(reader) is FactReader
+                  and reader.store is result.store, "etherchannel_protocol_source_population")
+        checked = tuple(self.own(output) for output in outputs if output.receipt.capture.operation == parse_summary.OP)
+        k.require(len(checked) == len(self.plan.requests) == len(result.executed)
+                  and {o.receipt.capture.id for o in checked} == {r.capture.id for r in self.plan.requests}
+                  and all(a.receipt is b.receipt and a.value is b.value for a, b in zip(checked, result.executed, strict=True)),
+                  "etherchannel_protocol_source_population")
+        by_node = {(o.receipt.context or "", o.receipt.capture.source): o for o in checked}
+        expected = tuple(row for key in sorted(self.plan.indexed) for row in _rows(self.plan.indexed[key],
+            by_node.get(key), () if self.plan.proofs is None else self.plan.proofs[key]))
+        actual = {row.subject: row for row in result.rows}
+        k.require(len(actual) == len(result.rows) == len(expected) and set(actual) == {r.subject for r in expected},
+                  "etherchannel_protocol_source_population")
+        for wanted in expected:
+            row = actual[wanted.subject]
+            k.require(row.target == wanted.target and row.group == wanted.group, "etherchannel_protocol_source_population")
+            for fact in STEP.produces:
+                value = wanted.value if fact == REPORTED_PROTOCOL else wanted.member_tokens
+                state = reader.read(fact=fact, subject=row.subject)
+                if isinstance(value, k.Known):
+                    k.require(type(state) is k.Known and type(state.value) is str and type(state.raw) is type(value.raw)
+                              and state.basis is value.basis and state == value, "etherchannel_protocol_source_value")
+                else:
+                    k.require(type(state) is k.Unknown and state.reason is value.reason and state == value,
+                              "etherchannel_protocol_source_value")
+        return tuple(self.plan.indexed[key] for key in sorted(self.plan.indexed))
 
 
 def fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[str] | k.Unknown], ...]:
