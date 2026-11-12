@@ -203,11 +203,13 @@ def test_same_raw_inputs_ignore_creation_policy_argument_order_and_hash_seed(tmp
     for name in reversed(tuple(inputs)):
         (other / name).write_bytes(inputs[name])
     assert m.report_guard_comparisons(other, LIMITS, tuple(reversed(policies))) == expected
-    code = "\n".join(("import json,sys", "from pathlib import Path", "from atlas_brain.evidence.admission import Budgets",
-        "from atlas_brain.runner.p4_guard_policy import report_guard_comparisons,policy",
-        "def p(t,v): return policy.GuardParticipant(target_id=t,vlan=v,declared_mode='pvst',position='designated_downstream')",
-        "policies=tuple(policy.GuardPolicy(id=i,domain='fabric',expectation='same_reported_root_guard',participants=(p('t0',v),p('t1',1))) for i,v in (('a',2),('z',1)))",
-        "print(json.dumps({k:v.hex() for k,v in report_guard_comparisons(Path(sys.argv[1]),Budgets(1000000,1000000,1000),policies).items()},sort_keys=True))"))
+    code = ("import json,sys\n"
+            "from pathlib import Path\n"
+            "from atlas_brain.evidence.admission import Budgets\n"
+            "from atlas_brain.runner.p4_guard_policy import report_guard_comparisons,policy\n"
+            "def p(t,v): return policy.GuardParticipant(target_id=t,vlan=v,declared_mode='pvst',position='designated_downstream')\n"
+            "policies=tuple(policy.GuardPolicy(id=i,domain='fabric',expectation='same_reported_root_guard',participants=(p('t0',v),p('t1',1))) for i,v in (('a',2),('z',1)))\n"
+            "print(json.dumps({k:v.hex() for k,v in report_guard_comparisons(Path(sys.argv[1]),Budgets(1000000,1000000,1000),policies).items()},sort_keys=True))")
     child = subprocess.run([sys.executable, "-c", code, str(other)], env=dict(os.environ, PYTHONHASHSEED=seed),
         capture_output=True, text=True, check=True, timeout=60)
     assert json.loads(child.stdout) == {name: content.hex() for name, content in expected.items()} and snapshot(other) == inputs
