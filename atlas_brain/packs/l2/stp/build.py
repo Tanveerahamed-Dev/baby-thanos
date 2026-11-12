@@ -206,7 +206,7 @@ def _rows(target: Target, outputs: list[Executed[stp.Result]], declared: tuple[k
     evidence = provenance + tuple(k.EvidenceRef(capture=o.receipt.capture.id,
         locator=k.WholeCapture(), role=k.EvidenceRole.WITNESS, excerpt_sha256=o.receipt.capture.bytes_sha256) for o in outputs)
     values: list[k.Known[bool] | k.Unknown] = []
-    for index, vlan in enumerate(target.vlans):
+    for index, _ in enumerate(target.vlans):
         reason: k.UnknownReason | None = k.UnknownReason.NOT_COLLECTED
         if outputs:
             output, = outputs
