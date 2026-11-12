@@ -209,6 +209,18 @@ def _facts(index: ProofIndex[Value], owner: Owner, family: Family,
     return baseline[3], result
 
 
+def close_owned_facts(
+    index: ProofIndex[Value], tree: stp.Result, channel: ec.Result, local: fhrp.Result,
+) -> tuple[set[k.EntityKey], set[k.EntityKey], set[k.EntityKey]]:
+    """Validate all owners' declared populations and evidence before another estate consumer."""
+    trees, channels, gateways = _subjects(index)
+    kinds = (_facts(index, tree, "stp", trees)[0],
+             _facts(index, channel, "etherchannel", channels)[0],
+             _facts(index, local, "hsrp", gateways)[0])
+    _need(len(set(kinds)) == 3, "spec")
+    return trees, channels, gateways
+
+
 def _metadata(index: ProofIndex[Value]) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for capture in index.captures:
