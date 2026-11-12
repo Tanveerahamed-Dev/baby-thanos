@@ -496,25 +496,28 @@ def _proof_fields(fields: tuple[tuple[str, stp.Captured], ...]) -> bool:
         and type(pair[1]) is stp.Captured and type(pair[1].raw) is str and type(pair[1].span) is k.ByteSpan for pair in fields)
 
 
-def _header_claims(row: stp.Row, header: stp.Record, guard: stp.Record, raw: bytes) -> tuple[k.ByteSpan, k.ByteSpan]:
+def _header_claims(target: Target, row: stp.Row, header: stp.Record, raw: bytes) -> tuple[k.ByteSpan, k.ByteSpan]:
     names = ("number", "port", "vlan", "role", "state")
     fields, cells = dict(row.fields), dict(header.fields)
     k.require(len(cells) == len(header.fields) == len(names) and set(cells) == set(names)
               and all(tuple(name for name, _ in row.fields).count(name) == 1 and fields[name] is cells[name] for name in names)
-              and any(span is header.span for span in row.spans)
-              and guard.fields[0][1] is fields["root_guard"] and any(span is guard.span for span in row.spans), "stp_proof_header")
+              and any(span is header.span for span in row.spans), "stp_proof_header")
     number, port, vlan, role, state = tuple(cells[name] for name in names)
     rv, sv = role.value, state.value
     if type(rv) is not stp.Role or type(sv) is not stp.State:
         raise ValueError("stp_proof_header")
     k.require(all(token.raw.isascii() for token in cells.values())
               and all(type(token.value) is str and token.value == token.raw for token in (number, port, vlan))
-              and number.raw.isdigit(), "stp_proof_header")
+              and number.raw.isdigit() and port.raw == target.port and vlan.raw == f"{row.vlan:04d}", "stp_proof_header")
     line = _line(raw, header.span)
-    prefix = b"Port " + number.raw.encode("ascii") + b" (" + port.raw.encode("ascii") + b") of VLAN" + vlan.raw.encode("ascii") + b" is "
+    port_prefix = b"Port " + number.raw.encode("ascii") + b" ("
+    vlan_prefix = port_prefix + target.port.encode("ascii") + b") of VLAN"
+    prefix = vlan_prefix + f"{row.vlan:04d}".encode("ascii") + b" is "
     k.require(line.strip(b" \t") == prefix + role.raw.encode("ascii") + b" " + state.raw.encode("ascii"), "stp_proof_header")
     first = header.span.start + len(line) - len(line.lstrip(b" \t"))
     for token, expected, start in ((number, number.raw, first + len(b"Port ")),
+                                   (port, target.port, first + len(port_prefix)),
+                                   (vlan, f"{row.vlan:04d}", first + len(vlan_prefix)),
                                    (role, rv.value, first + len(prefix)),
                                    (state, sv.value, first + len(prefix) + len(role.raw) + 1)):
         k.require(token.raw == expected and token.span.start == start and token.span.end == start + len(expected)
@@ -522,8 +525,8 @@ def _header_claims(row: stp.Row, header: stp.Record, guard: stp.Record, raw: byt
     return role.span, state.span
 
 
-def reported_root_guard_proofs[T](target: Target, output: Executed[T]) -> tuple[tuple[stp.Row, tuple[k.ByteSpan, ...]], ...]:
-    """Raw reported guard/header claims only; trusted after composition/owner finish, not a producer seal."""
+def _proof_inputs[T](target: Target, output: Executed[T]) -> tuple[stp.Result, Capture, bool]:
+    """Validate the existing trusted raw-proof boundary without constructing fact state."""
     if (type(target) is not Target or type(output) is not Executed or type(output.receipt) is not ParseReceipt
             or type(output.receipt.capture) is not Capture):
         raise ValueError("stp_proof_input")
@@ -558,13 +561,42 @@ def reported_root_guard_proofs[T](target: Target, output: Executed[T]) -> tuple[
     eligible = (value.reason is None and parsed.quality == "complete" and capture.integrity is k.IntegrityState.COMPLETE
                 and (metadata is None or metadata.error is None)
                 and not any(isinstance(token.value, k.Unknown) for _, token in parsed.tokens))
+    return value, capture, eligible
+
+
+def reported_root_guard_proofs[T](target: Target, output: Executed[T]) -> tuple[tuple[stp.Row, tuple[k.ByteSpan, ...]], ...]:
+    """Raw reported guard/header claims only; trusted after composition/owner finish, not a producer seal."""
+    value, capture, eligible = _proof_inputs(target, output)
+    parsed = value.parse
     checked: list[tuple[stp.Row, tuple[k.ByteSpan, ...]]] = []
     for row in value.rows:
         spans: tuple[k.ByteSpan, ...] = ()
         if (eligible and row.reason is None and "root_guard" in dict(row.fields)
                 and not any(name in ("root_guard", "role", "state") and isinstance(token.value, k.Unknown) for name, token in row.fields)):
             _, _, guard_spans, header, guard = _guard_claims(target, row, capture, parsed)
-            spans = tuple(sorted(guard_spans + _header_claims(row, header, guard, capture.raw), key=lambda point: (point.start, point.end)))
+            k.require(guard.fields[0][1] is dict(row.fields)["root_guard"]
+                      and any(span is guard.span for span in row.spans), "stp_proof_header")
+            spans = tuple(sorted(guard_spans + _header_claims(target, row, header, capture.raw), key=lambda point: (point.start, point.end)))
+        checked.append((row, spans))
+    return tuple(checked)
+
+
+def reported_header_proofs[T](target: Target, output: Executed[T]) -> tuple[tuple[stp.Row, tuple[k.ByteSpan, ...]], ...]:
+    """Raw reported header claims, independent of guard printout; not fact admission or a producer seal."""
+    value, capture, eligible = _proof_inputs(target, output)
+    checked: list[tuple[stp.Row, tuple[k.ByteSpan, ...]]] = []
+    for row in value.rows:
+        spans: tuple[k.ByteSpan, ...] = ()
+        if (eligible and row.reason is None and row.fields
+                and not any(isinstance(token.value, k.Unknown) for _, token in row.fields)):
+            headers = tuple(record for record in value.parse.records if record.rule_id.startswith("header_")
+                            and any(span is record.span for span in row.spans))
+            k.require(len(headers) == 1, "stp_proof_header")
+            record, = headers
+            role, state = _header_claims(target, row, record, capture.raw)
+            fields = dict(row.fields)
+            spans = tuple(sorted((record.span, fields["port"].span, fields["vlan"].span, role, state),
+                                 key=lambda point: (point.start, point.end)))
         checked.append((row, spans))
     return tuple(checked)
 
