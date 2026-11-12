@@ -112,7 +112,7 @@ def validate(reports, inputs, case, canonical):
     for i, target in enumerate(side["targets"]):
         op, node = target["operation"], "node:demo:" + target["node"]
         pack, step, _ = definitions[op]
-        capture, raw = recorded[target["id"]] if target["id"] in recorded else (None, b"")
+        capture, raw = recorded.get(target["id"], (None, b""))
         node_index = 0 if target["node"] == "a" else 1
         registry = [{"kind": "registry", "table": table, "row_id": identity, "table_digest": digest,
                      "citation": pointer, "value": value} for table, identity, digest, pointer, value in (
