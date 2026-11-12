@@ -111,7 +111,7 @@ def test_two_real_owners_keep_global_identity_and_declared_proofs_at_ec_write(tm
     original = next(e for e in out.execution.executed if e.receipt.capture.operation == ec.parse_summary.OP)
     assert own.receipt is original.receipt and own.value is original.value is seen["ec"][0] and own.receipt.parse is own.value.parse
     assert own.receipt.registration_sha256 == out.execution.envelope.registration_sha256 == out.result.executed[0].receipt.registration_sha256
-    assert facts.store.owners == {fact: ec.STEP.id for fact in ec.STEP.produces} and out.result.store.owners == {stp.ROOT_GUARD: stp.STEP.id}
+    assert facts.store.owners == {fact: ec.STEP.id for fact in ec.STEP.produces} and out.result.store.owners == {spec[0]: spec[2] for spec in stp.projection_contract()}
     cold, known, absent = facts.rows
     assert cold.value.reason is k.UnknownReason.NOT_COLLECTED
     assert known.value.value == expected and known.value.raw == word.decode() and known.value.basis is k.Basis.OBSERVED and own.value.missing_ports == ("Gi1/0/2",)
