@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from atlas_brain.contract.bundle import result_bundle
+from atlas_brain.evidence import admission
 from atlas_brain.evidence.admission import Budgets, record, strict_json, string
 from atlas_brain.evidence.synthetic import Node
 from atlas_brain.kernel import states as k
@@ -15,16 +16,16 @@ from atlas_brain.packs.l2.etherchannel.global_parse import SummaryPack
 from atlas_brain.packs.l2.stp import build as stp
 from atlas_brain.packs.l3.fhrp import build as fhrp
 from atlas_brain.packs.l3.fhrp.global_parse import StandbyBriefPack
-from atlas_brain.runner.p4_refs import ProofIndex, Scope, Value
+from atlas_brain.runner.p4_refs import ProofIndex, RootProofIndex, Scope, Value
 from atlas_brain.runner.records import RunnerRefused
 
 SCHEMA = "atlas-brain.p4-observations/1"
 PROJECT = StepSpec(id=StepId("l2.stp/project_p4_observations"), pack=stp.PACK, kind="derive", scope="estate",
                    reads=tuple(sorted(tuple(spec[0] for spec in stp.projection_contract()) + ec.STEP.produces + fhrp.STEP.produces)),
                    produces=(), evaluator="l2.stp.project_p4_observations")
-type State = k.Known[bool] | k.Known[str] | k.Unknown
+type State = k.Known[bool] | k.Known[int] | k.Known[str] | k.Unknown
 type Owner = stp.Result | ec.Result | fhrp.Result
-type Spec = tuple[k.FactId, k.PackId, StepId, str, type[bool | str]]
+type Spec = tuple[k.FactId, k.PackId, StepId, str, type[bool | int | str]]
 type Item = tuple[k.FactId, stp.Row | ec.Row | fhrp.Row, State]
 type Family = Literal["stp", "etherchannel", "hsrp"]
 
@@ -43,7 +44,7 @@ def _unknown(value: k.Unknown, evidence: list[dict[str, object]]) -> dict[str, o
             for need in value.next_evidence]}
 
 
-def _state(index: ProofIndex[Value], scope: Scope, value: State, expected: type[bool | str]) -> dict[str, object]:
+def _state(index: ProofIndex[Value], scope: Scope, value: State, expected: type[bool | int | str]) -> dict[str, object]:
     _need(type(value) in (k.Known, k.Unknown), "state")
     if isinstance(value, k.Known):
         _need(type(value.value) is expected, "value")
@@ -52,12 +53,19 @@ def _state(index: ProofIndex[Value], scope: Scope, value: State, expected: type[
     return _unknown(value, index.resolve(scope, value.evidence, positive=False))
 
 
-def _spec(fact: k.FactId) -> Spec:
-    _need(fact in PROJECT.reads, "spec")
-    contracts = stp.projection_contract()
+ROOT_SCHEMA = "atlas-brain.p4-root-observations/1"
+ROOT_PROJECT = StepSpec(id=StepId("l2.stp/project_p4_root_observations"), pack=stp.PACK, kind="derive", scope="estate",
+    reads=tuple(sorted(tuple(spec[0] for spec in stp.root_projection_contract()) + ec.STEP.produces + fhrp.STEP.produces)),
+    produces=(), evaluator="l2.stp.project_p4_root_observations")
+
+
+def _spec(fact: k.FactId, *, roots: bool = False) -> Spec:
+    _need(fact in (ROOT_PROJECT.reads if roots else PROJECT.reads), "spec")
+    contracts = stp.root_projection_contract() if roots else stp.projection_contract()
     if any(spec[0] == fact for spec in contracts):
         found: dict[k.FactId, Spec] = {}
-        match stp.STEP, stp.DECLARATION:
+        metadata = (stp.ROOT_STEP, stp.ROOT_DECLARATION) if roots else (stp.STEP, stp.DECLARATION)
+        match metadata:
             case (StepSpec(id=owner, pack=pack, produces=outputs),
                   PackDeclaration(pack=dpack, facts=facts, entity_kinds=(EntityKindSpec(id=kind, pack=kpack, root=False),))):
                 _need(outputs == tuple(sorted(spec[0] for spec in contracts)), "spec")
@@ -68,8 +76,8 @@ def _spec(fact: k.FactId) -> Spec:
                             _need(len(wanted) == 1 and fid not in found, "spec")
                             expected, = wanted
                             _need(pack == dpack == kpack == fpack == expected[1] and owner == step == expected[2]
-                                  and kind == subj == expected[3] and expected[4] in (bool, str)
-                                  and vtype == ("boolean" if expected[4] is bool else "text"), "spec")
+                                  and kind == subj == expected[3] and expected[4] in (bool, int, str)
+                                  and vtype == {bool: "boolean", int: "integer", str: "text"}[expected[4]], "spec")
                             found[fid] = expected
                         case _:
                             raise RunnerRefused("p4_observations_spec")
@@ -154,11 +162,12 @@ def _cell(row: stp.Row | ec.Row | fhrp.Row) -> tuple[k.EntityKey, Node, str, Sta
 
 
 def _facts(index: ProofIndex[Value], owner: Owner, family: Family,
-           subjects: set[k.EntityKey]) -> tuple[str, dict[tuple[str, str], dict[str, object]]]:
+           subjects: set[k.EntityKey], *, roots: bool = False) -> tuple[str, dict[tuple[str, str], dict[str, object]]]:
     tree, channel = family == "stp", family == "etherchannel"
-    baseline = _spec(stp.ROOT_GUARD if tree else ec.REPORTED_PROTOCOL if channel else fhrp.REPORTED_STATE)
-    identities = tuple(spec[0] for spec in stp.projection_contract()) if tree else ec.STEP.produces if channel else fhrp.STEP.produces
-    specs = tuple(_spec(fact) for fact in identities)
+    baseline = _spec(stp.ROOT_GUARD if tree else ec.REPORTED_PROTOCOL if channel else fhrp.REPORTED_STATE, roots=roots)
+    contract = stp.root_projection_contract() if roots else stp.projection_contract()
+    identities = tuple(spec[0] for spec in contract) if tree else ec.STEP.produces if channel else fhrp.STEP.produces
+    specs = tuple(_spec(fact, roots=roots) for fact in identities)
     owner_type, row_type = (stp.Result, stp.Row) if tree else (ec.Result, ec.Row) if channel else (fhrp.Result, fhrp.Row)
     _need(type(owner) is owner_type and type(owner.store) is FactStore and type(owner.rows) is tuple
           and all(type(row) is row_type for row in owner.rows), "owner")
@@ -172,7 +181,7 @@ def _facts(index: ProofIndex[Value], owner: Owner, family: Family,
     _need(len(scopes) == len(expected) and {scope.reference for scope in scopes} == expected, "population")
     items: tuple[Item, ...]
     if isinstance(owner, stp.Result):
-        items = stp.fact_rows(owner)
+        items = stp.root_fact_rows(owner) if roots else stp.fact_rows(owner)
     elif isinstance(owner, ec.Result):
         items = ec.fact_rows(owner)
     else:
@@ -183,7 +192,7 @@ def _facts(index: ProofIndex[Value], owner: Owner, family: Family,
           and owner.store.owners == {spec[0]: spec[2] for spec in specs}
           and set(owner.store.values) == expected, "store")
     originals = {_cell(row)[0]: row for row in owner.rows}
-    reader = bind_reader(owner.store, step=PROJECT)
+    reader = bind_reader(owner.store, step=ROOT_PROJECT if roots else PROJECT)
     result: dict[tuple[str, str], dict[str, object]] = {}
     for fact, row, value in items:
         _need(type(fact) is str and fact in identities and type(row) is row_type, "row")
@@ -197,7 +206,7 @@ def _facts(index: ProofIndex[Value], owner: Owner, family: Family,
             if not isinstance(row, stp.Row):
                 raise RunnerRefused("p4_observations_row")
             try:
-                original = stp.original_state(fact, row)
+                original = stp.root_original_state(fact, row) if roots else stp.original_state(fact, row)
             except ValueError as error:
                 raise RunnerRefused("p4_observations_store") from error
             _need(original is value, "store")
@@ -274,3 +283,40 @@ def analyse_folder(root: Path, budgets: Budgets) -> dict[str, bytes]:
         "denominator": {str(stp.PACK): len(tree_subjects), str(ec.PACK): len(channel_subjects), str(fhrp.PACK): len(local_subjects)},
         "captures": _metadata(index)}
     return result_bundle(result, facts={tree_kind: trees, channel_kind: channels, local_kind: locals_out}, checks={})
+
+
+def _root_inputs(root: object, budgets: object) -> None:
+    _need(isinstance(root, Path) and type(budgets) is Budgets, "root_input")
+
+
+def analyse_root_observations_folder(root: Path, budgets: Budgets) -> dict[str, bytes]:
+    """Own one fixed extended estate run; no execution, Store or profile is accepted from callers."""
+    _root_inputs(root, budgets)
+    channel = SummaryPack[stp.stp.Result | fhrp.hsrp.Result](budgets)
+    standby = StandbyBriefPack[stp.stp.Result | ec.parse_summary.Result](budgets)
+    source = stp.build_root_observations_global(root, budgets, peers=(channel, standby))
+    finished, local = channel.finish(source.execution), standby.finish(source.execution)
+    index = RootProofIndex(source.execution, budgets)
+    _need(index.execution is source.execution, "profile")
+    tree_subjects, channel_subjects, local_subjects = _subjects(index)
+    tree_kind, trees = _facts(index, source.result, "stp", tree_subjects, roots=True)
+    channel_kind, channels = _facts(index, finished, "etherchannel", channel_subjects, roots=True)
+    local_kind, locals_out = _facts(index, local, "hsrp", local_subjects, roots=True)
+    stp.validate_root_observation_values(source, budgets, bind_reader(source.result.store, step=ROOT_PROJECT))
+    _need(len({tree_kind, channel_kind, local_kind}) == 3, "spec")
+    result: dict[str, object] = {"schema": ROOT_SCHEMA, "semantic_group": "declared_synthetic",
+        "scope": "observations_only", "checks": "not_implemented", "variant_support": "allowlisted",
+        "root_scope": "local_reported_priority_and_mac_not_intended_root", "group": index.execution.envelope.base.id,
+        "context": index.execution.envelope.context, "registration_sha256": index.execution.envelope.registration_sha256,
+        "registry_sha256": index.registry_sha256, "base_registry_sha256": index.base_registry_sha256,
+        "capture_scope": "p4_members_only", "base_capture_scope": "admitted_discovery_context_only",
+        "denominator": {str(stp.PACK): len(tree_subjects), str(ec.PACK): len(channel_subjects), str(fhrp.PACK): len(local_subjects)},
+        "captures": _metadata(index)}
+    files = result_bundle(result, facts={tree_kind: trees, channel_kind: channels, local_kind: locals_out}, checks={})
+    envelope = source.execution.envelope
+    inputs = (envelope.raw, envelope.base.raw) + tuple(member.raw for member in envelope.captures) + tuple(c.raw for c in envelope.base.captures)
+    if (len(inputs) + len(files) > budgets.artifacts
+            or sum(map(len, inputs)) + sum(map(len, files.values())) > budgets.bundle_bytes
+            or any(len(raw) > budgets.artifact_bytes for raw in files.values())):
+        raise admission.BudgetExceeded("p4_root_observations_outputs")
+    return files

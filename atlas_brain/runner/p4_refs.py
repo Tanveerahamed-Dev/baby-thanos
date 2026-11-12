@@ -72,6 +72,7 @@ class ProofIndex[T: Value = LegacyValue]:
     """Require admitted/completed owner inputs; check metadata and cell scope, not execution origin or fact values."""
 
     def __init__(self, execution: pipe.Result[T], budgets: Budgets) -> None:
+        roots = type(self) is RootProofIndex
         _need(type(execution) is pipe.Result and type(execution.envelope) is Envelope, "capture")
         self.execution, self.budgets = execution, budgets
         envelope = execution.envelope
@@ -79,9 +80,11 @@ class ProofIndex[T: Value = LegacyValue]:
               and type(envelope.base.raw) is bytes, "registry")
         legacy = compile_packs((stp.DECLARATION, ec.DECLARATION)).registration_sha256
         full = compile_packs((stp.DECLARATION, ec.DECLARATION, fhrp.DECLARATION)).registration_sha256
-        _need(envelope.registration_sha256 in (legacy, full), "profile")
+        extended = (compile_packs((stp.ROOT_DECLARATION, ec.DECLARATION, fhrp.DECLARATION)).registration_sha256
+                    if roots else "")
+        _need(envelope.registration_sha256 == extended if roots else envelope.registration_sha256 in (legacy, full), "profile")
         owners = {stp.BINDING.operation: stp.BINDING.step, ec.BINDING.operation: ec.BINDING.step}
-        if envelope.registration_sha256 == full:
+        if roots or envelope.registration_sha256 == full:
             owners[fhrp.BINDING.operation] = fhrp.BINDING.step
         self.registry_sha256, self.base_registry_sha256 = sha256(envelope.raw).hexdigest(), sha256(envelope.base.raw).hexdigest()
         base = record(strict_json(envelope.base.raw, budgets.nesting_depth, budgets.numeric_digits),
@@ -193,6 +196,10 @@ class ProofIndex[T: Value = LegacyValue]:
         return [_capture_leaf(self, ref, None, False, identity) for ref in evidence if type(ref) is k.EvidenceRef]
 
 
+class RootProofIndex[T: Value = Value](ProofIndex[T]):
+    """Closed Root4/EC/HSRP scopes after owning source closure; no standalone producer admission."""
+
+
 def _bind[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> None:
     domain: stp.Target | None = None
     if target.operation == stp.stp.OP:
@@ -200,9 +207,10 @@ def _bind[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> N
         _need(type(params["vlans"]) is list and target.owner == stp.STEP.id, "scope")
         domain = stp.Target(context=resolver.execution.envelope.context, node=target.node, port=string(params, "port"),
                             vlans=tuple(cast(list[int], params["vlans"])))
+        contract = stp.root_projection_contract() if type(resolver) is RootProofIndex else stp.projection_contract()
         cases = tuple((k.FactRef(fact=spec[0], subject=stp.subject(domain, vlan)),
             (("context", domain.context), ("node", domain.node.id), ("port", domain.port), ("target", target.id), ("vlan", vlan)))
-            for vlan in domain.vlans for spec in stp.projection_contract())
+            for vlan in domain.vlans for spec in contract)
     elif target.operation == ec.parse_summary.OP:
         params = record(value, ("groups", "ports"))
         _need(target.owner == ec.STEP.id, "scope")
@@ -240,8 +248,12 @@ def _bind[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> N
                 if domain is None or type(row) is not stp.stp.Row:
                     raise RunnerRefused("p4_projection_scope")
                 try:
-                    leaves = stp.projection_leaves(selected_fact, domain, row.vlan, output)
-                    all_required = stp.requires_all(selected_fact)
+                    if type(resolver) is RootProofIndex:
+                        leaves = stp.root_projection_leaves(selected_fact, domain, row.vlan, output)
+                        all_required = stp.root_requires_all(selected_fact)
+                    else:
+                        leaves = stp.projection_leaves(selected_fact, domain, row.vlan, output)
+                        all_required = stp.requires_all(selected_fact)
                 except ValueError as error:
                     raise RunnerRefused("p4_projection_scope") from error
                 allowed: frozenset[k.ByteSpan] = frozenset((*row.spans, *(token.span for _, token in row.fields))) if row.fields else frozenset()
