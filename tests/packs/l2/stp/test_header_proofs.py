@@ -3,7 +3,8 @@ from dataclasses import replace
 
 import pytest
 from test_build import P, Q, body, request, target
-from test_root_guard_proofs import made, oracle as root_oracle, rebound, token_plant
+from test_root_guard_proofs import made, rebound, token_plant
+from test_root_guard_proofs import oracle as root_oracle
 
 from atlas_brain.evidence.capture import Capture, ErrorKind
 from atlas_brain.kernel import states as k
