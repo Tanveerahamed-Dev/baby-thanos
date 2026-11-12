@@ -250,12 +250,21 @@ def _publish_p4(out: Path, stage: Path, files: dict[str, bytes]) -> None:
 
 
 def run_p4(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
-    """Publish P4 observations on stable trees; rename visibility does not promise fsync or hostile-race safety."""
+    """Retain the existing five-fact CLI publication contract."""
+    return _run_p4(evidence=evidence, out=out, workers=workers, parent_denied=parent_denied, roots=False)
+
+
+def run_p4_root(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
+    """Publish exact Root API files; runner witness data is a separate stdout receipt."""
+    return _run_p4(evidence=evidence, out=out, workers=workers, parent_denied=parent_denied, roots=True)
+
+
+def _run_p4(*, evidence: Path, out: Path, workers: int, parent_denied: int, roots: bool) -> int:
+    """Stable-tree rename visibility; no fsync or hostile-race safety claim."""
     from atlas_brain.contract.manifest import manifest
     from atlas_brain.evidence.admission import Budgets
 
-    from .p4 import SCHEMA as P4_SCHEMA
-    from .p4 import analyse_folder
+    from . import p4
 
     if type(workers) is not int or workers < 1:
         raise RunnerRefused("invalid_workers")
@@ -282,8 +291,8 @@ def run_p4(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> in
     except OSError as error:
         raise RunnerRefused("output_unwritable") from error
     try:
-        files = dict(analyse_folder(evidence, Budgets(
-            bundle_bytes=16 * 1024 * 1024, artifact_bytes=4 * 1024 * 1024, artifacts=128)))
+        limits = Budgets(bundle_bytes=16 * 1024 * 1024, artifact_bytes=4 * 1024 * 1024, artifacts=128)
+        files = dict(p4.analyse_root_observations_folder(evidence, limits) if roots else p4.analyse_folder(evidence, limits))
     except RunnerRefused:
         raise
     except OSError as error:
@@ -304,8 +313,11 @@ def run_p4(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> in
     if not isinstance(payload, dict):
         raise RunnerRefused("p4_output_invalid")
     record = cast(dict[str, object], payload)
-    if (record.get("schema") != P4_SCHEMA or record.get("scope") != "observations_only"
+    expected_schema = p4.ROOT_SCHEMA if roots else p4.SCHEMA
+    if (record.get("schema") != expected_schema or record.get("scope") != "observations_only"
             or record.get("checks") != "not_implemented" or "execution" in record):
+        raise RunnerRefused("p4_output_invalid")
+    if roots and record.get("root_scope") != "local_reported_priority_and_mac_not_intended_root":
         raise RunnerRefused("p4_output_invalid")
     coordinator_denied = tripwire.probe()
     if type(coordinator_denied) is not int or coordinator_denied != tripwire.WITNESS_ATTEMPTS:
@@ -325,7 +337,13 @@ def run_p4(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> in
                    "worker_denied": worker_denied, "denied": total},
         "steps": [{"denied": denied, "id": step} for step, denied in results],
     }
-    files["result.json"] = canonical(record)
-    files["MANIFEST.sha256"] = manifest({name: raw for name, raw in files.items() if name != "MANIFEST.sha256"})
+    if not roots:
+        files["result.json"] = canonical(record)
+        files["MANIFEST.sha256"] = manifest({name: raw for name, raw in files.items() if name != "MANIFEST.sha256"})
     _publish_p4(out, stage, files)
+    if roots:
+        receipt = {"schema": "atlas-brain.p4-root-cli-witness/1", "format": "p4-root-observations",
+            "report_schema": expected_schema, "manifest_sha256": sha256(files["MANIFEST.sha256"]).hexdigest(),
+            "execution": record["execution"], "scope": "runner_witness_only"}
+        print("P4_ROOT_CLI_RECEIPT " + canonical(receipt).decode("ascii"))
     return total

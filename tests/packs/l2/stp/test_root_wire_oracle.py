@@ -37,7 +37,7 @@ def reseal(files, head, rows):
     files["MANIFEST.sha256"] = manifest({name: raw for name, raw in files.items() if name != "MANIFEST.sha256"})
 
 
-@pytest.mark.parametrize("case,known", zip(CASES, KNOWN, strict=True))
+@pytest.mark.parametrize("case,known", tuple(zip(CASES, KNOWN, strict=True)))
 def test_all_root_twins_have_literal_values_six_original_byte_proofs_and_unknown_census(tmp_path, case, known):
     inputs = cases.root_members(canonical, case)
     files = reports(tmp_path / "inputs", inputs)
