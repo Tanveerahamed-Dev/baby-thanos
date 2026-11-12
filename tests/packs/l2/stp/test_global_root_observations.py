@@ -166,7 +166,7 @@ def test_adapter_cannot_borrow_same_bytes_from_neighbor_vlan_even_with_real_gett
     actual = root_identity.reported_root_identity_proofs
     def borrowed(target, original):
         claims = actual(target, original)
-        row, value, spans = claims[0]
+        row, value, _spans = claims[0]
         return ((row, value, claims[1][2]),) + claims[1:]
     monkeypatch.setattr(root_identity, "reported_root_identity_proofs", borrowed)
     with pytest.raises(ValueError, match="^stp_root_identity_claims$"):
