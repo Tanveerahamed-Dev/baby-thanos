@@ -201,6 +201,7 @@ class RootProofIndex[T: Value = Value](ProofIndex[T]):
 
 
 def _bind[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> None:
+    outputs_by_target: dict[str, list[Executed[T]]] = resolver.by_target
     domain: stp.Target | None = None
     if target.operation == stp.stp.OP:
         params = record(value, ("port", "vlans"))
@@ -232,7 +233,7 @@ def _bind[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> N
         spans: set[tuple[k.CaptureId, k.ByteSpan]] = set()
         positive: set[tuple[k.CaptureId, k.ByteSpan]] = set()
         required: set[tuple[k.CaptureId, k.ByteSpan]] = set()
-        for output in resolver.by_target[target.id]:
+        for output in outputs_by_target[target.id]:
             data = dict(labels)
             if isinstance(output.value, stp.stp.Result):
                 rows = tuple(r for r in output.value.rows if r.port == data["port"] and r.vlan == data["vlan"])
