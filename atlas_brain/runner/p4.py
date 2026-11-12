@@ -193,7 +193,15 @@ def _facts(index: ProofIndex[Value], owner: Owner, family: Family,
         _need(reference in expected and (str(subject), str(fact)) not in result, "population")
         scope = index.scope(fact, subject)
         _need(node is scope.target.node and context == index.execution.envelope.context, "scope")
-        _need((not tree or value is _cell(row)[3]) and reader.read(fact=fact, subject=subject) is value, "store")
+        if tree:
+            if not isinstance(row, stp.Row):
+                raise RunnerRefused("p4_observations_row")
+            try:
+                original = stp.original_state(fact, row)
+            except ValueError as error:
+                raise RunnerRefused("p4_observations_store") from error
+            _need(original is value, "store")
+        _need(reader.read(fact=fact, subject=subject) is value, "store")
         _, declared_pack, _, kind, value_type = next(spec for spec in specs if spec[0] == fact)
         _need(kind == baseline[3], "spec")
         result[(str(subject), str(fact))] = {"pack": str(declared_pack), "fact": str(fact),

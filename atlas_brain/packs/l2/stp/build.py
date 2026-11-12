@@ -609,6 +609,22 @@ def projection_contract() -> tuple[ProjectionSpec, ...]:
     return ((k.FactId("l2.stp.root_guard"), k.PackId("l2.stp"), StepId("l2.stp/parse_root_guard"), "stp_port_vlan", bool),)
 
 
+def original_state(fact: k.FactId, row: Row) -> k.Known[bool] | k.Unknown:
+    """Return the original owning state, independently of projection tuples or Store."""
+    if type(fact) is not str or fact != k.FactId("l2.stp.root_guard"):
+        raise ValueError("stp_projection_fact")
+    if type(row) is not Row:
+        raise ValueError("stp_projection_rows")
+    return row.value
+
+
+def requires_all(fact: k.FactId) -> bool:
+    """Trusted literal leaf policy; unregistered facts have no projection permission."""
+    if type(fact) is not str or fact != k.FactId("l2.stp.root_guard"):
+        raise ValueError("stp_projection_fact")
+    return False
+
+
 def fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[bool] | k.Unknown], ...]:
     """Expose original owning rows/states for trusted projection, not result admission."""
     if type(result) is not Result or type(result.rows) is not tuple or not all(type(row) is Row for row in result.rows):

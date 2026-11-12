@@ -10,6 +10,7 @@ from atlas_brain.evidence.synthetic import admit_members
 from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
 from atlas_brain.model.pack_registration import compile_packs
+from atlas_brain.model.specs import StepId
 from atlas_brain.packs.l2.stp import build as b
 from atlas_brain.runner import pack_runtime
 from atlas_brain.runner.pack_receipts import CaptureRequest
@@ -197,3 +198,30 @@ def test_runtime_receipt_barrier_must_finish_before_any_writer(monkeypatch):
     item = target()
     with pytest.raises(ValueError, match="^planted_receipt_barrier$"):
         b.build_root_guard((item,), (request(item),))
+
+
+def test_literal_projection_contract_catalogue_is_closed():
+    assert b.projection_contract() == ((k.FactId("l2.stp.root_guard"), k.PackId("l2.stp"), StepId("l2.stp/parse_root_guard"), "stp_port_vlan", bool),)
+
+
+@pytest.mark.parametrize("printed", ["enabled", "disabled", None, "missing"])
+def test_projection_state_and_policy_preserve_original_known_and_unknown_objects(printed):
+    item = target()
+    result = b.build_root_guard((item,), () if printed == "missing" else (request(item, body(item, printed)),))
+    assert b.requires_all(k.FactId("l2.stp.root_guard")) is False
+    for row in result.rows:
+        assert b.original_state(k.FactId("l2.stp.root_guard"), row) is row.value
+
+
+@pytest.mark.parametrize("fact", [k.FactId("l2.stp.reported_role"), k.FactId("l2.stp.unregistered"), None, 0])
+def test_projection_hooks_refuse_unknown_facts_before_row_shape(fact):
+    with pytest.raises(ValueError, match="^stp_projection_fact$"):
+        b.original_state(fact, object())
+    with pytest.raises(ValueError, match="^stp_projection_fact$"):
+        b.requires_all(fact)
+
+
+@pytest.mark.parametrize("row", [None, object(), ()])
+def test_original_state_requires_the_owning_row_shape(row):
+    with pytest.raises(ValueError, match="^stp_projection_rows$"):
+        b.original_state(k.FactId("l2.stp.root_guard"), row)
