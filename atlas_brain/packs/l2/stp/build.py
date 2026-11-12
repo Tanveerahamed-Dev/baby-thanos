@@ -44,6 +44,23 @@ DECLARATION = PackDeclaration(pack=PACK, entity_kinds=(EntityKindSpec(id="stp_po
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class _Producer:
+    """One retained internal legacy producer; not caller-selectable profile admission."""
+
+    declaration: PackDeclaration
+    binding: OperationBinding
+    step: StepSpec
+
+    def __post_init__(self) -> None:
+        k.require(self.declaration is DECLARATION and self.binding is BINDING and self.step is STEP,
+                  "stp_producer_profile")
+
+
+def _legacy_producer() -> _Producer:
+    return _Producer(declaration=DECLARATION, binding=BINDING, step=STEP)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Target:
     context: str
     node: Node
@@ -161,10 +178,10 @@ def _observed(target: Target, row: stp.Row, output: Executed[stp.Result], proven
 
 def _role_states(
     target: Target, outputs: list[Executed[stp.Result]], provenance: tuple[k.Evidence, ...],
-    evidence: tuple[k.Evidence, ...],
+    evidence: tuple[k.Evidence, ...], step: StepSpec,
 ) -> tuple[k.Known[str] | k.Unknown, ...]:
     needs = (k.EvidenceNeed(node=target.node.key, operation=stp.OP, params=(("port", target.port),),
-             resolves=(REPORTED_ROLE,), reruns=(STEP.id,), after_s=None, unprintable=()),)
+             resolves=(REPORTED_ROLE,), reruns=(step.id,), after_s=None, unprintable=()),)
     proofs = reported_header_proofs(target, outputs[0]) if outputs else ()
     states: list[k.Known[str] | k.Unknown] = []
     for index, _ in enumerate(target.vlans):
@@ -199,9 +216,10 @@ def _role_states(
     return tuple(states)
 
 
-def _rows(target: Target, outputs: list[Executed[stp.Result]], declared: tuple[k.RegistryRef, ...]) -> tuple[Row, ...]:
+def _rows(target: Target, outputs: list[Executed[stp.Result]], declared: tuple[k.RegistryRef, ...],
+          step: StepSpec) -> tuple[Row, ...]:
     needs = (k.EvidenceNeed(node=target.node.key, operation=stp.OP, params=(("port", target.port),),
-             resolves=(ROOT_GUARD,), reruns=(STEP.id,), after_s=None, unprintable=()),)
+             resolves=(ROOT_GUARD,), reruns=(step.id,), after_s=None, unprintable=()),)
     provenance = target.node.declaration.evidence + declared
     evidence = provenance + tuple(k.EvidenceRef(capture=o.receipt.capture.id,
         locator=k.WholeCapture(), role=k.EvidenceRole.WITNESS, excerpt_sha256=o.receipt.capture.bytes_sha256) for o in outputs)
@@ -221,14 +239,14 @@ def _rows(target: Target, outputs: list[Executed[stp.Result]], declared: tuple[k
                 continue
         value = k.Unknown(reason=reason, detail="stp_root_guard_unresolved", evidence=evidence, candidates=(), next_evidence=needs)
         values.append(value)
-    roles = _role_states(target, outputs, provenance, evidence)
+    roles = _role_states(target, outputs, provenance, evidence, step)
     return tuple(Row(target=target, vlan=vlan, subject=subject(target, vlan), value=value, role=role)
                  for vlan, value, role in zip(target.vlans, values, roles, strict=True))
 
 
 def build_root_guard(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> Result:
     """Accept at most one capture per target and execute before projecting any subject."""
-    return _local(_plan(targets, requests, None))
+    return _local(_plan(targets, requests, None), _legacy_producer())
 
 
 type _Key = tuple[str, k.EntityKey, str]
@@ -268,12 +286,12 @@ def _plan(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...], pro
     return _Plan(indexed=indexed, by_capture=by_capture, requests=requests, proofs=proofs)
 
 
-def _local(plan: _Plan) -> Result:
-    handler = Handler(binding=BINDING, parser=_Adapter(plan.by_capture))
-    return _materialize(plan, execute_parsers((DECLARATION,), (handler,), plan.requests))
+def _local(plan: _Plan, producer: _Producer) -> Result:
+    handler = Handler(binding=producer.binding, parser=_Adapter(plan.by_capture))
+    return _materialize(plan, execute_parsers((producer.declaration,), (handler,), plan.requests), producer)
 
 
-def _materialize(plan: _Plan, executed: tuple[Executed[stp.Result], ...]) -> Result:
+def _materialize(plan: _Plan, executed: tuple[Executed[stp.Result], ...], producer: _Producer) -> Result:
     indexed, by_capture, proofs = plan.indexed, plan.by_capture, plan.proofs
     grouped: dict[tuple[str, k.EntityKey, str], list[Executed[stp.Result]]] = {key: [] for key in indexed}
     for output in executed:
@@ -283,10 +301,11 @@ def _materialize(plan: _Plan, executed: tuple[Executed[stp.Result], ...]) -> Res
                   and r.port == target.port for r in output.value.rows)
                   and tuple(r.vlan for r in output.value.rows) == target.vlans, "stp_parser_population")
         grouped[(target.context, target.node.key, stp.command(target.port))].append(output)
-    rows = tuple(row for key in sorted(indexed) for row in _rows(indexed[key], grouped[key], () if proofs is None else proofs[key]))
+    rows = tuple(row for key in sorted(indexed) for row in _rows(
+        indexed[key], grouped[key], () if proofs is None else proofs[key], producer.step))
     k.require(len({r.subject for r in rows}) == len(rows), "stp_subject_collision")
     store = FactStore()
-    writer = bind_writer(store, step=STEP)
+    writer = bind_writer(store, step=producer.step)
     for row in rows:
         writer.write(fact=ROOT_GUARD, subject=row.subject, value=row.value)
         writer.write(fact=REPORTED_ROLE, subject=row.subject, value=row.role)
@@ -353,16 +372,18 @@ def _integrity(raw: bytes, command: str) -> k.IntegrityState:
 
 def build_root_guard_folder(root: Path, budgets: Budgets) -> FolderResult:
     """Admit a singleton STP composition and resolve its declared subjects before execution."""
-    envelope = p4_admission.admit_folder(root, budgets, declarations=(DECLARATION,))
-    return FolderResult(envelope=envelope, result=_local(_scope(envelope, budgets, singleton=True)))
+    producer = _legacy_producer()
+    envelope = p4_admission.admit_folder(root, budgets, declarations=(producer.declaration,))
+    return FolderResult(envelope=envelope, result=_local(_scope(envelope, budgets, producer, singleton=True), producer))
 
 
-def _scope(envelope: p4_admission.Envelope, budgets: Budgets, *, singleton: bool, capture_requests: bool = True) -> _Plan:
+def _scope(envelope: p4_admission.Envelope, budgets: Budgets, producer: _Producer, *,
+           singleton: bool, capture_requests: bool = True) -> _Plan:
     k.require(type(envelope) is p4_admission.Envelope and type(envelope.raw) is bytes
               and type(envelope.base) is SyntheticGroup and type(envelope.base.raw) is bytes, "stp_folder_registry")
     registration = envelope.registration_sha256
     if singleton:
-        k.require(registration == compile_packs((DECLARATION,)).registration_sha256, "stp_folder_registration")
+        k.require(registration == compile_packs((producer.declaration,)).registration_sha256, "stp_folder_registration")
     base, context = envelope.base, envelope.context
     p4_digest, base_digest = sha256(envelope.raw).hexdigest(), sha256(base.raw).hexdigest()
     side = record(strict_json(envelope.raw, budgets.nesting_depth, budgets.numeric_digits),
@@ -403,9 +424,9 @@ def _scope(envelope: p4_admission.Envelope, budgets: Budgets, *, singleton: bool
                   and type(item.params) is bytes and canonical(row["params"]) == item.params, "stp_folder_target")
         target_ref = _reference(item.declaration, "synthetic_p4.targets", identifier, p4_digest, f"/targets/{index}")
         if item.operation != stp.OP:
-            k.require(not singleton and item.owner != STEP.id, "stp_folder_target")
+            k.require(not singleton and item.owner != producer.step.id, "stp_folder_target")
             continue
-        k.require(item.owner == STEP.id, "stp_folder_target")
+        k.require(item.owner == producer.step.id, "stp_folder_target")
         params = record(row["params"], ("port", "vlans"))
         vlans = params["vlans"]
         k.require(type(vlans) is list, "invalid_stp_vlans")
@@ -451,19 +472,20 @@ class _GlobalSTP[Peer](p4_pipeline.Pack[stp.Result | Peer]):
 
     def __init__(self, budgets: Budgets) -> None:
         self.budgets = budgets
+        self.producer = _legacy_producer()
         self.envelope: p4_admission.Envelope | None = None
         self.registration = ""
         self.plan: _Plan | None = None
         self.produced: dict[k.CaptureId, stp.Result] = {}
 
     def declaration(self) -> PackDeclaration:
-        return DECLARATION
+        return self.producer.declaration
 
     def prepare(self, envelope: p4_admission.Envelope) -> p4_pipeline.Prepared[stp.Result | Peer]:
         k.require(self.plan is None, "stp_global_run")
-        plan = _scope(envelope, self.budgets, singleton=False)
+        plan = _scope(envelope, self.budgets, self.producer, singleton=False)
         self.envelope, self.registration, self.plan = envelope, envelope.registration_sha256, plan
-        handler = Handler[stp.Result | Peer](binding=BINDING, parser=_Adapter(plan.by_capture, self.produced))
+        handler = Handler[stp.Result | Peer](binding=self.producer.binding, parser=_Adapter(plan.by_capture, self.produced))
         return p4_pipeline.Prepared[stp.Result | Peer](targets=tuple(t for t in envelope.targets if t.operation == stp.OP),
                                                        handlers=(handler,), requests=plan.requests)
 
@@ -497,7 +519,7 @@ class _GlobalSTP[Peer](p4_pipeline.Pack[stp.Result | Peer]):
                 value = self.produced[identity]
                 k.require(output.value is value and receipt.parse is value.parse, "stp_global_value")
                 owned.append(Executed(receipt=receipt, value=value))
-        return _materialize(plan, tuple(owned))
+        return _materialize(plan, tuple(owned), self.producer)
 
 
 def build_root_guard_global[Peer](
@@ -520,7 +542,7 @@ class DeclaredRootGuard:
 
 def declared_root_guard_targets(envelope: p4_admission.Envelope, budgets: Budgets) -> tuple[DeclaredRootGuard, ...]:
     """Trusted after composition-profile validation; not standalone profile admission."""
-    plan = _scope(envelope, budgets, singleton=False, capture_requests=False)
+    plan = _scope(envelope, budgets, _legacy_producer(), singleton=False, capture_requests=False)
     proofs = plan.proofs
     if proofs is None:
         raise ValueError("stp_guard_policy_selector")
