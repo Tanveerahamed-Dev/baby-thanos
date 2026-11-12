@@ -87,7 +87,7 @@ def test_real_three_owner_scopes_bind_exact_raw_claims_and_keep_legacy_false_das
     output = hsrp_output(tree)
     proofs = h.reported_state_proofs(output)
     index = r.ProofIndex(tree.execution, LIMITS)
-    assert index.execution is tree.execution and len(index.scopes) == 3 + 4 * len(ec.STEP.produces) + 5
+    assert index.execution is tree.execution and len(index.scopes) == 6 + 4 * len(ec.STEP.produces) + 5
     assert tuple(row for row, _ in proofs) == output.value.rows
     for row, claims in proofs:
         assert row is next(original for original in output.value.rows if original is row)

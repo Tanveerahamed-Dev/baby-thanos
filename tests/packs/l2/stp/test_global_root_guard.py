@@ -133,7 +133,7 @@ def test_real_global_run_preserves_full_registration_objects_and_provenance_befo
     assert own.receipt.registration_sha256 == foreign.receipt.registration_sha256 == out.execution.envelope.registration_sha256
     known, = [row for row in out.result.rows if type(row.value) is k.Known]
     assert known.value.value is (word == b"enabled") and known.value.raw == word.decode()
-    assert writes == [row.value for row in out.result.rows]
+    assert writes == [state for row in out.result.rows for state in (row.value, row.role)]
     refs = [r for r in known.value.evidence if type(r) is k.EvidenceRef]
     assert len(refs) == 5 and all(r.capture == own.receipt.capture.id and r.excerpt_sha256 == sha256(own.receipt.capture.raw[r.locator.start:r.locator.end]).hexdigest() for r in refs)
 

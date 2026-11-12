@@ -33,11 +33,13 @@ from atlas_brain.runner.pack_runtime import (
 
 PACK = k.PackId("l2.stp")
 ROOT_GUARD = k.FactId("l2.stp.root_guard")
+REPORTED_ROLE = k.FactId("l2.stp.reported_role")
 STEP = StepSpec(id=StepId("l2.stp/parse_root_guard"), pack=PACK, kind="parse_build", scope="device",
-                reads=(), produces=(ROOT_GUARD,), evaluator="l2.stp.build_root_guard")
+                reads=(), produces=tuple(sorted((ROOT_GUARD, REPORTED_ROLE))), evaluator="l2.stp.build_root_guard")
 BINDING = OperationBinding(operation=stp.OP, step=STEP.id)
 DECLARATION = PackDeclaration(pack=PACK, entity_kinds=(EntityKindSpec(id="stp_port_vlan", pack=PACK, root=False),),
-    facts=(FactSpec(id=ROOT_GUARD, pack=PACK, subject="stp_port_vlan", value_type="boolean", step=STEP.id),),
+    facts=(FactSpec(id=ROOT_GUARD, pack=PACK, subject="stp_port_vlan", value_type="boolean", step=STEP.id),
+           FactSpec(id=REPORTED_ROLE, pack=PACK, subject="stp_port_vlan", value_type="text", step=STEP.id)),
     relations=(), steps=(STEP,), operations=(BINDING,))
 
 
@@ -75,6 +77,7 @@ class Row:
     vlan: int
     subject: k.EntityKey
     value: k.Known[bool] | k.Unknown
+    role: k.Known[str] | k.Unknown
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -156,14 +159,54 @@ def _observed(target: Target, row: stp.Row, output: Executed[stp.Result], proven
     return k.Known(value=enabled, basis=k.Basis.OBSERVED, evidence=provenance + refs, raw=raw)
 
 
+def _role_states(
+    target: Target, outputs: list[Executed[stp.Result]], provenance: tuple[k.Evidence, ...],
+    evidence: tuple[k.Evidence, ...],
+) -> tuple[k.Known[str] | k.Unknown, ...]:
+    needs = (k.EvidenceNeed(node=target.node.key, operation=stp.OP, params=(("port", target.port),),
+             resolves=(REPORTED_ROLE,), reruns=(STEP.id,), after_s=None, unprintable=()),)
+    proofs = reported_header_proofs(target, outputs[0]) if outputs else ()
+    states: list[k.Known[str] | k.Unknown] = []
+    for index, _ in enumerate(target.vlans):
+        reason: k.UnknownReason | None = k.UnknownReason.NOT_COLLECTED
+        if outputs:
+            output, = outputs
+            rich, spans = proofs[index]
+            if spans:
+                token = dict(rich.fields)["role"]
+                role = token.value
+                if type(role) is not stp.Role:
+                    raise ValueError("stp_proof_header")
+                refs = tuple(k.EvidenceRef(capture=output.receipt.capture.id, locator=span,
+                    role=k.EvidenceRole.SUBJECT, excerpt_sha256=sha256(output.receipt.capture.raw[span.start:span.end]).hexdigest())
+                    for span in spans)
+                states.append(k.Known(value=role.value, basis=k.Basis.OBSERVED, raw=token.raw, evidence=provenance + refs))
+                continue
+            reason = output.value.reason or rich.reason
+            capture = output.receipt.capture
+            if reason is None and (capture.integrity is k.IntegrityState.ERROR
+                    or capture.metadata is not None and capture.metadata.error is not None):
+                reason = k.UnknownReason.CAPTURE_ERROR
+            if reason is None and capture.integrity in (k.IntegrityState.TRUNCATED, k.IntegrityState.PAGING_ARTIFACTS):
+                reason = k.UnknownReason.CAPTURE_TRUNCATED
+            if reason is None and capture.integrity is k.IntegrityState.EMPTY:
+                reason = k.UnknownReason.EMPTY_UNREGISTERED
+            if reason is None:
+                reason = (k.UnknownReason.FIELD_NOT_PRINTED if output.value.parse.quality == "complete"
+                          and "role" not in dict(rich.fields) else k.UnknownReason.PARSE_PARTIAL)
+        states.append(k.Unknown(reason=reason, detail="stp_reported_role_unresolved",
+                                evidence=evidence, candidates=(), next_evidence=needs))
+    return tuple(states)
+
+
 def _rows(target: Target, outputs: list[Executed[stp.Result]], declared: tuple[k.RegistryRef, ...]) -> tuple[Row, ...]:
     needs = (k.EvidenceNeed(node=target.node.key, operation=stp.OP, params=(("port", target.port),),
              resolves=(ROOT_GUARD,), reruns=(STEP.id,), after_s=None, unprintable=()),)
     provenance = target.node.declaration.evidence + declared
     evidence = provenance + tuple(k.EvidenceRef(capture=o.receipt.capture.id,
         locator=k.WholeCapture(), role=k.EvidenceRole.WITNESS, excerpt_sha256=o.receipt.capture.bytes_sha256) for o in outputs)
-    rows: list[Row] = []
-    for index, vlan in enumerate(target.vlans):
+    values: list[k.Known[bool] | k.Unknown] = []
+    for index, _ in enumerate(target.vlans):
         reason: k.UnknownReason | None = k.UnknownReason.NOT_COLLECTED
         if outputs:
             output, = outputs
@@ -174,11 +217,13 @@ def _rows(target: Target, outputs: list[Executed[stp.Result]], declared: tuple[k
             if reason is None and "root_guard" not in dict(row.fields):
                 reason = k.UnknownReason.FIELD_NOT_PRINTED
             if reason is None:
-                rows.append(Row(target=target, vlan=vlan, subject=subject(target, vlan), value=_observed(target, row, output, provenance)))
+                values.append(_observed(target, row, output, provenance))
                 continue
         value = k.Unknown(reason=reason, detail="stp_root_guard_unresolved", evidence=evidence, candidates=(), next_evidence=needs)
-        rows.append(Row(target=target, vlan=vlan, subject=subject(target, vlan), value=value))
-    return tuple(rows)
+        values.append(value)
+    roles = _role_states(target, outputs, provenance, evidence)
+    return tuple(Row(target=target, vlan=vlan, subject=subject(target, vlan), value=value, role=role)
+                 for vlan, value, role in zip(target.vlans, values, roles, strict=True))
 
 
 def build_root_guard(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> Result:
@@ -244,6 +289,7 @@ def _materialize(plan: _Plan, executed: tuple[Executed[stp.Result], ...]) -> Res
     writer = bind_writer(store, step=STEP)
     for row in rows:
         writer.write(fact=ROOT_GUARD, subject=row.subject, value=row.value)
+        writer.write(fact=REPORTED_ROLE, subject=row.subject, value=row.role)
     return Result(store=store, rows=rows, executed=executed)
 
 
@@ -606,30 +652,32 @@ type ProjectionSpec = tuple[k.FactId, k.PackId, StepId, str, type[bool | str]]
 
 def projection_contract() -> tuple[ProjectionSpec, ...]:
     """Trusted literal expectations, independent of the declaration metadata under validation."""
-    return ((k.FactId("l2.stp.root_guard"), k.PackId("l2.stp"), StepId("l2.stp/parse_root_guard"), "stp_port_vlan", bool),)
+    return ((k.FactId("l2.stp.reported_role"), k.PackId("l2.stp"), StepId("l2.stp/parse_root_guard"), "stp_port_vlan", str),
+            (k.FactId("l2.stp.root_guard"), k.PackId("l2.stp"), StepId("l2.stp/parse_root_guard"), "stp_port_vlan", bool))
 
 
-def original_state(fact: k.FactId, row: Row) -> k.Known[bool] | k.Unknown:
+def original_state(fact: k.FactId, row: Row) -> k.Known[bool] | k.Known[str] | k.Unknown:
     """Return the original owning state, independently of projection tuples or Store."""
-    if type(fact) is not str or fact != k.FactId("l2.stp.root_guard"):
+    if type(fact) is not str or fact not in (k.FactId("l2.stp.root_guard"), k.FactId("l2.stp.reported_role")):
         raise ValueError("stp_projection_fact")
     if type(row) is not Row:
         raise ValueError("stp_projection_rows")
-    return row.value
+    return row.value if fact == k.FactId("l2.stp.root_guard") else row.role
 
 
 def requires_all(fact: k.FactId) -> bool:
     """Trusted literal leaf policy; unregistered facts have no projection permission."""
-    if type(fact) is not str or fact != k.FactId("l2.stp.root_guard"):
+    if type(fact) is not str or fact not in (k.FactId("l2.stp.root_guard"), k.FactId("l2.stp.reported_role")):
         raise ValueError("stp_projection_fact")
-    return False
+    return fact == k.FactId("l2.stp.reported_role")
 
 
-def fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[bool] | k.Unknown], ...]:
+def fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[bool] | k.Known[str] | k.Unknown], ...]:
     """Expose original owning rows/states for trusted projection, not result admission."""
     if type(result) is not Result or type(result.rows) is not tuple or not all(type(row) is Row for row in result.rows):
         raise ValueError("stp_projection_rows")
-    return tuple((projection_contract()[0][0], row, row.value) for row in result.rows)
+    return tuple((k.FactId("l2.stp.reported_role"), row, row.role) for row in result.rows) + tuple(
+        (k.FactId("l2.stp.root_guard"), row, row.value) for row in result.rows)
 
 
 def projection_leaves[T](fact: k.FactId, domain: Target, vlan: int, output: Executed[T]) -> tuple[
@@ -648,6 +696,11 @@ def projection_leaves[T](fact: k.FactId, domain: Target, vlan: int, output: Exec
     if len(rows) != 1:
         raise ValueError("stp_projection_scope")
     row, = rows
+    if fact == k.FactId("l2.stp.reported_role"):
+        points = next(points for rich, points in reported_header_proofs(domain, output) if rich is row)
+        claims = frozenset(points)
+        anchors: frozenset[k.ByteSpan] = frozenset((dict(row.fields)["role"].span,)) if points else frozenset()
+        return claims, anchors, claims
     spans: frozenset[k.ByteSpan] = frozenset((*row.spans, *(token.span for _, token in row.fields))) if row.fields else frozenset()
     complete = (value.reason is None and row.reason is None and output.receipt.capture.integrity is k.IntegrityState.COMPLETE
                 and output.receipt.parse.quality == "complete")
