@@ -55,7 +55,7 @@ def expected_references(side, envelope):
         if item["operation"] == stp.stp.OP:
             target = stp.Target(context=side["context"], node=node, port=params["port"], vlans=tuple(params["vlans"]))
             subjects = tuple(stp.subject(target, vlan) for vlan in params["vlans"])
-            facts = (stp.ROOT_GUARD,)
+            facts = (stp.ROOT_GUARD, stp.REPORTED_ROLE)
         else:
             assert item["operation"] == ec.parse_summary.OP
             target = ec.Target(context=side["context"], node=node, groups=tuple(params["groups"]), ports=tuple(params["ports"]))
@@ -73,11 +73,12 @@ def test_actual_run_builds_bound_immutable_cell_scopes_and_preserves_false_dash(
     for module in (stp.stp, ec.parse_summary):
         monkeypatch.setattr(module, "parse_capture", lambda *args: pytest.fail("index reparsed evidence"))
     index = r.ProofIndex(tree.execution, LIMITS)
-    rows = [(stp.ROOT_GUARD, row, row.value) for row in tree.result.rows] + list(ec.fact_rows(channel))
+    rows = [(fact, row, state) for row in tree.result.rows
+            for fact, state in ((stp.ROOT_GUARD, row.value), (stp.REPORTED_ROLE, row.role))] + list(ec.fact_rows(channel))
     expected = expected_references(side, tree.execution.envelope)
     assert index.execution is tree.execution and {s.reference for s in index.scopes} == expected
     assert {k.FactRef(fact=fact, subject=row.subject) for fact, row, _ in rows} == expected
-    assert len(index.scopes) == 3 + 4 * len(ec.STEP.produces) and type(index.scopes) is type(index.captures) is tuple
+    assert len(index.scopes) == 6 + 4 * len(ec.STEP.produces) and type(index.scopes) is type(index.captures) is tuple
     for fact, row, value in rows:
         scope = index.scope(fact, row.subject)
         assert index.scope(fact, row.subject) is scope and scope.declarations == value.evidence[:3]
@@ -85,8 +86,10 @@ def test_actual_run_builds_bound_immutable_cell_scopes_and_preserves_false_dash(
         if type(value) is k.Known:
             pairs = {(e.capture, e.locator) for e in value.evidence if type(e) is k.EvidenceRef}
             assert scope.positive and scope.positive <= pairs <= scope.spans
-            if fact in (stp.ROOT_GUARD, ec.REPORTED_PROTOCOL):
+            if fact in (stp.ROOT_GUARD, stp.REPORTED_ROLE, ec.REPORTED_PROTOCOL):
                 assert len(scope.positive) == 1
+            if fact == stp.REPORTED_ROLE:
+                assert scope.required == scope.spans == pairs
         else:
             assert not scope.positive and not scope.spans
     original = {e.receipt.capture.id: e.receipt.capture for e in tree.execution.executed}
@@ -206,7 +209,7 @@ def test_zero_one_pack_targets_and_uncaptured_declared_scopes_survive(tmp_path, 
     tree, _ = execute(tmp_path)
     index = r.ProofIndex(tree.execution, LIMITS)
     assert {scope.reference for scope in index.scopes} == expected_references(side, tree.execution.envelope)
-    assert len(index.scopes) == (4 * len(ec.STEP.produces) if removed == "tree" else 3 if removed == "ec" else 3 + 4 * len(ec.STEP.produces))
+    assert len(index.scopes) == (4 * len(ec.STEP.produces) if removed == "tree" else 6 if removed == "ec" else 6 + 4 * len(ec.STEP.produces))
     if removed == "captures":
         assert index.captures == () and all(not scope.spans and not scope.positive and len(scope.declarations) == 3 for scope in index.scopes)
 

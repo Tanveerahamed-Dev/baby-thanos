@@ -83,7 +83,8 @@ def test_real_folder_has_exact_custody_and_all_provenance_before_the_only_owner_
     assert capture.read_scope is k.ReadScope.UNKNOWN and capture.view is k.ViewConsistency.UNKNOWN
     assert capture.collected_utc.reason is k.UnknownReason.AS_OF_MISSING and capture.integrity is k.IntegrityState.COMPLETE
     assert output.receipt.registration_sha256 == envelope.registration_sha256 == registration.compile_packs((b.DECLARATION,)).registration_sha256
-    assert built.store.owners == {b.ROOT_GUARD: b.STEP.id} and writes == [row.value for row in built.rows]
+    assert built.store.owners == {b.ROOT_GUARD: b.STEP.id, b.REPORTED_ROLE: b.STEP.id}
+    assert writes == [state for row in built.rows for state in (row.value, row.role)]
     known, = [row for row in built.rows if type(row.value) is k.Known]
     assert known.value.value is (state == "enabled") and known.value.raw == state and known.value.basis is k.Basis.OBSERVED
     for row in built.rows:

@@ -79,7 +79,7 @@ def test_new_path_needs_no_guard_validator_parser_or_fact_runtime(monkeypatch, p
         patch.setattr(Capture, "resolved_metadata", property(forbidden))
         rows = b.reported_header_proofs(point, output)
     assert all(row is original and len(spans) == 5 for (row, spans), original in zip(rows, output.value.rows, strict=True))
-    assert len(facts.store.values) == 2
+    assert len(facts.store.values) == 4
 
 
 @pytest.mark.parametrize("plant", ["duplicate", "partial", "empty", "unknown_role", "unknown_state", "unknown_guard", "cleared_unknown", "row_reason"])

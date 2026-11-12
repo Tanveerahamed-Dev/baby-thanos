@@ -90,7 +90,7 @@ def test_hook_constructs_no_runtime_or_fact_objects_even_for_legacy_metadata(mon
         patch.setattr(Capture, "resolved_metadata", property(forbidden))
         result = b.reported_root_guard_proofs(item, output)
     assert [row is original for (row, _), original in zip(result, output.value.rows, strict=True)] == [True, True]
-    assert all(len(claims) == 7 for _, claims in result) and len(facts.store.values) == 2
+    assert all(len(claims) == 7 for _, claims in result) and len(facts.store.values) == 4
 
 
 @pytest.mark.parametrize("plant", ["omitted", "duplicate", "unmodelled", "role_unknown", "state_unknown", "guard_unknown", "partial", "global", "row", "error", "truncated", "metadata_error", "empty"])

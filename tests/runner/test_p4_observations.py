@@ -97,9 +97,13 @@ def test_real_folder_returns_canonical_partial_bundle_only_after_all_finishes_an
     assert head["registry_sha256"] == sha256(before["p4.json"]).hexdigest() and head["base_registry_sha256"] == sha256(before["p2.json"]).hexdigest()
     expected_refs = expected_observations(side, runs[0].execution.envelope)
     assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4, "l3.fhrp": 5 if with_hsrp else 0}
-    assert len(rows) == len(reads) == 3 + 4 * len(m.ec.STEP.produces) + (5 if with_hsrp else 0)
+    assert len(rows) == len(reads) == 6 + 4 * len(m.ec.STEP.produces) + (5 if with_hsrp else 0)
     assert {k.FactRef(fact=k.FactId(row["fact"]), subject=k.EntityKey(row["subject"])) for row in rows} == expected_refs
-    assert {(f, s) for _, f, s in reads} == {(r["fact"], r["subject"]) for r in rows} and all(set(declared) == {m.stp.ROOT_GUARD, *m.ec.STEP.produces, *m.fhrp.STEP.produces} and fact in declared for declared, fact, _ in reads)
+    assert {(f, s) for _, f, s in reads} == {(r["fact"], r["subject"]) for r in rows} and all(set(declared) == {m.stp.ROOT_GUARD, m.stp.REPORTED_ROLE, *m.ec.STEP.produces, *m.fhrp.STEP.produces} and fact in declared for declared, fact, _ in reads)
+    role_rows = {row["vlan"]: row for row in rows if row["fact"] == m.stp.REPORTED_ROLE}
+    assert set(role_rows) == {1, 2, 3} and role_rows[3]["reason"] == "subject_absent_from_capture"
+    assert all((role_rows[vlan]["state"], role_rows[vlan]["value"], role_rows[vlan]["raw"], role_rows[vlan]["basis"])
+               == ("known", "designated", "designated", "observed") for vlan in (1, 2))
     root = next(r for r in rows if r["fact"] == m.stp.ROOT_GUARD and r["vlan"] == 1)
     assert (root["state"], root.get("value", root.get("reason"))) == (("unknown", "field_not_printed") if guard is None else ("known", guard == b"enabled"))
     channel = next(r for r in rows if r["fact"] == m.ec.REPORTED_PROTOCOL and r["group"] == "2")
@@ -117,7 +121,9 @@ def test_real_folder_returns_canonical_partial_bundle_only_after_all_finishes_an
         assert clock["evidence"][0]["locator"] == "whole_capture" and clock["evidence"][0]["capture"] == capture["id"]
         assert capture["sha256"] == sha256(before[capture["path"]]).hexdigest() and capture["registration_sha256"] == head["registration_sha256"]
     channel, standby = next(out for out in finishes if type(out) is m.ec.Result), next(out for out in finishes if type(out) is m.fhrp.Result)
-    original_rows = [(m.stp.ROOT_GUARD, row, row.value) for row in runs[0].result.rows] + list(m.ec.fact_rows(channel)) + list(m.fhrp.fact_rows(standby))
+    original_rows = [(fact, row, state) for row in runs[0].result.rows
+                     for fact, state in ((m.stp.ROOT_GUARD, row.value), (m.stp.REPORTED_ROLE, row.role))]
+    original_rows += list(m.ec.fact_rows(channel)) + list(m.fhrp.fact_rows(standby))
     expected = {(fact, row.subject): value.evidence for fact, row, value in original_rows}
     if with_hsrp:
         local = {(row["interface"], row["group"]): row for row in rows if row["fact"] == m.fhrp.REPORTED_STATE}
@@ -185,8 +191,8 @@ def test_missing_failed_and_partial_capture_remain_unknown_with_original_denomin
         (tmp_path / "ec.txt").unlink()
         (tmp_path / "p4.json").write_bytes(canonical(side))
     head, rows = unpack(m.analyse_folder(tmp_path, LIMITS))
-    assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4, "l3.fhrp": 0} and len(rows) == 3 + 4 * len(m.ec.STEP.produces)
-    selected = rows if mode == "missing" else [r for r in rows if r["fact"] == m.stp.ROOT_GUARD]
+    assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4, "l3.fhrp": 0} and len(rows) == 6 + 4 * len(m.ec.STEP.produces)
+    selected = rows if mode == "missing" else [r for r in rows if r["pack"] == "l2.stp"]
     assert all(r["state"] == "unknown" and r["reason"] == {"missing": "not_collected", "error": "capture_error", "partial": "parse_partial"}[mode] for r in selected)
     need = next(r for r in selected if r["fact"] == m.stp.ROOT_GUARD)["next_evidence"][0]
     assert need["params"] == [["port", P]] and need["after_s"] is None and need["unprintable"] == []
@@ -463,7 +469,7 @@ def test_empty_owner_population_keeps_registered_fact_profile_and_five_files(tmp
     before = snapshot(tmp_path)
     head, rows = unpack(m.analyse_folder(tmp_path, LIMITS))
     assert head["denominator"] == {"l2.stp": 0 if removed == "tree" else 3, "l2.etherchannel": 0 if removed == "ec" else 4, "l3.fhrp": 0}
-    assert len(rows) == (4 * len(m.ec.STEP.produces) if removed == "tree" else 3)
+    assert len(rows) == (4 * len(m.ec.STEP.produces) if removed == "tree" else 6)
     assert all(row["pack"] != ("l2.stp" if removed == "tree" else "l2.etherchannel") for row in rows)
     assert snapshot(tmp_path) == before
 
@@ -515,9 +521,9 @@ def test_three_owner_profile_changes_previous_p4_bytes_with_independent_content_
     current = {name: sha256(raw).hexdigest() for name, raw in files.items()}
     assert set(current) == set(pure) | {"facts/fhrp_local.jsonl"} and not files["facts/fhrp_local.jsonl"] and all(current[name] != pure[name] for name in pure)
     head, rows = unpack(files)
-    assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4, "l3.fhrp": 0} and len(rows) == 11
+    assert head["denominator"] == {"l2.stp": 3, "l2.etherchannel": 4, "l3.fhrp": 0} and len(rows) == 14
     assert head["registration_sha256"] == compile_packs((m.stp.DECLARATION, m.ec.DECLARATION, m.fhrp.DECLARATION)).registration_sha256
-    assert {row["fact"] for row in rows} == {m.stp.ROOT_GUARD, m.ec.REPORTED_PROTOCOL, m.ec.REPORTED_MEMBER_TOKENS}
+    assert {row["fact"] for row in rows} == {m.stp.ROOT_GUARD, m.stp.REPORTED_ROLE, m.ec.REPORTED_PROTOCOL, m.ec.REPORTED_MEMBER_TOKENS}
     members = {row["group"]: row for row in rows if row["fact"] == m.ec.REPORTED_MEMBER_TOKENS}
     assert set(members) == {"1", "2", "3", "4"}
     for group, token in (("1", "Gi1/0/1(P)"), ("2", "Gi1/0/2(D)")):

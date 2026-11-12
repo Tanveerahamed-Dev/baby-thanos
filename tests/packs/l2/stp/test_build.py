@@ -61,9 +61,9 @@ def test_real_owned_fact_receipt_identity_and_all_five_original_byte_proofs(monk
     row, absent = result.rows
     assert (row.vlan, absent.vlan, absent.value.reason) == (1, 2, U.SUBJECT_ABSENT_FROM_CAPTURE)
     assert row.value.value is expected and (row.value.raw, row.value.basis) == (state, k.Basis.OBSERVED)
-    assert result.store.owners == {b.ROOT_GUARD: b.STEP.id} and len(result.store.values) == 2
+    assert result.store.owners == {b.ROOT_GUARD: b.STEP.id, b.REPORTED_ROLE: b.STEP.id} and len(result.store.values) == 4
     assert result.store.values[k.FactRef(fact=b.ROOT_GUARD, subject=row.subject)] is row.value
-    fact, = b.DECLARATION.facts
+    fact, = tuple(fact for fact in b.DECLARATION.facts if fact.id == b.ROOT_GUARD)
     assert (fact.id, fact.step, fact.value_type) == (b.ROOT_GUARD, b.STEP.id, "boolean")
     output, = result.executed
     assert output.value is calls[0] and output.receipt.parse is output.value.parse
@@ -201,7 +201,9 @@ def test_runtime_receipt_barrier_must_finish_before_any_writer(monkeypatch):
 
 
 def test_literal_projection_contract_catalogue_is_closed():
-    assert b.projection_contract() == ((k.FactId("l2.stp.root_guard"), k.PackId("l2.stp"), StepId("l2.stp/parse_root_guard"), "stp_port_vlan", bool),)
+    assert b.projection_contract() == (
+        (k.FactId("l2.stp.reported_role"), k.PackId("l2.stp"), StepId("l2.stp/parse_root_guard"), "stp_port_vlan", str),
+        (k.FactId("l2.stp.root_guard"), k.PackId("l2.stp"), StepId("l2.stp/parse_root_guard"), "stp_port_vlan", bool))
 
 
 @pytest.mark.parametrize("printed", ["enabled", "disabled", None, "missing"])
@@ -209,11 +211,13 @@ def test_projection_state_and_policy_preserve_original_known_and_unknown_objects
     item = target()
     result = b.build_root_guard((item,), () if printed == "missing" else (request(item, body(item, printed)),))
     assert b.requires_all(k.FactId("l2.stp.root_guard")) is False
+    assert b.requires_all(k.FactId("l2.stp.reported_role")) is True
     for row in result.rows:
         assert b.original_state(k.FactId("l2.stp.root_guard"), row) is row.value
+        assert b.original_state(k.FactId("l2.stp.reported_role"), row) is row.role
 
 
-@pytest.mark.parametrize("fact", [k.FactId("l2.stp.reported_role"), k.FactId("l2.stp.unregistered"), None, 0])
+@pytest.mark.parametrize("fact", [k.FactId("l2.stp.reported_state"), k.FactId("l2.stp.unregistered"), None, 0])
 def test_projection_hooks_refuse_unknown_facts_before_row_shape(fact):
     with pytest.raises(ValueError, match="^stp_projection_fact$"):
         b.original_state(fact, object())
