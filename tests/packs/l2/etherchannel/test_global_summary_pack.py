@@ -71,7 +71,7 @@ def test_two_production_parsers_preserve_original_global_objects_and_source_cust
     assert len(run.executed) == 2 and own.value.missing_ports == ("Gi1/0/2",) and tuple(r.group for r in own.value.rows) == ("1", "2")
     assert dict(own.value.rows[0].fields)["protocol"].value is expected and own.value.rows[1].reason is k.UnknownReason.SUBJECT_ABSENT_FROM_CAPTURE
     assert own.receipt.owner == facts.STEP.id and own.receipt.registration_sha256 == run.envelope.registration_sha256 == out.result.executed[0].receipt.registration_sha256
-    assert out.result.store.owners == {stp.ROOT_GUARD: stp.STEP.id} and out.result.rows[0].value.value is True
+    assert out.result.store.owners == {spec[0]: spec[2] for spec in stp.projection_contract()} and out.result.rows[0].value.value is True
     member = next(m for m in run.envelope.captures if m.target.operation == ec.parse_summary.OP)
     capture, target = own.receipt.capture, member.target
     assert seen["prepare"][0].targets == (target,) and seen["prepare"][0].targets[0] is target
