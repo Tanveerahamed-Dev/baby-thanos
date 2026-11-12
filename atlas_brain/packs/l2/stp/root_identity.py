@@ -24,6 +24,9 @@ class DisplayedRoot:
               and type(self.address) is str and re.fullmatch(stp.MAC, self.address) is not None, "value")
 
 
+type RootIdentityClaims = tuple[tuple[stp.Row, DisplayedRoot | None, tuple[k.ByteSpan, ...]], ...]
+
+
 def _sections(raw: bytes) -> tuple[dict[int, list[tuple[int, int]]],
                                     dict[tuple[bytes, int], list[int]], list[tuple[int, int]]]:
     sections: dict[int, list[tuple[int, int]]] = {}
@@ -83,9 +86,7 @@ def _identity(row: stp.Row, record: stp.Record, raw: bytes) -> DisplayedRoot:
     return DisplayedRoot(priority=int(priority.raw), address=address.raw)
 
 
-def reported_root_identity_proofs[T](target: build.Target, output: Executed[T]) -> tuple[
-    tuple[stp.Row, DisplayedRoot | None, tuple[k.ByteSpan, ...]], ...
-]:
+def _source_claims[T](target: build.Target, output: Executed[T]) -> RootIdentityClaims:
     """Retain original rows and six original spans; no parser replay, facts or standalone source seal."""
     headers = build.reported_header_proofs(target, output)
     if not any(points for _, points in headers):
@@ -118,3 +119,34 @@ def reported_root_identity_proofs[T](target: build.Target, output: Executed[T]) 
         checked.append((row, identity, (header, port, vlan, record.span,
                                        cells["root_priority"].span, cells["root_mac"].span)))
     return tuple(checked)
+
+
+def reported_root_identity_proofs[T](target: build.Target, output: Executed[T]) -> RootIdentityClaims:
+    """Construct raw claims; producer/profile admission remains the caller's responsibility."""
+    return _source_claims(target, output)
+
+
+def validate_root_identity_claims[T](
+    target: build.Target, output: Executed[T], claims: RootIdentityClaims,
+) -> RootIdentityClaims:
+    """Bind submitted claim data to the same trusted post-owner source; return canonical claims, not a producer seal."""
+    expected = _source_claims(target, output)
+    _need(type(claims) is tuple and len(claims) == len(expected) and all(type(claim) is tuple
+          and len(claim) == 3 and type(claim[2]) is tuple for claim in claims), "claims")
+    for (row, root, spans), (original, wanted, points) in zip(claims, expected, strict=True):
+        _need(row is original and len(spans) == len(points) and all(type(span) is k.ByteSpan and span is point
+              for span, point in zip(spans, points, strict=True)), "claims")
+        if wanted is None:
+            _need(root is None, "claims")
+        else:
+            _need(root is not None, "claims")
+            if root is not None:
+                _need(type(root) is DisplayedRoot, "value")
+                try:
+                    priority, address = root.priority, root.address
+                except AttributeError as error:
+                    raise ValueError("stp_root_identity_value") from error
+                _need(type(priority) is int and 0 <= priority <= 65535
+                      and type(address) is str and re.fullmatch(stp.MAC, address) is not None
+                      and priority == wanted.priority and address == wanted.address, "value")
+    return expected
