@@ -243,7 +243,7 @@ def _bind[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> N
                     leaves = stp.projection_leaves(selected_fact, domain, row.vlan, output)
                 except ValueError as error:
                     raise RunnerRefused("p4_projection_scope") from error
-                allowed = frozenset((*row.spans, *(token.span for _, token in row.fields))) if row.fields else frozenset()
+                allowed: frozenset[k.ByteSpan] = frozenset((*row.spans, *(token.span for _, token in row.fields))) if row.fields else frozenset()
                 _need(type(leaves) is tuple and len(leaves) == 3 and all(type(points) is frozenset
                       and all(type(point) is k.ByteSpan for point in points) for points in leaves), "scope")
                 granted, anchors, mandatory = leaves

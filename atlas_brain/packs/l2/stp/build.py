@@ -600,9 +600,9 @@ def projection_leaves[T](fact: k.FactId, domain: Target, vlan: int, output: Exec
     if len(rows) != 1:
         raise ValueError("stp_projection_scope")
     row, = rows
-    spans = frozenset((*row.spans, *(token.span for _, token in row.fields))) if row.fields else frozenset()
+    spans: frozenset[k.ByteSpan] = frozenset((*row.spans, *(token.span for _, token in row.fields))) if row.fields else frozenset()
     complete = (value.reason is None and row.reason is None and output.receipt.capture.integrity is k.IntegrityState.COMPLETE
                 and output.receipt.parse.quality == "complete")
     tokens = tuple(token for name, token in row.fields if name == "root_guard")
-    positive = frozenset((tokens[0].span,)) if complete and len(tokens) == 1 else frozenset()
+    positive: frozenset[k.ByteSpan] = frozenset((tokens[0].span,)) if complete and len(tokens) == 1 else frozenset()
     return spans, positive, frozenset()
