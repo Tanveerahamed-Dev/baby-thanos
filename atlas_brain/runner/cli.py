@@ -26,7 +26,7 @@ Execute deterministic witness steps and write SUMMARY.txt
 plus MANIFEST.json under --out. Egress is denied and counted; identical inputs
 give identical output bytes across worker counts.
 P4 requires --format p4-observations and a fresh output directory with an existing
-parent. It writes result.json, two facts/*.jsonl files and MANIFEST.sha256.
+parent. It writes result.json, three facts/*.jsonl files and MANIFEST.sha256.
 These are partial observations; protocol checks and health are not implemented.
 """
 
