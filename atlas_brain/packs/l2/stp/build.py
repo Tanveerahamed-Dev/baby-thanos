@@ -1,4 +1,4 @@
-"""STP root-guard facts, with registry-backed subjects for declared synthetic folders."""
+"""Default guard/role facts and an explicit local profile for displayed STP root observations."""
 import re
 from dataclasses import dataclass
 from hashlib import sha256
@@ -43,21 +43,54 @@ DECLARATION = PackDeclaration(pack=PACK, entity_kinds=(EntityKindSpec(id="stp_po
     relations=(), steps=(STEP,), operations=(BINDING,))
 
 
+REPORTED_ROOT_PRIORITY = k.FactId("l2.stp.reported_root_priority")
+REPORTED_ROOT_MAC = k.FactId("l2.stp.reported_root_mac")
+ROOT_STEP = StepSpec(id=StepId("l2.stp/parse_root_guard"), pack=PACK, kind="parse_build", scope="device",
+    reads=(), produces=tuple(sorted((ROOT_GUARD, REPORTED_ROLE, REPORTED_ROOT_PRIORITY, REPORTED_ROOT_MAC))),
+    evaluator="l2.stp.build_root_observations")
+ROOT_DECLARATION = PackDeclaration(pack=PACK, entity_kinds=DECLARATION.entity_kinds,
+    facts=DECLARATION.facts + (
+        FactSpec(id=REPORTED_ROOT_PRIORITY, pack=PACK, subject="stp_port_vlan", value_type="integer", step=ROOT_STEP.id),
+        FactSpec(id=REPORTED_ROOT_MAC, pack=PACK, subject="stp_port_vlan", value_type="text", step=ROOT_STEP.id)),
+    relations=(), steps=(ROOT_STEP,), operations=(BINDING,))
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Producer:
-    """One retained internal legacy producer; not caller-selectable profile admission."""
+    """One retained producer selected only by the fixed named builder APIs."""
 
     declaration: PackDeclaration
     binding: OperationBinding
     step: StepSpec
+    roots: bool = False
 
     def __post_init__(self) -> None:
-        k.require(self.declaration is DECLARATION and self.binding is BINDING and self.step is STEP,
-                  "stp_producer_profile")
+        legacy = not self.roots and self.declaration is DECLARATION and self.step is STEP
+        extended = self.roots and self.declaration is ROOT_DECLARATION and self.step is ROOT_STEP
+        k.require(type(self.roots) is bool and self.binding is BINDING and (legacy or extended), "stp_producer_profile")
 
 
 def _legacy_producer() -> _Producer:
     return _Producer(declaration=DECLARATION, binding=BINDING, step=STEP)
+
+
+def _root_producer() -> _Producer:
+    producer = _Producer(declaration=ROOT_DECLARATION, binding=BINDING, step=ROOT_STEP, roots=True)
+    expected = (("l2.stp.reported_role", "text"), ("l2.stp.reported_root_mac", "text"),
+                ("l2.stp.reported_root_priority", "integer"), ("l2.stp.root_guard", "boolean"))
+    step, declaration, binding = producer.step, producer.declaration, producer.binding
+    k.require(step.id == "l2.stp/parse_root_guard" and step.pack == declaration.pack == "l2.stp"
+        and step.kind == "parse_build" and step.scope == "device" and step.reads == ()
+        and step.evaluator == "l2.stp.build_root_observations"
+        and step.produces == tuple(fact for fact, _ in expected) and declaration.steps == (step,)
+        and declaration.operations == (binding,) and binding.operation == stp.OP and binding.step == step.id
+        and declaration.relations == () and len(declaration.entity_kinds) == 1
+        and all(kind.id == "stp_port_vlan" and kind.pack == "l2.stp" and kind.root is False
+                for kind in declaration.entity_kinds)
+        and tuple(sorted((fact.id, fact.value_type) for fact in declaration.facts)) == expected
+        and all(fact.pack == "l2.stp" and fact.subject == "stp_port_vlan" and fact.step == step.id
+                for fact in declaration.facts), "stp_root_observation_metadata")
+    return producer
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -95,6 +128,8 @@ class Row:
     subject: k.EntityKey
     value: k.Known[bool] | k.Unknown
     role: k.Known[str] | k.Unknown
+    root_priority: k.Known[int] | k.Unknown | None = None
+    root_mac: k.Known[str] | k.Unknown | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -217,7 +252,7 @@ def _role_states(
 
 
 def _rows(target: Target, outputs: list[Executed[stp.Result]], declared: tuple[k.RegistryRef, ...],
-          step: StepSpec) -> tuple[Row, ...]:
+          step: StepSpec, *, roots: bool = False) -> tuple[Row, ...]:
     needs = (k.EvidenceNeed(node=target.node.key, operation=stp.OP, params=(("port", target.port),),
              resolves=(ROOT_GUARD,), reruns=(step.id,), after_s=None, unprintable=()),)
     provenance = target.node.declaration.evidence + declared
@@ -240,13 +275,65 @@ def _rows(target: Target, outputs: list[Executed[stp.Result]], declared: tuple[k
         value = k.Unknown(reason=reason, detail="stp_root_guard_unresolved", evidence=evidence, candidates=(), next_evidence=needs)
         values.append(value)
     roles = _role_states(target, outputs, provenance, evidence, step)
-    return tuple(Row(target=target, vlan=vlan, subject=subject(target, vlan), value=value, role=role)
-                 for vlan, value, role in zip(target.vlans, values, roles, strict=True))
+    root_values: tuple[tuple[k.Known[int] | k.Unknown | None, k.Known[str] | k.Unknown | None], ...] = (
+        _root_states(target, outputs, provenance, evidence, roles, step) if roots
+        else tuple((None, None) for _ in target.vlans))
+    return tuple(Row(target=target, vlan=vlan, subject=subject(target, vlan), value=value, role=role,
+                     root_priority=priority, root_mac=mac)
+                 for vlan, value, role, (priority, mac) in zip(target.vlans, values, roles, root_values, strict=True))
+
+
+def _root_states(
+    target: Target, outputs: list[Executed[stp.Result]], provenance: tuple[k.Evidence, ...],
+    evidence: tuple[k.Evidence, ...], roles: tuple[k.Known[str] | k.Unknown, ...], step: StepSpec,
+) -> tuple[tuple[k.Known[int] | k.Unknown, k.Known[str] | k.Unknown], ...]:
+    # One fixed literal import resolves the owning build/proof module dependency.
+    from atlas_brain.packs.l2.stp import root_identity
+
+    needs = (k.EvidenceNeed(node=target.node.key, operation=stp.OP, params=(("port", target.port),),
+        resolves=(REPORTED_ROOT_MAC, REPORTED_ROOT_PRIORITY), reruns=(step.id,), after_s=None, unprintable=()),)
+    claims = root_identity.validate_root_identity_claims(target, outputs[0],
+        root_identity.reported_root_identity_proofs(target, outputs[0])) if outputs else ()
+    result: list[tuple[k.Known[int] | k.Unknown, k.Known[str] | k.Unknown]] = []
+    for index, role in enumerate(roles):
+        if outputs:
+            rich, displayed, spans = claims[index]
+            if displayed is not None:
+                fields, output = dict(rich.fields), outputs[0]
+                k.require(type(displayed.priority) is int and 0 <= displayed.priority <= 65535
+                    and type(displayed.address) is str and re.fullmatch(stp.MAC, displayed.address) is not None
+                    and fields["root_priority"].raw == str(displayed.priority)
+                    and fields["root_mac"].raw == displayed.address, "stp_root_observation_value")
+                refs = tuple(k.EvidenceRef(capture=output.receipt.capture.id, locator=span,
+                    role=k.EvidenceRole.SUBJECT, excerpt_sha256=sha256(output.receipt.capture.raw[span.start:span.end]).hexdigest())
+                    for span in spans)
+                result.append((k.Known(value=displayed.priority, basis=k.Basis.OBSERVED,
+                    raw=fields["root_priority"].raw, evidence=provenance + refs),
+                    k.Known(value=displayed.address, basis=k.Basis.OBSERVED,
+                    raw=fields["root_mac"].raw, evidence=provenance + refs)))
+                continue
+        reason = role.reason if type(role) is k.Unknown else k.UnknownReason.FIELD_NOT_PRINTED
+        unknown = k.Unknown(reason=reason, detail="stp_reported_root_unresolved",
+                            evidence=evidence, candidates=(), next_evidence=needs)
+        result.append((unknown, unknown))
+    return tuple(result)
+
+
+def _root_pair(row: Row) -> tuple[k.Known[int] | k.Unknown, k.Known[str] | k.Unknown]:
+    priority, mac = row.root_priority, row.root_mac
+    if priority is None or mac is None:
+        raise ValueError("stp_root_observation_population")
+    return priority, mac
 
 
 def build_root_guard(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> Result:
     """Accept at most one capture per target and execute before projecting any subject."""
     return _local(_plan(targets, requests, None), _legacy_producer())
+
+
+def build_root_observations(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> Result:
+    """Run the fixed local four-fact profile; this is not folder/global projection admission."""
+    return _local(_plan(targets, requests, None), _root_producer())
 
 
 type _Key = tuple[str, k.EntityKey, str]
@@ -287,8 +374,30 @@ def _plan(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...], pro
 
 
 def _local(plan: _Plan, producer: _Producer) -> Result:
-    handler = Handler(binding=producer.binding, parser=_Adapter(plan.by_capture))
-    return _materialize(plan, execute_parsers((producer.declaration,), (handler,), plan.requests), producer)
+    produced: dict[k.CaptureId, stp.Result] | None = {} if producer.roots else None
+    handler = Handler(binding=producer.binding, parser=_Adapter(plan.by_capture, produced))
+    executed = execute_parsers((producer.declaration,), (handler,), plan.requests)
+    if producer.roots:
+        k.require(type(executed) is tuple and all(type(output) is Executed and type(output.receipt) is ParseReceipt
+            and type(output.receipt.capture) is Capture and type(output.value) is stp.Result for output in executed),
+            "stp_root_observation_source")
+        requests = {request.capture.id: request for request in plan.requests}
+        registration = compile_packs((producer.declaration,)).registration_sha256
+        k.require(produced is not None and set(produced) == set(requests)
+            and len(executed) == len(requests) and {output.receipt.capture.id for output in executed} == set(requests),
+            "stp_root_observation_source")
+        for output in executed:
+            receipt = output.receipt
+            request = requests[receipt.capture.id]
+            k.require(receipt.registration_sha256 == registration and receipt.owner == producer.step.id,
+                      "stp_root_observation_profile")
+            target = plan.by_capture[receipt.capture.id]
+            k.require(receipt.capture is request.capture and receipt.context == request.context == target.context
+                and receipt.capture.source == target.node.key and receipt.capture.operation == stp.OP
+                and receipt.capture.rendered == stp.command(target.port)
+                and produced is not None and produced.get(receipt.capture.id) is output.value
+                and receipt.parse is output.value.parse, "stp_root_observation_source")
+    return _materialize(plan, executed, producer)
 
 
 def _materialize(plan: _Plan, executed: tuple[Executed[stp.Result], ...], producer: _Producer) -> Result:
@@ -302,13 +411,18 @@ def _materialize(plan: _Plan, executed: tuple[Executed[stp.Result], ...], produc
                   and tuple(r.vlan for r in output.value.rows) == target.vlans, "stp_parser_population")
         grouped[(target.context, target.node.key, stp.command(target.port))].append(output)
     rows = tuple(row for key in sorted(indexed) for row in _rows(
-        indexed[key], grouped[key], () if proofs is None else proofs[key], producer.step))
+        indexed[key], grouped[key], () if proofs is None else proofs[key], producer.step, roots=producer.roots))
     k.require(len({r.subject for r in rows}) == len(rows), "stp_subject_collision")
+    root_pairs = tuple(_root_pair(row) for row in rows) if producer.roots else ()
     store = FactStore()
     writer = bind_writer(store, step=producer.step)
-    for row in rows:
+    for index, row in enumerate(rows):
         writer.write(fact=ROOT_GUARD, subject=row.subject, value=row.value)
         writer.write(fact=REPORTED_ROLE, subject=row.subject, value=row.role)
+        if producer.roots:
+            priority, mac = root_pairs[index]
+            writer.write(fact=REPORTED_ROOT_PRIORITY, subject=row.subject, value=priority)
+            writer.write(fact=REPORTED_ROOT_MAC, subject=row.subject, value=mac)
     return Result(store=store, rows=rows, executed=executed)
 
 
