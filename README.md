@@ -3,8 +3,10 @@
 **Atlas Brain — CCIE Enterprise Infrastructure edition.** A read-only, offline, deterministic Cisco
 network analysis engine.
 
-Analysis modes: **P1 capture-scoped answers; P2 declared two-end comparisons; P3 conditional MTU/OSPF candidates.**
-P2/P3 are bounded generated CLI allowlists, with explicit synthetic scope and evidence gaps.
+Analysis modes: **P1 capture-scoped answers; P2 declared two-end comparisons; P3 conditional MTU/OSPF candidates;
+P4 declared STP/EtherChannel/HSRP observations.**
+P2–P4 use bounded CLI allowlists, with explicit synthetic scope and evidence gaps. P4 also provides a
+separate Python API for caller-declared STP guard comparisons.
 
 ## What this is
 
@@ -109,6 +111,74 @@ The existing Linux/Windows runner workflow runs the hosted-only
 `p3/DIGESTS.json` artifact bind the reviewed commit and five generated cases to
 manifest, summary, result and catalogue digests. These receipts report synthetic
 regression scope; they do not qualify device platforms or software trains.
+
+## Declared P4 observations
+
+P4 is in progress. Its current observation profile admits bounded IOS-XE forms:
+`show spanning-tree interface <port> detail`, `show etherchannel summary` and
+`show standby brief`. These are allowlisted forms, not platform/train qualification.
+
+The input folder needs a discovery-only schema-1 `p2.json`, a
+`atlas-brain.synthetic-p4/1` `p4.json` bound to its exact hash, and every declared
+capture. Targets declare expected subjects independently of observations; capture
+paths and hashes are checked before semantic work. Extra unlisted files refuse.
+P2 schema-2 configuration/inheritance is not admitted by this P4 profile.
+
+For an admitted folder, the existing observation command is:
+
+```powershell
+uv run python -m atlas_brain.runner --format p4-observations --evidence p4-captures --out p4-output --workers 4
+```
+
+Keep input and output separate. The output directory must be new, with an existing
+parent. The command writes five files: `result.json`, `MANIFEST.sha256`,
+`facts/stp_port_vlan.jsonl`, `facts/etherchannel_group.jsonl` and
+`facts/fhrp_local.jsonl`. The result declares `observations_only` and
+`checks: not_implemented`; this command emits no conditional guard findings.
+
+| Pack | Current facts | Meaning |
+|---|---|---|
+| STP | `root_guard`, `reported_role` | Explicit reported guard state and port/VLAN role |
+| EtherChannel | `reported_protocol`, `reported_member_tokens` | Local protocol observation and derived member-token text |
+| FHRP | `reported_state` | Local IPv4 HSRP state, keyed by context/node/exact interface/IPv4/HSRP/group |
+
+Facts retain their basis, raw token where applicable, exact evidence spans and
+unknowns with next evidence to collect. The denominator counts declared subjects,
+not fact cells. Declared targets without a capture entry stay `not_collected`;
+every listed capture must be present and hash-match. A declared subject absent
+from an otherwise complete capture stays `subject_absent_from_capture`; a guard field
+omitted within an otherwise complete port/VLAN record stays `field_not_printed`.
+None of these unknowns means disabled or healthy. EtherChannel `-` is
+`none_reported`, not mode On; member flags are reported tokens, not membership intent.
+
+The separate [guard comparison API](atlas_brain/runner/p4_guard_policy.py)
+accepts typed caller-declared policies and emits conditional reported-guard results.
+Its [report](atlas_brain/packs/l2/stp/guard_report.py) includes the declared policy
+and cited operands. An omitted guard stays unknown; equal untimed observations do
+not prove health. This API is not a CLI policy-file input path, and its exported
+policy is not an admission seal. Reports still require the original pinned inputs.
+
+### Hosted P4 evidence
+
+The existing [P0 runner workflow](.github/workflows/p0-runner.yml) runs both hosted-only
+[guard](tools/p4_guard_demo.py) and [three-pack estate](tools/p4_estate_demo.py) demos
+on Linux and Windows. In an exact-commit successful run, inspect
+`P4_GUARD_RECEIPT` and `P4_ESTATE_RECEIPT` in the logs and the corresponding
+`p0-demo-<OS>-<commit>` artifact. Under `p4-guards/` and `p4-estate/`, each case
+retains `inputs/`, `out0/`, `out1/`; each demo also retains `DIGESTS.json` and
+batch stdout/stderr. Keep the original input folders with their reports.
+
+The estate demo covers baseline, PAgP and missing-capture twins: three cases,
+19 cells each, subject denominators STP=3/EtherChannel=4/FHRP=5, six API analyses in
+two fresh processes seeded 1/83. It checks complete output bytes, source/report
+hashes and zero additional tripwire denials. These receipts measure the API
+processes on synthetic fixtures; they do not qualify CLI workers or the whole host.
+Compare bytes across seeds/OS only for the same pinned inputs.
+
+Root identity, other guards/defaults/inheritance, explicit EtherChannel mode or
+expected membership, VRRP/VIP/version, FHRP peer/redundancy/anycast checks and the held-out
+pack admission proof remain open. This evidence does not complete P4, EX-02 or M1, or
+qualify field behavior. See [ADR-0023](docs/adr/0023-p4-pack-boundaries.md).
 
 ## Provenance and licence
 
