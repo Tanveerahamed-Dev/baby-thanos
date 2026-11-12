@@ -10,6 +10,7 @@ from atlas_brain.packs.l2.etherchannel.global_parse import SummaryPack
 from atlas_brain.packs.l2.stp import build as stp
 from atlas_brain.packs.l2.stp import guard_check as check
 from atlas_brain.packs.l2.stp import guard_policy as policy
+from atlas_brain.packs.l2.stp import guard_report as report
 from atlas_brain.packs.l3.fhrp import build as fhrp
 from atlas_brain.packs.l3.fhrp.global_parse import StandbyBriefPack
 from atlas_brain.runner import p4 as observations
@@ -61,3 +62,13 @@ def evaluate_guard_comparisons(root: Path, budgets: Budgets,
     plan = plan_guard_comparisons(source.execution.envelope, budgets, policies)
     return GuardEvaluation(source=source, plan=plan,
                            result=check.evaluate_declared(plan, source.result.store, tuple(sorted(trees))))
+
+
+def report_guard_comparisons(root: Path, budgets: Budgets,
+                             policies: tuple[policy.GuardPolicy, ...]) -> dict[str, bytes]:
+    """Return a standalone report that still requires its original pinned evidence folder."""
+    evaluation = evaluate_guard_comparisons(root, budgets, policies)
+    index = ProofIndex(evaluation.source.execution, budgets)
+    kind, facts = observations.project_owned_facts(index, evaluation.source.result, "stp")
+    captures = observations.project_capture_metadata(index)
+    return report.project_declared(evaluation.plan, evaluation.result, index, kind, facts, captures, budgets)

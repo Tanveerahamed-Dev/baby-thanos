@@ -241,6 +241,17 @@ def _metadata(index: ProofIndex[Value]) -> list[dict[str, object]]:
     return result
 
 
+def project_owned_facts(index: ProofIndex[Value], owner: Owner, family: Family) -> tuple[str, dict[tuple[str, str], dict[str, object]]]:
+    """Project one owner against its complete independently declared subject set."""
+    subjects = _subjects(index)
+    return _facts(index, owner, family, subjects[("stp", "etherchannel", "hsrp").index(family)])
+
+
+def project_capture_metadata(index: ProofIndex[Value]) -> list[dict[str, object]]:
+    """Project original capture metadata; never broaden cell-specific evidence grants."""
+    return _metadata(index)
+
+
 def analyse_folder(root: Path, budgets: Budgets) -> dict[str, bytes]:
     """Close all three owners before estate projection; return canonical bytes without writing files."""
     channel = SummaryPack[stp.stp.Result | fhrp.hsrp.Result](budgets)
