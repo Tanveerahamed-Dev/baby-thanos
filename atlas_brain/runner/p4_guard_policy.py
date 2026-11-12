@@ -13,7 +13,7 @@ from atlas_brain.packs.l2.stp import guard_policy as policy
 from atlas_brain.packs.l3.fhrp import build as fhrp
 from atlas_brain.packs.l3.fhrp.global_parse import StandbyBriefPack
 from atlas_brain.runner import p4 as observations
-from atlas_brain.runner.p4_refs import ProofIndex, Value
+from atlas_brain.runner.p4_refs import ProofIndex
 from atlas_brain.runner.records import RunnerRefused
 
 
@@ -33,7 +33,7 @@ def plan_guard_comparisons(envelope: p4.Envelope, budgets: Budgets,
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GuardEvaluation:
-    source: stp.GlobalFacts[Value]
+    source: stp.GlobalFacts[etherchannel.parse_summary.Result | fhrp.hsrp.Result]
     plan: policy.GuardPlan
     result: check.Result
 
@@ -52,7 +52,7 @@ def evaluate_guard_comparisons(root: Path, budgets: Budgets,
         raise ValueError("stp_guard_check_policies")
     channel = SummaryPack[stp.stp.Result | fhrp.hsrp.Result](budgets)
     standby = StandbyBriefPack[stp.stp.Result | etherchannel.parse_summary.Result](budgets)
-    source: stp.GlobalFacts[Value] = stp.build_root_guard_global(root, budgets, peers=(channel, standby))
+    source: stp.GlobalFacts[etherchannel.parse_summary.Result | fhrp.hsrp.Result] = stp.build_root_guard_global(root, budgets, peers=(channel, standby))
     finished, local = channel.finish(source.execution), standby.finish(source.execution)
     index = ProofIndex(source.execution, budgets)
     if index.execution is not source.execution:
