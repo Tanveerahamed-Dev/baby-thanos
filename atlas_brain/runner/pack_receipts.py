@@ -5,7 +5,7 @@ This barrier checks receipt metadata, not input admission, parser execution,
 payload semantics or proof spans. Empty coverage and uncollected operations
 establish neither network health nor population closure.
 """
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from atlas_brain.evidence.capture import Capture
 from atlas_brain.evidence.parsekit.rules import ParseResult
@@ -57,6 +57,40 @@ class ParseReceipt:
         _context(self.context)
         k.digest(self.registration_sha256)
         k.require(type(self.parse) is ParseResult, 'pack_receipts_parse')
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RetainedRequest:
+    """A private invocation value snapshot, not admission or execution authority."""
+    identity: k.CaptureId
+    request: CaptureRequest
+    capture: Capture
+    value: dict[str, object]
+
+
+def retain_requests(requests: tuple[CaptureRequest, ...]) -> tuple[RetainedRequest, ...]:
+    """Retain original pointers and detached dataclass values before parser invocation."""
+    k.require(type(requests) is tuple and all(type(item) is CaptureRequest for item in requests),
+              "pack_receipts_retention_input")
+    for item in requests:
+        _capture(item.capture)
+        _context(item.context)
+    k.require(len({item.capture.id for item in requests}) == len(requests), "pack_receipts_retention_duplicate")
+    return tuple(RetainedRequest(identity=item.capture.id, request=item, capture=item.capture, value=asdict(item))
+                 for item in sorted(requests, key=lambda item: item.capture.id))
+
+
+def validate_retained_requests(requests: tuple[CaptureRequest, ...], retained: tuple[RetainedRequest, ...]) -> None:
+    """Check same input objects and values; ordering may differ, interpretation remains the caller's duty."""
+    k.require(type(retained) is tuple and all(type(item) is RetainedRequest for item in retained),
+              "pack_receipts_retention_input")
+    k.require(len({item.identity for item in retained}) == len(retained), "pack_receipts_retention_duplicate")
+    current = {item.identity: item for item in retain_requests(requests)}
+    k.require(set(current) == {item.identity for item in retained}, "pack_receipts_retention_coverage")
+    for before in retained:
+        after = current[before.identity]
+        k.require(after.request is before.request and after.capture is before.capture and after.value == before.value,
+                  "pack_receipts_retention_mismatch")
 
 
 def validate_receipts(
