@@ -1,7 +1,8 @@
 """Allowlisted IPv4 HSRP brief observations; exact local tokens, never redundancy or peer identity."""
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal
+from hashlib import sha256
+from typing import Literal, cast
 
 from atlas_brain.evidence.capture import Capture
 from atlas_brain.evidence.parsekit.rules import (
@@ -164,3 +165,36 @@ def parse_capture(capture: Capture) -> Result:
     if reason is not None:
         parsed = ParseResult(parsed.records, parsed.lines, parsed.tokens, "partial")
     return Result(rows=tuple(_row(item, reason) for item in physical), parse=parsed, reason=reason)
+
+
+def _claim_need(condition: bool, code: str) -> None:
+    k.require(condition, "hsrp_brief_claims_" + code)
+
+
+def validate_state_token_claim(capture: Capture, token: Captured) -> State | k.Unknown:
+    """Validate one byte-anchored mapping; no row, header, AF, completeness or origin claim."""
+    _claim_need(type(capture) is Capture and type(capture.raw) is bytes and type(capture.id) is str and bool(capture.id)
+                and type(capture.operation) is str and capture.operation == OP
+                and type(capture.rendered) is str and capture.rendered == COMMAND
+                and type(capture.codec) is str and capture.codec in ("utf-8", "ascii"), "state_input")
+    _claim_need(type(token) is Captured and type(token.raw) is str and token.raw.isascii()
+                and token.raw.isalpha() and 2 <= len(token.raw) <= 16 and type(token.span) is k.ByteSpan
+                and type(token.span.start) is int and type(token.span.end) is int
+                and 0 <= token.span.start < token.span.end <= len(capture.raw)
+                and capture.raw[token.span.start:token.span.end] == token.raw.encode("ascii"), "state_input")
+    mapped = {"Init": State.INIT, "Active": State.ACTIVE, "Standby": State.STANDBY}.get(token.raw)
+    if mapped is not None:
+        _claim_need(type(token.value) is State and token.value is mapped, "state")
+        return mapped
+    _claim_need(type(token.value) is k.Unknown, "state")
+    value = cast(k.Unknown, token.value)
+    _claim_need(value.reason is k.UnknownReason.PARSE_PARTIAL and type(value.detail) is str and value.detail == "unmapped_token"
+                and type(value.candidates) is tuple and not value.candidates
+                and type(value.next_evidence) is tuple and not value.next_evidence
+                and type(value.evidence) is tuple and len(value.evidence) == 1, "state")
+    _claim_need(type(value.evidence[0]) is k.EvidenceRef, "state")
+    ref = cast(k.EvidenceRef, value.evidence[0])
+    _claim_need(type(ref.capture) is str and ref.capture == capture.id and ref.locator is token.span
+                and ref.role is k.EvidenceRole.SUBJECT and type(ref.excerpt_sha256) is str
+                and ref.excerpt_sha256 == sha256(capture.raw[token.span.start:token.span.end]).hexdigest(), "state")
+    return value
