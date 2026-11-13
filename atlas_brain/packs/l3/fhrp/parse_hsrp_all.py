@@ -3,7 +3,13 @@ from dataclasses import dataclass
 from typing import Literal
 
 from atlas_brain.evidence.capture import Capture
-from atlas_brain.evidence.parsekit.rules import Captured, ParseResult, Record, Rule, run_rules
+from atlas_brain.evidence.parsekit.rules import (
+    Captured,
+    ParseResult,
+    Record,
+    Rule,
+    run_rules,
+)
 from atlas_brain.kernel import states as k
 from atlas_brain.packs.l3.fhrp.parse_hsrp_brief import ipv4_literal
 
