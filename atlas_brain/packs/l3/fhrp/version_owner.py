@@ -231,7 +231,7 @@ class VersionOwner(Parser[parser.Result]):
             if isinstance(original.value, k.Known):
                 _need(type(value) is k.Known, "value_cell")
                 if not isinstance(value, k.Known):
-                    raise ValueError("hsrp_version_value_cell")
+                    raise TypeError("hsrp_version_value_cell")
                 _need(type(value.value) is str and type(value.raw) is str and value.value == value.raw
                       and value.value in ("1", "2") and value.basis is k.Basis.OBSERVED
                       and value == original.value, "value_cell")

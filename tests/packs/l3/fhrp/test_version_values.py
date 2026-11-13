@@ -79,9 +79,13 @@ def test_typed_carrier_and_equal_metadata_copies_are_not_the_actual_completed_pr
         object.__setattr__(result, "store", store)
         reader = reader_for(store)
     elif field == "rows_copy":
-        object.__setattr__(result, "rows", tuple(list(result.rows)))
+        copied = tuple(iter(result.rows))
+        assert copied == result.rows and copied is not result.rows
+        object.__setattr__(result, "rows", copied)
     elif field == "executed_copy":
-        object.__setattr__(result, "executed", tuple(list(result.executed)))
+        copied = tuple(iter(result.executed))
+        assert copied == result.executed and copied is not result.executed
+        object.__setattr__(result, "executed", copied)
     else:
         object.__setattr__(result, "registration_sha256", "0" * 64)
     with pytest.raises(ValueError):
