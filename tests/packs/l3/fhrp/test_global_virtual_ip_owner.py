@@ -112,7 +112,7 @@ def test_real_registered_batch_original_cache_state_reader_and_literal_vip_popul
 @pytest.mark.parametrize("plant,code", [("cache", "hsrp_global_value"), ("token", "hsrp_vip_value"), ("bool", "hsrp_vip_value"),
     ("raw", "hsrp_witness"), ("column", "hsrp_witness"), ("association", "hsrp_record"), ("kind", "hsrp_value"),
     ("append", "stp_global_receipt"), ("retarget", "stp_global_receipt"),
-    ("original_request", "pack_receipts_retention_mismatch"), ("original_capture", "pack_receipts_retention_mismatch")])
+    ("original_request", "pack_receipts_retention_mismatch"), ("original_capture", "hsrp_global_capture")])
 def test_late_second_hsrp_fault_refuses_before_both_fhrp_writers(tmp_path, monkeypatch, plant, code):
     inputs(tmp_path / "inputs")
     execute = pipe.execute_parsers
