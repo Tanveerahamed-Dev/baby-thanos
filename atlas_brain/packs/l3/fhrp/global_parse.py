@@ -215,3 +215,27 @@ class StandbyBriefPack[Peer](p4_pipeline.Pack[hsrp.Result | Peer]):
         result = owner.finish(owned)
         self.finished = True
         return result
+
+
+class VirtualIpPack[Peer](StandbyBriefPack[Peer]):
+    """Fixed GLOBAL STATE+VIP declaration; no caller-selected profile."""
+
+    def declaration(self) -> PackDeclaration:
+        return build.VIP_DECLARATION
+
+    @property
+    def virtual_ip_owner(self) -> build.VirtualIpOwner:
+        owner = self.owner
+        if type(owner) is not build.VirtualIpOwner:
+            raise ValueError("hsrp_vip_source")
+        return owner
+
+    def prepare(self, envelope: p4.Envelope) -> p4_pipeline.Prepared[hsrp.Result | Peer]:
+        k.require(not self.attempted, "hsrp_global_run")
+        self.attempted = True
+        targets, domains, requests = _scope(envelope, self.budgets)
+        owner = build.VirtualIpOwner(envelope, self.budgets, domains, requests)
+        handler = Handler[hsrp.Result | Peer](binding=build.BINDING, parser=owner)
+        batch = p4_pipeline.Prepared[hsrp.Result | Peer](targets=targets, handlers=(handler,), requests=requests)
+        self.run = _Run(envelope=envelope, registration=envelope.registration_sha256, owner=owner)
+        return batch
