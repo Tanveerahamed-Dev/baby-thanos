@@ -7,7 +7,7 @@ from atlas_brain.packs.l3.fhrp import build
 from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
 from atlas_brain.packs.l3.fhrp import parse_hsrp_brief as brief
 from atlas_brain.packs.l3.fhrp import state_version_execution as execution
-from atlas_brain.packs.l3.fhrp import version_owner as version
+from atlas_brain.packs.l3.fhrp import version_owner as vo
 from atlas_brain.runner.pack_runtime import Executed
 
 
@@ -16,9 +16,9 @@ class FhrpStateVersionComponent:
     envelope: p4.Envelope
     executed: tuple[Executed[brief.Result | all_hsrp.Result], ...]
     state: build.Result
-    version: version.VersionResult
+    version: vo.VersionResult
     state_owner: build.StateOwner
-    version_owner: version.VersionOwner
+    version_owner: vo.VersionOwner
 
 
 def _state_fact() -> None:
