@@ -7,6 +7,7 @@ from atlas_brain.evidence.text import TextLine, text_lines
 from atlas_brain.kernel import states as k
 from atlas_brain.kernel.time import TimeInterval
 from atlas_brain.packs.l3.fhrp import build
+from atlas_brain.packs.l3.fhrp import parse_hsrp_all as parser
 from atlas_brain.runner import pack_receipts as custody
 from atlas_brain.runner.pack_receipts import CaptureRequest, RetainedRequest
 
@@ -98,11 +99,16 @@ def _target(value: build.Target) -> None:
     build.Target(context=value.context, node=node, groups=value.groups)
 
 
-def validate_version_request(request: CaptureRequest) -> None:
-    """Validate only the current request graph; no snapshot, admission or parser call."""
+def validate_fhrp_request_graph(request: CaptureRequest) -> None:
+    """Validate a current FHRP model graph without assigning command semantics."""
     _need(type(request) is CaptureRequest, "request")
     _capture(request.capture)
     CaptureRequest(capture=request.capture, context=request.context)
+
+
+def validate_version_request(request: CaptureRequest) -> None:
+    """Validate only the current request graph; no snapshot, admission or parser call."""
+    validate_fhrp_request_graph(request)
     capture = request.capture
     _need(capture.operation == "iosxe.show_standby_all" and capture.rendered == "show standby all"
           and capture.codec in ("utf-8", "ascii")
@@ -173,3 +179,16 @@ def validate_version_state_graph(value: k.Known[str] | k.Unknown) -> None:
         k.Known(value=value.value, basis=value.basis, evidence=value.evidence, raw=value.raw)
     else:
         _unknown(value)
+
+
+def prepare_version_request(
+    *, capture_id: k.CaptureId, source: k.EntityKey, context: str, raw: bytes,
+) -> CaptureRequest:
+    """Prepare caller-owned capture coordinates; no admission, body verdict or origin proof."""
+    _need(type(context) is str and bool(context), "request")
+    capture = Capture(id=capture_id, source=source, operation=parser.OP, rendered=parser.COMMAND,
+        codec="utf-8", raw=raw, integrity=parser.capture_integrity(raw), lines=text_lines(raw, "utf-8"),
+        read_scope=k.ReadScope.UNKNOWN, view=k.ViewConsistency.UNKNOWN)
+    request = CaptureRequest(capture=capture, context=context)
+    validate_version_request(request)
+    return request
