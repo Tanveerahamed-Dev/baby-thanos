@@ -1,9 +1,10 @@
-"""Owning local VERSION execution and candidate rows; no Store or source admission."""
+"""Owning VERSION execution, candidate rows and Store production; no source admission."""
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 
 from atlas_brain.evidence.capture import Capture
 from atlas_brain.kernel import states as k
+from atlas_brain.model.store import FactStore, bind_writer
 from atlas_brain.packs.l3.fhrp import build
 from atlas_brain.packs.l3.fhrp import parse_hsrp_all as parser
 from atlas_brain.packs.l3.fhrp import version_profile as profile
@@ -37,6 +38,7 @@ class _Invocation:
     produced: dict[k.CaptureId, parser.Result]
     produced_values: dict[k.CaptureId, dict[str, object]]
     claims: dict[k.CaptureId, _Claims]
+    owned: dict[k.CaptureId, Executed[parser.Result]]
 
 
 def _state(value: _Invocation | None) -> _Invocation:
@@ -82,8 +84,18 @@ def _rows(state: _Invocation, outcomes: dict[_Key, tuple[Executed[parser.Result]
     return tuple(rows)
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class VersionResult:
+    store: FactStore
+    rows: tuple[build.Row, ...]
+    executed: tuple[Executed[parser.Result], ...]
+    registration_sha256: str
+
+
 class VersionOwner(Parser[parser.Result]):
     inputs: _Invocation | None = None
+    production_attempted: bool = False
+    production: VersionResult | None = None
 
     @staticmethod
     def for_local(targets: tuple[build.Target, ...], requests: tuple[CaptureRequest, ...]) -> VersionOwner:
@@ -119,9 +131,11 @@ class VersionOwner(Parser[parser.Result]):
         _need(output.value is value and receipt.parse is value.parse, "cache")
         state.claims[identifier] = parser.validate_claims(receipt.capture, value)
         _need(asdict(value) == state.produced_values[identifier], "cache")
-        return Executed(receipt=receipt, value=value)
+        owned = Executed(receipt=receipt, value=value)
+        state.owned[identifier] = owned
+        return owned
 
-    def canonical_rows(self, outputs: tuple[Executed[parser.Result], ...]) -> tuple[build.Row, ...]:
+    def canonical_rows[T](self, outputs: tuple[Executed[T], ...]) -> tuple[build.Row, ...]:
         self.validate_registration()
         state = _state(self.inputs)
         validate_version_inputs(state.source)
@@ -130,6 +144,7 @@ class VersionOwner(Parser[parser.Result]):
               and {out.receipt.capture.id for out in outputs} == set(state.source.expected)
               and set(state.produced) == set(state.produced_values) == set(state.source.expected), "cache")
         state.claims.clear()
+        state.owned.clear()
         outcomes: dict[_Key, tuple[Executed[parser.Result], _Claims]] = {}
         for output in outputs:
             out = self.own(output)
@@ -140,11 +155,28 @@ class VersionOwner(Parser[parser.Result]):
         return _rows(state, outcomes)
 
 
+    def finish[T](self, outputs: tuple[Executed[T], ...]) -> VersionResult:
+        """Consume this invocation once; close all candidate rows before any Writer."""
+        _need(not self.production_attempted and self.production is None, "production_once")
+        self.production_attempted = True
+        rows = self.canonical_rows(outputs)
+        state = _state(self.inputs)
+        executed = tuple(state.owned[out.receipt.capture.id] for out in outputs)
+        registration = state.registration_sha256
+        store = FactStore()
+        writer = bind_writer(store, step=profile.STEP)
+        for row in rows:
+            writer.write(fact=profile.REPORTED_PROTOCOL_VERSION, subject=row.subject, value=row.value)
+        result = VersionResult(store=store, rows=rows, executed=executed, registration_sha256=registration)
+        self.production = result
+        return result
+
+
 class LocalVersionOwner(VersionOwner):
     def __init__(self, targets: tuple[build.Target, ...], requests: tuple[CaptureRequest, ...]) -> None:
         compiled = profile.compile_version_profile()
         self.inputs = _Invocation(source=retain_version_inputs(targets, requests), registration_sha256=compiled.registration_sha256,
-                                  produced={}, produced_values={}, claims={})
+                                  produced={}, produced_values={}, claims={}, owned={})
 
     def validate_registration(self) -> None:
         state = _state(self.inputs)
