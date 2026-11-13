@@ -43,7 +43,7 @@ def test_real_whole_folder_fixed_registration_original_captures_and_declaration_
     assert result.compiled == compiled and result.envelope.registration_sha256 == compiled.registration_sha256
     assert compiled.registration_sha256 not in (profile.compile_version_profile().registration_sha256, compile_packs((b.DECLARATION,)).registration_sha256)
     catalogue = json.loads(compiled.catalogue_bytes)
-    assert {fact["id"] for fact in catalogue["facts"]} == {b.REPORTED_STATE, profile.REPORTED_PROTOCOL_VERSION}
+    assert {fact["fact"] for fact in catalogue["facts"]} == {b.REPORTED_STATE, profile.REPORTED_PROTOCOL_VERSION}
     assert len(catalogue["entity_kinds"]) == 1 and not catalogue["relations"]
     for target, domain in zip(result.targets, result.domains, strict=True):
         assert target.node is domain.node and any(target is item for item in result.envelope.targets)
