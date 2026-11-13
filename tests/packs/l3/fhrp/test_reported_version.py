@@ -77,6 +77,7 @@ def test_fixed_registered_version_only_profile_owns_original_cached_proofs_and_d
             assert type(row.value) is k.Known and type(row.value.value) is str
             assert (row.value.value, row.value.raw, row.value.basis) == (literal, literal, k.Basis.OBSERVED)
             rich, points = next((rich, points) for rich, points in checked[-1][2] if rich.interface.raw == row.interface)
+            assert any(rich is original for original in output.value.rows)
             refs = tuple(ref for ref in row.value.evidence if type(ref) is k.EvidenceRef)
             assert tuple(ref.locator for ref in refs) == points
             assert row.value.evidence[:1] == first.node.declaration.evidence
