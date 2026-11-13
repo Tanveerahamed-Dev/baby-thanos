@@ -14,7 +14,15 @@ from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
 from atlas_brain.model.pack_registration import PackDeclaration
 from atlas_brain.packs.l3.fhrp import build
+from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
 from atlas_brain.packs.l3.fhrp import parse_hsrp_brief as hsrp
+from atlas_brain.packs.l3.fhrp import version_profile as profile
+from atlas_brain.packs.l3.fhrp.version_inputs import (
+    VersionInputs,
+    validate_fhrp_request_graph,
+    validate_version_inputs,
+    validate_version_state_graph,
+)
 from atlas_brain.runner import p4_pipeline
 from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
 from atlas_brain.runner.pack_runtime import Executed, Handler
@@ -239,3 +247,78 @@ class VirtualIpPack[Peer](StandbyBriefPack[Peer]):
         batch = p4_pipeline.Prepared[hsrp.Result | Peer](targets=targets, handlers=(handler,), requests=requests)
         self.run = _Run(envelope=envelope, registration=envelope.registration_sha256, owner=owner)
         return batch
+
+
+def _state_version_budgets(budgets: Budgets) -> None:
+    k.require(type(budgets) is Budgets and all(type(value) is int and value > 0 for value in
+        (budgets.bundle_bytes, budgets.artifact_bytes, budgets.artifacts, budgets.nesting_depth,
+         budgets.numeric_digits, budgets.compression_ratio, budgets.archive_index_bytes)), "hsrp_state_version_budget")
+
+
+def _state_version_graph(envelope: p4.Envelope, budgets: Budgets) -> None:
+    """Close current finite envelope graphs before any detached input comparison."""
+    _state_version_budgets(budgets)
+    k.require(type(envelope) is p4.Envelope and type(envelope.raw) is bytes
+              and type(envelope.context) is str and type(envelope.registration_sha256) is str
+              and type(envelope.base) is SyntheticGroup, "hsrp_state_version_graph")
+    base = envelope.base
+    k.require(type(base.raw) is bytes and type(base.id) is str and type(base.schema) is str
+              and type(base.nodes) is tuple and type(base.captures) is tuple
+              and type(envelope.targets) is tuple and type(envelope.captures) is tuple, "hsrp_state_version_graph")
+    validate_version_state_graph(base.declaration)
+    validate_version_state_graph(envelope.declaration)
+    for node in base.nodes:
+        k.require(type(node) is Node and all(type(value) is str for value in (node.group, node.id, node.discovery_id))
+                  and type(node.ports) is tuple and all(type(port) is str for port in node.ports), "hsrp_state_version_graph")
+        validate_version_state_graph(node.declaration)
+    for capture in base.captures:
+        validate_fhrp_request_graph(CaptureRequest(capture=capture, context=None))
+    for target in envelope.targets:
+        k.require(type(target) is p4.Target and all(type(value) is str for value in (target.id, target.operation, target.owner))
+                  and type(target.params) is bytes and any(target.node is node for node in base.nodes), "hsrp_state_version_graph")
+        validate_version_state_graph(target.declaration)
+    for member in envelope.captures:
+        k.require(type(member) is p4.CaptureMember and all(type(value) is str for value in (member.id, member.path, member.sha256))
+                  and type(member.raw) is bytes and any(member.target is target for target in envelope.targets), "hsrp_state_version_graph")
+
+
+def validate_state_version_correspondence(
+    envelope: p4.Envelope, budgets: Budgets, inputs: VersionInputs,
+) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
+    """Recheck current registry correspondence; supplied data is not admission or origin."""
+    _state_version_graph(envelope, budgets)
+    profile.compile_state_version_profile()
+    validate_version_inputs(inputs)
+    _, domains, _ = _scope(envelope, budgets)
+    k.require(len(domains) == len(inputs.targets) and all(
+        (target.context, target.node.key) in inputs.indexed
+        and inputs.indexed[target.context, target.node.key].node is target.node
+        and inputs.indexed[target.context, target.node.key].groups == target.groups for target in domains), "hsrp_state_version_population")
+    brief = {target.node.key: target for target in envelope.targets if target.operation == hsrp.OP}
+    declared: dict[k.EntityKey, p4.Target] = {}
+    for target in envelope.targets:
+        if target.operation == hsrp.OP:
+            continue
+        k.require(target.operation == all_hsrp.OP and target.owner == profile.STEP.id
+                  and target.node.key not in declared and target.node.key in brief, "hsrp_state_version_target")
+        params = record(strict_json(target.params, budgets.nesting_depth, budgets.numeric_digits), ("groups",))
+        groups = tuple(sorted(_pairs(params["groups"])))
+        domain = inputs.indexed[envelope.context, target.node.key]
+        k.require(target.node is domain.node and groups == domain.groups, "hsrp_state_version_target")
+        declared[target.node.key] = target
+    members = {member.id: member for member in envelope.captures if member.target.operation == all_hsrp.OP}
+    k.require(len(members) == len(inputs.requests) and set(members) == set(inputs.expected)
+              and len({member.target.node.key for member in members.values()}) == len(members), "hsrp_state_version_capture")
+    for request in inputs.requests:
+        member, capture = members[request.capture.id], request.capture
+        k.require(member.target is declared.get(capture.source) and capture.raw is member.raw
+                  and capture.bytes_sha256 == member.sha256 and request.context == envelope.context, "hsrp_state_version_capture")
+    result: dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]] = {}
+    for domain in inputs.targets:
+        evidence = domain.node.declaration.evidence + envelope.declaration.evidence + brief[domain.node.key].declaration.evidence
+        if domain.node.key in declared:
+            evidence += declared[domain.node.key].declaration.evidence
+        k.require(all(type(ref) is k.RegistryRef for ref in evidence), "hsrp_state_version_declaration")
+        result[domain.context, domain.node.key] = cast(tuple[k.RegistryRef, ...], evidence)
+    return result
+
