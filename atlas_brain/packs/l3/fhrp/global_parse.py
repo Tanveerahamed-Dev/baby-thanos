@@ -2,23 +2,26 @@
 import re
 from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
 from typing import cast
 
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence import p4_admission as p4
 from atlas_brain.evidence.admission import Budgets, record, strict_json, string
-from atlas_brain.evidence.capture import Capture
+from atlas_brain.evidence.capture import Capture, Scope
 from atlas_brain.evidence.synthetic import SCHEMA as BASE_SCHEMA
 from atlas_brain.evidence.synthetic import Node, SyntheticGroup
 from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
-from atlas_brain.model.pack_registration import PackDeclaration
+from atlas_brain.model.pack_registration import CompiledPackSet, PackDeclaration
 from atlas_brain.packs.l3.fhrp import build
 from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
 from atlas_brain.packs.l3.fhrp import parse_hsrp_brief as hsrp
 from atlas_brain.packs.l3.fhrp import version_profile as profile
 from atlas_brain.packs.l3.fhrp.version_inputs import (
     VersionInputs,
+    prepare_version_request,
+    retain_version_inputs,
     validate_fhrp_request_graph,
     validate_version_inputs,
     validate_version_state_graph,
@@ -322,3 +325,50 @@ def validate_state_version_correspondence(
         result[domain.context, domain.node.key] = cast(tuple[k.RegistryRef, ...], evidence)
     return result
 
+
+def validate_brief_request(request: CaptureRequest) -> None:
+    """Close only the current fixed BRIEF model; no body, admission or origin verdict."""
+    validate_fhrp_request_graph(request)
+    capture = request.capture
+    k.require(capture.operation == "iosxe.show_standby_brief" and capture.rendered == "show standby brief"
+              and capture.codec in ("utf-8", "ascii")
+              and capture.scope == Scope(node=capture.source, plane="exec", context=None, vrf=None,
+                  instance=None, vdc=None, tenant=None, afi=None), "hsrp_state_version_request")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StateVersionInputs:
+    envelope: p4.Envelope
+    budgets: Budgets
+    compiled: CompiledPackSet
+    targets: tuple[p4.Target, ...]
+    domains: tuple[build.Target, ...]
+    requests: tuple[CaptureRequest, ...]
+    version: VersionInputs
+    declarations: dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]
+
+
+def prepare_state_version_inputs(root: Path, budgets: Budgets) -> StateVersionInputs:
+    """Admit the fixed FHRP-only two-operation inputs; return comparison data, not a seal."""
+    k.require(isinstance(root, Path), "hsrp_state_version_input")
+    _state_version_budgets(budgets)
+    compiled = profile.compile_state_version_profile()
+    identity = compiled.catalogue_bytes, compiled.registration_bytes, compiled.registration_sha256
+    envelope = p4.admit_folder(root, budgets, declarations=(profile.STATE_VERSION_DECLARATION,))
+    _state_version_graph(envelope, budgets)
+    k.require(envelope.registration_sha256 == compiled.registration_sha256, "hsrp_state_version_registration")
+    targets, domains, requests = _scope(envelope, budgets)
+    for request in requests:
+        validate_brief_request(request)
+    all_requests = tuple(prepare_version_request(capture_id=member.id, source=member.target.node.key,
+        context=envelope.context, raw=member.raw) for member in envelope.captures if member.target.operation == all_hsrp.OP)
+    version = retain_version_inputs(domains, all_requests)
+    declarations = validate_state_version_correspondence(envelope, budgets, version)
+    fresh = profile.compile_state_version_profile()
+    k.require(identity == (compiled.catalogue_bytes, compiled.registration_bytes, compiled.registration_sha256)
+              == (fresh.catalogue_bytes, fresh.registration_bytes, fresh.registration_sha256)
+              and envelope.registration_sha256 == identity[2], "hsrp_state_version_registration")
+    for request in requests:
+        validate_brief_request(request)
+    return StateVersionInputs(envelope=envelope, budgets=budgets, compiled=compiled,
+        targets=targets, domains=domains, requests=requests, version=version, declarations=declarations)
