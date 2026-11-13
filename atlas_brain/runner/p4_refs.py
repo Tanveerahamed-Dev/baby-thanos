@@ -13,6 +13,7 @@ from atlas_brain.evidence.synthetic import SCHEMA as BASE_SCHEMA
 from atlas_brain.evidence.synthetic import Node, SyntheticGroup
 from atlas_brain.kernel import states as k
 from atlas_brain.model.pack_registration import compile_packs
+from atlas_brain.model.store import FactReader, FactStore
 from atlas_brain.packs.l2.etherchannel import build as ec
 from atlas_brain.packs.l2.stp import build as stp
 from atlas_brain.packs.l3.fhrp import build as fhrp
@@ -73,6 +74,7 @@ class ProofIndex[T: Value = LegacyValue]:
 
     def __init__(self, execution: pipe.Result[T], budgets: Budgets) -> None:
         roots = type(self) is RootProofIndex
+        virtual_ips = type(self) is FhrpVipProofIndex
         _need(type(execution) is pipe.Result and type(execution.envelope) is Envelope, "capture")
         self.execution, self.budgets = execution, budgets
         envelope = execution.envelope
@@ -82,9 +84,11 @@ class ProofIndex[T: Value = LegacyValue]:
         full = compile_packs((stp.DECLARATION, ec.DECLARATION, fhrp.DECLARATION)).registration_sha256
         extended = (compile_packs((stp.ROOT_DECLARATION, ec.DECLARATION, fhrp.DECLARATION)).registration_sha256
                     if roots else "")
-        _need(envelope.registration_sha256 == extended if roots else envelope.registration_sha256 in (legacy, full), "profile")
+        if virtual_ips:
+            extended = compile_packs((stp.DECLARATION, ec.DECLARATION, fhrp.VIP_DECLARATION)).registration_sha256
+        _need(envelope.registration_sha256 == extended if roots or virtual_ips else envelope.registration_sha256 in (legacy, full), "profile")
         owners = {stp.BINDING.operation: stp.BINDING.step, ec.BINDING.operation: ec.BINDING.step}
-        if roots or envelope.registration_sha256 == full:
+        if roots or virtual_ips or envelope.registration_sha256 == full:
             owners[fhrp.BINDING.operation] = fhrp.BINDING.step
         self.registry_sha256, self.base_registry_sha256 = sha256(envelope.raw).hexdigest(), sha256(envelope.base.raw).hexdigest()
         base = record(strict_json(envelope.base.raw, budgets.nesting_depth, budgets.numeric_digits),
@@ -358,3 +362,62 @@ def _capture_leaf[T: Value](index: ProofIndex[T], ref: k.EvidenceRef, scope: Sco
         raise RunnerRefused("p4_projection_reference")
     _need(actual == ref.excerpt_sha256, "span")
     return leaf
+
+
+class FhrpVipProofIndex(ProofIndex[Value]):
+    """Fixed opt-in scopes, initially the existing five facts; not standalone run admission."""
+    virtual_ip_reader: FactReader | None = None
+
+    def close_virtual_ip(self, result: fhrp.VipResult, reader: FactReader) -> None:
+        _need(not any(scope.reference.fact == fhrp.REPORTED_VIRTUAL_IP for scope in self.scopes), "profile")
+        originals = tuple(scope for scope in self.scopes if scope.reference.fact == fhrp.REPORTED_STATE)
+        for source in originals:
+            cells: list[tuple[k.CaptureId, fhrp.hsrp.Row, bool]] = []
+            labels = dict(source.labels)
+            for output in self.by_target[source.target.id]:
+                for row, _ in fhrp.reported_state_proofs(output):
+                    if row.interface.raw == labels["interface"] and row.group.raw == labels["group"]:
+                        complete = output.value.reason is None and row.reason is None and row.address_family == "ipv4"
+                        complete = complete and output.receipt.parse.quality == "complete" and output.receipt.capture.integrity is k.IntegrityState.COMPLETE
+                        cells.append((output.receipt.capture.id, row, complete and row.virtual_ip.kind == "ipv4"))
+            spans: set[tuple[k.CaptureId, k.ByteSpan]] = set()
+            anchors: set[tuple[k.CaptureId, k.ByteSpan]] = set()
+            witnesses: set[tuple[k.CaptureId, k.ByteSpan]] = set()
+            if len(cells) == 1 and cells[0][2]:
+                identity, row, _ = cells[0]
+                spans.update((identity, point) for point in (row.interface.span, row.group.span, row.span, row.virtual_ip.token.span))
+                anchors.add((identity, row.virtual_ip.token.span))
+            else:
+                witnesses.update((identity, point) for identity, row, _ in cells for point in (row.span, row.virtual_ip.token.span))
+            reference = k.FactRef(fact=fhrp.REPORTED_VIRTUAL_IP, subject=source.reference.subject)
+            _need(reference not in self.bound, "population")
+            self.bound[reference] = Scope(reference=reference, target=source.target, labels=source.labels,
+                declarations=source.declarations, spans=frozenset(spans), positive=frozenset(anchors),
+                required=frozenset(spans), witnesses=frozenset(witnesses))
+        self.ordered = tuple(self.bound[key] for key in sorted(self.bound, key=lambda key: (key.fact, key.subject)))
+        expected = {k.FactRef(fact=fhrp.REPORTED_VIRTUAL_IP, subject=scope.reference.subject) for scope in originals}
+        _need(type(result) is fhrp.VipResult and type(result.store) is FactStore and type(result.rows) is tuple
+              and all(type(row) is fhrp.Row for row in result.rows) and type(reader) is FactReader and reader.store is result.store,
+              "store")
+        _need(result.store.owners == {fhrp.REPORTED_VIRTUAL_IP: fhrp.VIP_STEP.id}
+              and set(result.store.values) == expected and len(result.rows) == len(expected), "store")
+        found: set[k.FactRef] = set()
+        for fact_row in result.rows:
+            reference = k.FactRef(fact=fhrp.REPORTED_VIRTUAL_IP, subject=fact_row.subject)
+            _need(reference in expected and reference not in found and reader.read(fact=reference.fact, subject=fact_row.subject) is fact_row.value, "store")
+            found.add(reference)
+            self.resolve(self.scope(reference.fact, fact_row.subject), fact_row.value.evidence, positive=type(fact_row.value) is k.Known)
+        self.virtual_ip_reader = reader
+
+    def resolve_virtual_ip_reference(self, reference: k.FactRef) -> list[dict[str, object]]:
+        """Expand one owning VIP reference to leaves inside a fresh factory/check composition.
+
+        This is not run admission, a value seal or a general recursive FactRef resolver.
+        """
+        reader = self.virtual_ip_reader
+        _need(type(reference) is k.FactRef and reference.fact == fhrp.REPORTED_VIRTUAL_IP and reader is not None, "reference")
+        if reader is None:
+            raise RunnerRefused("p4_projection_reference")
+        value = reader.read(fact=reference.fact, subject=reference.subject)
+        _need(type(value) in (k.Known, k.Unknown), "reference")
+        return self.resolve(self.scope(reference.fact, reference.subject), value.evidence, positive=type(value) is k.Known)
