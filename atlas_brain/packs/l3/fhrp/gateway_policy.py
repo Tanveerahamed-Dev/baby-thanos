@@ -123,16 +123,16 @@ def plan_for_declared_scope(
         raise BudgetExceeded("fhrp_gateway_policy")
     digest = sha256(raw).hexdigest()
     rows: list[Gateway] = []
-    for index, (item, key, points) in enumerate(selected):
+    for index, (item, key, participants) in enumerate(selected):
         refs = (k.RegistryRef(table=TABLE, row_id=item.id, table_digest=digest, citation=f"/gateways/{index}"),)
         binding: k.Known[str] | k.Unknown = k.Known(value=item.id, basis=k.Basis.DECLARED, raw=item.id, evidence=refs)
         if key is None:
             needs = tuple(k.EvidenceNeed(node=p.node, operation=build.hsrp.OP,
                 params=(("group", p.group), ("interface", p.interface)), resolves=(), reruns=(str(build.SOURCE_STEP.id),),
-                after_s=None, unprintable=("declared_l2_domain",)) for p in points)
+                after_s=None, unprintable=("declared_l2_domain",)) for p in participants)
             binding = k.Unknown(reason=k.UnknownReason.JOIN_UNPROVEN, detail="declared_gateway_domain_missing",
                                 evidence=refs, candidates=(), next_evidence=needs)
-        rows.append(Gateway(policy_id=item.id, key=key, participants=points, binding=binding))
+        rows.append(Gateway(policy_id=item.id, key=key, participants=participants, binding=binding))
     coverage = k.Unknown(reason=k.UnknownReason.DENOMINATOR_OPEN, detail="caller_declared_fhrp_gateways_only",
         evidence=tuple(ref for row in rows for ref in row.binding.evidence) or envelope.declaration.evidence,
         candidates=(), next_evidence=())
