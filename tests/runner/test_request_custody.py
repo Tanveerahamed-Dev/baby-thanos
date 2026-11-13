@@ -117,7 +117,7 @@ def test_equal_copies_cannot_replace_either_original_pointer_after_real_executio
         requests = (replace(item), *requests[1:])
     else:
         object.__setattr__(item, "capture", replace(item.capture))
-    assert [asdict(item) for item in requests] == [asdict(row.request) for row in retained]
+    assert {item.capture.id: asdict(item) for item in requests} == {row.identity: row.value for row in retained}
     with pytest.raises(ValueError, match="^" + PREFIX + "mismatch$"):
         custody.validate_retained_requests(requests, retained)
 
