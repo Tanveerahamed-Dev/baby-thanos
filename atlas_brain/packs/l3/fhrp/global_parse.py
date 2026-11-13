@@ -350,7 +350,7 @@ class StateVersionInputs:
 
 def prepare_state_version_inputs(root: Path, budgets: Budgets) -> StateVersionInputs:
     """Admit the fixed FHRP-only two-operation inputs; return comparison data, not a seal."""
-    k.require(isinstance(root, Path), "hsrp_state_version_input")
+    k.require(isinstance(cast(object, root), Path), "hsrp_state_version_input")
     _state_version_budgets(budgets)
     compiled = profile.compile_state_version_profile()
     identity = compiled.catalogue_bytes, compiled.registration_bytes, compiled.registration_sha256
