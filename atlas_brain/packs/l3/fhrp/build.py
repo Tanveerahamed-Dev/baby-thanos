@@ -518,3 +518,92 @@ def build_reported_virtual_ip(targets: tuple[Target, ...], requests: tuple[Captu
     for row in values:
         writer.write(fact=REPORTED_VIRTUAL_IP, subject=row.subject, value=row.value)
     return VipResult(source=source, store=store, rows=tuple(values), registration_sha256=compiled.registration_sha256)
+
+
+class VirtualIpOwner(StateOwner):
+    """One owning GLOBAL run; source carriers remain inspectable and are never admission seals."""
+
+    def __init__(self, envelope: p4.Envelope, budgets: Budgets, targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> None:
+        self.contract = _vip_contract()
+        super().__init__(envelope, budgets, targets, requests)
+        self.retained = custody.retain_requests(self.plan.requests)
+        self.source: Result | None = None
+
+    def virtual_ip_originals(self, executed: tuple[Executed[hsrp.Result], ...]) -> dict[tuple[str, k.EntityKey, str, str], tuple[Executed[hsrp.Result], hsrp.Row]]:
+        custody.validate_retained_requests(self.plan.requests, self.retained)
+        _need(self.contract == _vip_contract() and set(self.produced) == set(self.plan.expected), "vip_profile")
+        checked = tuple(self.own(output) for output in executed)
+        originals: dict[tuple[str, k.EntityKey, str, str], tuple[Executed[hsrp.Result], hsrp.Row]] = {}
+        for output in checked:
+            for parsed, _ in _claims(output):
+                token = parsed.virtual_ip.token
+                _need(type(token.value) is str and token.value == token.raw, "vip_value")
+                originals[(output.receipt.context or "", output.receipt.capture.source,
+                    parsed.interface.raw, parsed.group.raw)] = output, parsed
+        return originals
+
+    def finish(self, executed: tuple[Executed[hsrp.Result], ...]) -> Result:
+        self.virtual_ip_originals(executed)
+        self.source = super().finish(executed)
+        return self.source
+
+    def virtual_ip_rows(self) -> tuple[Row, ...]:
+        source = self.source
+        _need(source is not None and self.finished and self.contract == _vip_contract(), "vip_source")
+        if source is None:
+            raise ValueError("hsrp_vip_source")
+        originals = self.virtual_ip_originals(source.executed)
+        self.validate_gateway_source_values(source, bind_reader(source.store, step=SOURCE_STEP), source.executed)
+        reader = bind_reader(source.store, step=VIP_STEP)
+        rows: list[Row] = []
+        for row in source.rows:
+            state = reader.read(fact=REPORTED_STATE, subject=row.subject)
+            _need(state is row.value, "vip_source")
+            if isinstance(state, k.Unknown):
+                value: k.Known[str] | k.Unknown = _vip_unknown(row, state.reason, state.evidence, VIP_STEP)
+            else:
+                output, parsed = originals[(row.target.context, row.target.node.key, row.interface, row.group)]
+                capture, token = output.receipt.capture, parsed.virtual_ip.token
+                declarations = tuple(ref for ref in state.evidence if type(ref) is k.RegistryRef)
+                points = (parsed.interface.span, parsed.group.span, parsed.span, token.span)
+                if parsed.virtual_ip.kind == "ipv4":
+                    _need(type(token.value) is str and token.value == token.raw and hsrp.ipv4_literal(token.raw), "vip_value")
+                    evidence = declarations + tuple(k.EvidenceRef(capture=capture.id, locator=point,
+                        role=k.EvidenceRole.SUBJECT, excerpt_sha256=sha256(capture.raw[point.start:point.end]).hexdigest()) for point in points)
+                    value = k.Known(value=token.raw, raw=token.raw, basis=k.Basis.OBSERVED, evidence=evidence)
+                else:
+                    _need(parsed.virtual_ip.kind == "unknown" and token.raw == "unknown", "vip_value")
+                    evidence = declarations + tuple(k.EvidenceRef(capture=capture.id, locator=point,
+                        role=k.EvidenceRole.WITNESS, excerpt_sha256=sha256(capture.raw[point.start:point.end]).hexdigest())
+                        for point in (parsed.span, token.span))
+                    value = _vip_unknown(row, k.UnknownReason.NOT_OBSERVABLE, evidence, VIP_STEP)
+            rows.append(Row(target=row.target, interface=row.interface, group=row.group, subject=row.subject, value=value))
+        return tuple(rows)
+
+    def build_virtual_ip(self) -> VipResult:
+        rows = self.virtual_ip_rows()
+        source = self.source
+        if source is None:
+            raise ValueError("hsrp_vip_source")
+        store = FactStore()
+        writer = bind_writer(store, step=VIP_STEP)
+        for row in rows:
+            writer.write(fact=REPORTED_VIRTUAL_IP, subject=row.subject, value=row.value)
+        return VipResult(source=source, store=store, rows=rows, registration_sha256=self.registration)
+
+    def validate_virtual_ip_values(self, result: VipResult, reader: FactReader) -> None:
+        _need(type(result) is VipResult and result.source is self.source and result.registration_sha256 == self.registration
+              and type(result.rows) is tuple and all(type(row) is Row for row in result.rows)
+              and type(reader) is FactReader and reader.store is result.store, "vip_source")
+        wanted = self.virtual_ip_rows()
+        actual = {row.subject: row for row in result.rows}
+        _need(len(actual) == len(result.rows) == len(wanted) and set(actual) == {row.subject for row in wanted}, "vip_population")
+        for expected in wanted:
+            row, value = actual[expected.subject], expected.value
+            _need(row.target is expected.target and row.interface == expected.interface and row.group == expected.group
+                  and row.value == value and reader.read(fact=REPORTED_VIRTUAL_IP, subject=row.subject) is row.value, "vip_value")
+            if isinstance(value, k.Known):
+                _need(type(row.value) is k.Known and type(row.value.value) is str and type(row.value.raw) is str
+                      and row.value.basis is k.Basis.OBSERVED, "vip_value")
+            else:
+                _need(type(row.value) is k.Unknown and row.value.reason is value.reason, "vip_value")
