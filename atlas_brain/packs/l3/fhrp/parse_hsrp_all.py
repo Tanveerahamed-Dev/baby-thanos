@@ -1,4 +1,5 @@
 """Bounded synthetic IPv4 HSRP-all version observations; no defaults or qualification."""
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -270,3 +271,34 @@ def validate_claims(capture: Capture, result: Result) -> tuple[tuple[Row, tuple[
                 points.update(token.span for _, token in item.fields if item.rule_id == "virtual_ip")
         proofs.append((row, tuple(sorted(points, key=lambda span: (span.start, span.end)))))
     return tuple(proofs)
+
+
+def capture_integrity(raw: bytes) -> k.IntegrityState:
+    """Classify only the declared synthetic CLI frame; parse_capture owns every body byte."""
+    k.require(type(raw) is bytes, "hsrp_all_frame")
+    text = raw.decode("utf-8").replace("\r\n", "\n")
+    k.require(not any(ord(char) < 32 and char not in "\n\t" or 127 <= ord(char) <= 159
+                      or char in "\u2028\u2029" for char in text), "hsrp_all_frame")
+    lines = [line for line in text.split("\n") if line.strip(" \t")]
+    opening = re.fullmatch(r"([A-Za-z0-9_.:-]+[>#]) ?(.+)", lines[0], re.ASCII) if lines else None
+    missing = False
+    if opening:
+        k.require(opening[2] == COMMAND, "hsrp_all_frame")
+        missing = lines[-1] != opening[1]
+        lines = lines[1:] if missing else lines[1:-1]
+    elif lines and lines[0] == COMMAND:
+        lines = lines[1:]
+    forbidden = (r"(?:[a-z0-9_.:-]+(?:\([^)]*\))?[>#].*|(?:do[ \t]+)?sh(?:ow|o)?(?:[ \t].*)?|!|"
+                 r"(?:end|exit|configure|building configuration|current configuration|banner|interface|router|vlan|"
+                 r"hostname|spanning-tree|switchport|standby|description|shutdown|no|default)(?:[ \t:].*)?)")
+    # This observation label is not a config command; parse_capture still owns its entire line.
+    k.require(not any(re.fullmatch(forbidden, line.strip().casefold(), re.ASCII)
+                      for line in lines if not line.startswith("  Standby router is ")), "hsrp_all_frame")
+    if any(line.lstrip().startswith("%") or line.strip().casefold() in ("command authorization failed", "command authorization failed.") for line in lines):
+        return k.IntegrityState.ERROR
+    if any(line.strip().casefold() in ("--more--", "<--- more --->", "--(more)--") for line in lines):
+        return k.IntegrityState.PAGING_ARTIFACTS
+    if any(line.strip().casefold() in ("[truncated]", "<output truncated>") for line in lines):
+        return k.IntegrityState.TRUNCATED
+    k.require(not missing, "hsrp_all_frame")
+    return k.IntegrityState.COMPLETE if lines else k.IntegrityState.EMPTY
