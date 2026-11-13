@@ -1,6 +1,6 @@
 # ADR-0030: Original FHRP source preparation
 
-Status: proposed.
+Status: accepted by owner in PR #142.
 
 `prepare_fhrp_source(root, budgets)` owns one fresh fixed STP/EC/HSRP run.
 Callers cannot submit Stores, executions, targets or prepared carriers.
