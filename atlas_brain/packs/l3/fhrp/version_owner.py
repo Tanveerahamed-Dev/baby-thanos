@@ -86,7 +86,7 @@ class VersionOwner(Parser[parser.Result]):
     inputs: _Invocation | None = None
 
     @staticmethod
-    def for_local(targets: tuple[build.Target, ...], requests: tuple[CaptureRequest, ...]) -> "VersionOwner":
+    def for_local(targets: tuple[build.Target, ...], requests: tuple[CaptureRequest, ...]) -> VersionOwner:
         return LocalVersionOwner(targets, requests)
 
     def validate_registration(self) -> None:
