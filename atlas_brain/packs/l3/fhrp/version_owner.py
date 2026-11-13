@@ -1,12 +1,16 @@
 """Owning VERSION execution, candidate rows and Store production; no source admission."""
 from dataclasses import asdict, dataclass
 from hashlib import sha256
+from typing import cast
 
+from atlas_brain.evidence import p4_admission as p4
+from atlas_brain.evidence.admission import Budgets
 from atlas_brain.evidence.capture import Capture
 from atlas_brain.kernel import states as k
 from atlas_brain.model.specs import StepSpec
 from atlas_brain.model.store import FactReader, FactStore, bind_writer
 from atlas_brain.packs.l3.fhrp import build
+from atlas_brain.packs.l3.fhrp import global_parse as global_inputs
 from atlas_brain.packs.l3.fhrp import parse_hsrp_all as parser
 from atlas_brain.packs.l3.fhrp import version_profile as profile
 from atlas_brain.packs.l3.fhrp.version_inputs import (
@@ -50,7 +54,7 @@ def _state(value: _Invocation | None) -> _Invocation:
     return value
 
 
-def _rows(state: _Invocation, outcomes: dict[_Key, tuple[Executed[parser.Result], _Claims]]) -> tuple[build.Row, ...]:
+def _rows(state: _Invocation, outcomes: dict[_Key, tuple[Executed[parser.Result], _Claims]], declarations: dict[_Key, tuple[k.RegistryRef, ...]]) -> tuple[build.Row, ...]:
     rows: list[build.Row] = []
     for key in sorted(state.source.indexed):
         target, outcome = state.source.indexed[key], outcomes.get(key)
@@ -61,7 +65,7 @@ def _rows(state: _Invocation, outcomes: dict[_Key, tuple[Executed[parser.Result]
             rich = candidates[0] if len(candidates) == 1 else None
             reason = reason or (rich.reason if rich is not None else
                                k.UnknownReason.CONFLICTING_EVIDENCE if candidates else k.UnknownReason.SUBJECT_ABSENT_FROM_CAPTURE)
-            evidence: tuple[k.Evidence, ...] = target.node.declaration.evidence
+            evidence: tuple[k.Evidence, ...] = declarations[key]
             if out is not None:
                 capture = out.receipt.capture
                 evidence += (k.EvidenceRef(capture=capture.id, locator=k.WholeCapture(), role=k.EvidenceRole.WITNESS,
@@ -75,7 +79,7 @@ def _rows(state: _Invocation, outcomes: dict[_Key, tuple[Executed[parser.Result]
                 refs = tuple(k.EvidenceRef(capture=capture.id, locator=point, role=k.EvidenceRole.SUBJECT,
                     excerpt_sha256=sha256(capture.raw[point.start:point.end]).hexdigest()) for point in points)
                 value: k.Known[str] | k.Unknown = k.Known(value=rich.version.raw, raw=rich.version.raw,
-                    basis=k.Basis.OBSERVED, evidence=target.node.declaration.evidence + refs)
+                    basis=k.Basis.OBSERVED, evidence=declarations[key] + refs)
             else:
                 if reason is None:
                     raise ValueError("hsrp_version_value")
@@ -113,6 +117,15 @@ class VersionOwner(Parser[parser.Result]):
     @staticmethod
     def for_local(targets: tuple[build.Target, ...], requests: tuple[CaptureRequest, ...]) -> VersionOwner:
         return LocalVersionOwner(targets, requests)
+
+    @staticmethod
+    def for_global_state_version(envelope: p4.Envelope, budgets: Budgets, targets: tuple[build.Target, ...],
+                                 requests: tuple[CaptureRequest, ...]) -> GlobalVersionOwner:
+        return GlobalVersionOwner(envelope, budgets, targets, requests)
+
+    def declaration_evidence(self) -> dict[_Key, tuple[k.RegistryRef, ...]]:
+        return {key: cast(tuple[k.RegistryRef, ...], target.node.declaration.evidence)
+                for key, target in _state(self.inputs).source.indexed.items()}
 
     def validate_registration(self) -> None:
         raise ValueError("hsrp_version_registration_context")
@@ -165,7 +178,7 @@ class VersionOwner(Parser[parser.Result]):
             target = state.source.indexed[key]
             _need(out.value.reason is not None or all((row.interface.raw, row.group.raw) in target.groups for row in out.value.rows), "population")
             outcomes[key] = out, state.claims[out.receipt.capture.id]
-        return _rows(state, outcomes)
+        return _rows(state, outcomes, self.declaration_evidence())
 
 
     def finish[T](self, outputs: tuple[Executed[T], ...]) -> VersionResult:
@@ -250,6 +263,30 @@ class LocalVersionOwner(VersionOwner):
     def validate_registration(self) -> None:
         state = _state(self.inputs)
         _need(profile.compile_version_profile().registration_sha256 == state.registration_sha256, "profile")
+
+
+class GlobalVersionOwner(VersionOwner):
+    """Own one compound run's VERSION subset; envelope metadata is correspondence data."""
+
+    def __init__(self, envelope: p4.Envelope, budgets: Budgets, targets: tuple[build.Target, ...],
+                 requests: tuple[CaptureRequest, ...]) -> None:
+        profile.compile_state_version_profile()
+        source = retain_version_inputs(targets, requests)
+        global_inputs.validate_state_version_correspondence(envelope, budgets, source)
+        k.digest(envelope.registration_sha256)
+        self.envelope, self.budgets = envelope, budgets
+        self.inputs = _Invocation(source=source, registration_sha256=envelope.registration_sha256,
+                                  produced={}, produced_values={}, claims={}, owned={})
+
+    def validate_registration(self) -> None:
+        state = _state(self.inputs)
+        profile.compile_state_version_profile()
+        global_inputs.validate_state_version_correspondence(self.envelope, self.budgets, state.source)
+        _need(type(self.envelope.registration_sha256) is str
+              and self.envelope.registration_sha256 == state.registration_sha256, "global_registration")
+
+    def declaration_evidence(self) -> dict[_Key, tuple[k.RegistryRef, ...]]:
+        return global_inputs.validate_state_version_correspondence(self.envelope, self.budgets, _state(self.inputs).source)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
