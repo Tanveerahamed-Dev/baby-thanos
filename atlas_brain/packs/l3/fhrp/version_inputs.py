@@ -162,3 +162,14 @@ def validate_version_inputs(inputs: VersionInputs) -> None:
     for item, node, declaration, value in inputs.retained_targets:
         _need(item.node is node and node.declaration is declaration and asdict(item) == value, "target")
     custody.validate_retained_requests(inputs.requests, inputs.retained_requests)
+
+
+def validate_version_state_graph(value: k.Known[str] | k.Unknown) -> None:
+    """Close only the current state graph; no canonical value or admission claim."""
+    _need(type(value) in (k.Known, k.Unknown), "state")
+    if isinstance(value, k.Known):
+        _need(type(value.value) is str, "state")
+        _evidence(value.evidence)
+        k.Known(value=value.value, basis=value.basis, evidence=value.evidence, raw=value.raw)
+    else:
+        _unknown(value)

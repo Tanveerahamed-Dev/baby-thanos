@@ -4,7 +4,8 @@ from hashlib import sha256
 
 from atlas_brain.evidence.capture import Capture
 from atlas_brain.kernel import states as k
-from atlas_brain.model.store import FactStore, bind_writer
+from atlas_brain.model.specs import StepSpec
+from atlas_brain.model.store import FactReader, FactStore, bind_writer
 from atlas_brain.packs.l3.fhrp import build
 from atlas_brain.packs.l3.fhrp import parse_hsrp_all as parser
 from atlas_brain.packs.l3.fhrp import version_profile as profile
@@ -13,6 +14,7 @@ from atlas_brain.packs.l3.fhrp.version_inputs import (
     retain_version_inputs,
     validate_version_inputs,
     validate_version_request,
+    validate_version_state_graph,
 )
 from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
 from atlas_brain.runner.pack_runtime import (
@@ -92,10 +94,21 @@ class VersionResult:
     registration_sha256: str
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Production:
+    result: VersionResult
+    store: FactStore
+    rows: tuple[build.Row, ...]
+    cells: tuple[tuple[k.EntityKey, k.Known[str] | k.Unknown], ...]
+    executed: tuple[Executed[parser.Result], ...]
+    registration_sha256: str
+
+
 class VersionOwner(Parser[parser.Result]):
     inputs: _Invocation | None = None
     production_attempted: bool = False
     production: VersionResult | None = None
+    completed: _Production | None = None
 
     @staticmethod
     def for_local(targets: tuple[build.Target, ...], requests: tuple[CaptureRequest, ...]) -> VersionOwner:
@@ -168,8 +181,64 @@ class VersionOwner(Parser[parser.Result]):
         for row in rows:
             writer.write(fact=profile.REPORTED_PROTOCOL_VERSION, subject=row.subject, value=row.value)
         result = VersionResult(store=store, rows=rows, executed=executed, registration_sha256=registration)
+        self.completed = _Production(result=result, store=store, rows=rows,
+            cells=tuple((row.subject, row.value) for row in rows), executed=executed, registration_sha256=registration)
         self.production = result
         return result
+
+
+    def validate_values(self, result: VersionResult, reader: FactReader) -> None:
+        """Close this actual production's canonical cells; no admission or recursive-proof seal."""
+        completed = self.completed
+        _need(type(completed) is _Production and type(result) is VersionResult, "value_source")
+        if completed is None:
+            raise ValueError("hsrp_version_value_source")
+        _need(self.production is completed.result and result is completed.result
+              and result.store is completed.store and type(result.store) is FactStore
+              and result.rows is completed.rows and result.executed is completed.executed
+              and type(result.registration_sha256) is str
+              and result.registration_sha256 == completed.registration_sha256, "value_source")
+        _need(type(reader) is FactReader and reader.store is completed.store and type(reader.step) is StepSpec, "reader")
+        step = reader.step
+        _need(all(type(value) is str for value in (step.id, step.pack, step.kind, step.scope, step.evaluator))
+              and step.pack == profile.PACK and type(step.reads) is tuple
+              and all(type(fact) is str for fact in step.reads) and step.reads == (profile.REPORTED_PROTOCOL_VERSION,)
+              and type(step.produces) is tuple and not step.produces, "reader")
+        StepSpec(id=step.id, pack=step.pack, kind=step.kind, scope=step.scope,
+                 reads=step.reads, produces=step.produces, evaluator=step.evaluator)
+        wanted = self.canonical_rows(completed.executed)
+        state = _state(self.inputs)
+        _need(result.registration_sha256 == state.registration_sha256 and type(result.rows) is tuple
+              and all(type(row) is build.Row and all(type(value) is str for value in
+              (row.subject, row.interface, row.group)) for row in result.rows), "value_population")
+        actual = {row.subject: row for row in result.rows}
+        expected = {row.subject: row for row in wanted}
+        cells = dict(completed.cells)
+        _need(len(actual) == len(result.rows) == len(expected) == len(wanted) == len(cells) == len(completed.cells)
+              and set(actual) == set(expected) == set(cells), "value_population")
+        store = completed.store
+        references = {k.FactRef(fact=profile.REPORTED_PROTOCOL_VERSION, subject=subject) for subject in expected}
+        _need(type(store.owners) is dict and type(store.values) is dict
+              and all(type(fact) is str and type(step_id) is str for fact, step_id in store.owners.items())
+              and store.owners == {profile.REPORTED_PROTOCOL_VERSION: profile.STEP.id}
+              and all(type(ref) is k.FactRef and type(ref.fact) is str and type(ref.subject) is str for ref in store.values)
+              and set(store.values) == references, "value_store")
+        for subject, original in expected.items():
+            row, value = actual[subject], actual[subject].value
+            _need(row.target is original.target and row.interface == original.interface and row.group == original.group
+                  and value is cells[subject], "value_cell")
+            validate_version_state_graph(value)
+            if isinstance(original.value, k.Known):
+                _need(type(value) is k.Known, "value_cell")
+                if not isinstance(value, k.Known):
+                    raise TypeError("hsrp_version_value_cell")
+                _need(type(value.value) is str and type(value.raw) is str and value.value == value.raw
+                      and value.value in ("1", "2") and value.basis is k.Basis.OBSERVED
+                      and value == original.value, "value_cell")
+            else:
+                _need(type(value) is k.Unknown and value == original.value, "value_cell")
+            _need(store.values[k.FactRef(fact=profile.REPORTED_PROTOCOL_VERSION, subject=subject)] is value
+                  and reader.read(fact=profile.REPORTED_PROTOCOL_VERSION, subject=subject) is value, "value_reader")
 
 
 class LocalVersionOwner(VersionOwner):
