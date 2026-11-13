@@ -31,10 +31,10 @@ jobs:
           uv run --no-sync python -c '
           import json, subprocess
           from pathlib import Path
-          from tools.fence import source_allowed
+          from tools.fence import bulk_source_refusals
           paths = subprocess.check_output(["git", "ls-files", "-z"]).decode("utf-8").split("\0")
           sources = {p: Path(p).read_text(encoding="utf-8") for p in paths if p.startswith("atlas_brain/") and p.endswith(".py")}
-          refused = sorted(p for p, source in sources.items() if not source_allowed(source, sources, p))
+          refused = sorted(p for p, refusals in bulk_source_refusals(sources).items() if refusals)
           print(json.dumps({"source_refusals": refused}, sort_keys=True))
           raise SystemExit(int(bool(refused)))
           '
