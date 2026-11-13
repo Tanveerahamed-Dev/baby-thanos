@@ -6,6 +6,7 @@ from atlas_brain.evidence.admission import Budgets
 from atlas_brain.kernel import states as k
 from atlas_brain.model.store import bind_reader
 from atlas_brain.packs.l2.etherchannel import build as ec
+from atlas_brain.packs.l2.etherchannel import protocol_check as check
 from atlas_brain.packs.l2.etherchannel import protocol_policy as policy
 from atlas_brain.packs.l2.etherchannel.global_parse import SummaryPack
 from atlas_brain.packs.l2.stp import build as stp
@@ -44,3 +45,21 @@ def prepare_protocol_comparisons(
     plan = policy.plan_for_declared_scope(tree.execution.envelope, budgets, policies, domains)
     k.require(plan.envelope is tree.execution.envelope, "etherchannel_protocol_policy_input")
     return ProtocolPreparation(source=source, execution=tree.execution, plan=plan)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProtocolEvaluation:
+    source: ec.Result
+    execution: p4_pipeline.Result[Value]
+    plan: policy.Plan
+    result: check.Result
+
+
+def evaluate_protocol_comparisons(
+    root: Path, budgets: Budgets, policies: tuple[policy.ProtocolPolicy, ...],
+) -> ProtocolEvaluation:
+    """Own fresh preparation for every evaluation; inspectable carriers are never inputs."""
+    prepared = prepare_protocol_comparisons(root, budgets, policies)
+    subjects = tuple(sorted(row.subject for row in prepared.source.rows))
+    result = check.evaluate_declared(prepared.plan, prepared.source.store, subjects)
+    return ProtocolEvaluation(source=prepared.source, execution=prepared.execution, plan=prepared.plan, result=result)
