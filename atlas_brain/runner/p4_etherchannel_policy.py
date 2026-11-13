@@ -1,4 +1,4 @@
-"""Fresh source-bound EC pair preparation; no verdict or standalone carrier admission."""
+"""Fresh EC pair preparation and conditional evaluation; no standalone carrier admission."""
 from dataclasses import dataclass
 from pathlib import Path
 

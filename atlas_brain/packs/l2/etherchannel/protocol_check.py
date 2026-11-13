@@ -5,7 +5,7 @@ from typing import Literal
 from atlas_brain.kernel import states as k
 from atlas_brain.model.specs import StepId, StepSpec
 from atlas_brain.model.steps import order_steps
-from atlas_brain.model.store import FactStore, bind_reader
+from atlas_brain.model.store import FactStore, StoredState, bind_reader
 from atlas_brain.packs.l2.etherchannel import build
 from atlas_brain.packs.l2.etherchannel import protocol_policy as policy
 
@@ -39,6 +39,14 @@ def _need(condition: bool, code: str) -> None:
     k.require(condition, "etherchannel_protocol_check_" + code)
 
 
+def _validate(value: StoredState) -> None:
+    _need(type(value) is k.Unknown or type(value) is k.Known, "value")
+    if isinstance(value, k.Known):
+        _need(type(value.value) is str and value.value in ("lacp", "pagp", "none_reported")
+              and value.basis is k.Basis.OBSERVED and type(value.raw) is str
+              and value.raw == {"lacp": "LACP", "pagp": "PAgP", "none_reported": "-"}[value.value], "value")
+
+
 def evaluate_declared(plan: policy.Plan, store: FactStore, subjects: tuple[k.EntityKey, ...]) -> Result:
     """Trusted component: caller owns original source, complete population and plan closure."""
     _need(type(plan) is policy.Plan and type(store) is FactStore and type(subjects) is tuple
@@ -46,12 +54,8 @@ def evaluate_declared(plan: policy.Plan, store: FactStore, subjects: tuple[k.Ent
     order_steps((build.STEP, STEP))
     reader = bind_reader(store, step=STEP)
     matrix = {subject: reader.read(fact=build.REPORTED_PROTOCOL, subject=subject) for subject in subjects}
-    for value in matrix.values():
-        _need(type(value) is k.Unknown or type(value) is k.Known, "value")
-        if isinstance(value, k.Known):
-            _need(type(value.value) is str and value.value in ("lacp", "pagp", "none_reported")
-                  and value.basis is k.Basis.OBSERVED and type(value.raw) is str
-                  and value.raw == {"lacp": "LACP", "pagp": "PAgP", "none_reported": "-"}[value.value], "value")
+    for subject in subjects:
+        _validate(matrix[subject])
     _need(all(point.subject in matrix for row in plan.rows for point in row.participants), "selector")
     findings: list[Finding] = []
     for row in plan.rows:
