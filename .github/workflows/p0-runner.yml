@@ -23,7 +23,7 @@ jobs:
           version: '0.13.1'
           enable-cache: false
       - run: uv sync --locked
-      - run: uv run --no-sync pytest -q -rs tests/runner
+      - run: uv run --no-sync pytest -q -rs --durations=20 tests/runner
       - name: Compare repeated demo bytes and retain evidence
         shell: bash
         run: |
