@@ -12,6 +12,7 @@ from atlas_brain.packs.l2.etherchannel.global_parse import SummaryPack
 from atlas_brain.packs.l2.stp import build as stp
 from atlas_brain.packs.l3.fhrp import build as fhrp
 from atlas_brain.packs.l3.fhrp import gateway_policy as policy
+from atlas_brain.packs.l3.fhrp import virtual_ip_check as check
 from atlas_brain.packs.l3.fhrp.global_parse import StandbyBriefPack, VirtualIpPack
 from atlas_brain.runner import p4 as observations
 from atlas_brain.runner import p4_pipeline
@@ -90,3 +91,24 @@ def prepare_fhrp_virtual_ip_source(root: Path, budgets: Budgets) -> FhrpVirtualI
     standby.virtual_ip_owner.validate_virtual_ip_values(virtual_ip, reader)
     index.close_virtual_ip(virtual_ip, reader)
     return FhrpVirtualIpSource(source=virtual_ip, execution=tree.execution, domains=domains, proofs=index)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class VirtualIpEvaluation:
+    preparation: FhrpVirtualIpSource
+    plan: policy.Plan
+    result: check.Result
+
+
+def evaluate_virtual_ip_comparisons(
+    root: Path, budgets: Budgets, policies: tuple[policy.GatewayPolicy, ...],
+) -> VirtualIpEvaluation:
+    """Own a fresh complete source; supplied carriers are never admission inputs."""
+    _inputs(root, budgets)
+    k.require(type(policies) is tuple and len(policies) <= 64
+              and all(type(item) is policy.GatewayPolicy for item in policies), "fhrp_virtual_ip_check_input")
+    prepared = prepare_fhrp_virtual_ip_source(root, budgets)
+    plan = policy.plan_for_declared_scope(prepared.execution.envelope, budgets, policies, prepared.domains)
+    k.require(plan.envelope is prepared.execution.envelope, "fhrp_virtual_ip_check_input")
+    result = check.evaluate_declared(plan, prepared.source.store, tuple(sorted(row.subject for row in prepared.source.rows)))
+    return VirtualIpEvaluation(preparation=prepared, plan=plan, result=result)
