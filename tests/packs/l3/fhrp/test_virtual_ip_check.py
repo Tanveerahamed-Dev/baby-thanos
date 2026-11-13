@@ -111,7 +111,7 @@ def test_trusted_report_twins_keep_every_operand_and_conditional_scope(tmp_path,
 def test_trusted_checker_rejects_unselected_last_cell_before_any_finding_even_empty(tmp_path, monkeypatch, empty, fault):
     folder(tmp_path / "inputs")
     source = runner.prepare_fhrp_virtual_ip_source(tmp_path / "inputs", LIMITS)
-    last = sorted(row.subject for row in source.source.rows)[-1]
+    last = max(row.subject for row in source.source.rows)
     selected = PAIR[1:] if last == next(row.subject for row in source.source.rows if row.interface == "Vl10") else PAIR[:1]
     plan = policy.plan_for_declared_scope(source.execution.envelope, LIMITS, () if empty else (gateway(participants=selected),), source.domains)
     value = next(row.value for row in source.source.rows if row.interface == "Vl10")
