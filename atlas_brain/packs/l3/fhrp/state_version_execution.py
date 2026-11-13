@@ -13,9 +13,16 @@ from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
 from atlas_brain.packs.l3.fhrp import parse_hsrp_brief as brief
 from atlas_brain.packs.l3.fhrp import version_owner as version
 from atlas_brain.packs.l3.fhrp import version_profile as profile
-from atlas_brain.packs.l3.fhrp.version_inputs import VersionInputs, validate_fhrp_request_graph
+from atlas_brain.packs.l3.fhrp.version_inputs import (
+    VersionInputs,
+    validate_fhrp_request_graph,
+)
 from atlas_brain.runner import pack_receipts as custody
-from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt, RetainedRequest
+from atlas_brain.runner.pack_receipts import (
+    CaptureRequest,
+    ParseReceipt,
+    RetainedRequest,
+)
 from atlas_brain.runner.pack_runtime import Executed, Handler, execute_parsers
 
 type _Key = tuple[str, k.EntityKey]
