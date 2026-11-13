@@ -18,7 +18,8 @@ from atlas_brain.model.pack_registration import (
     compile_packs,
 )
 from atlas_brain.model.specs import EntityKindSpec, FactSpec, StepId, StepSpec
-from atlas_brain.model.store import FactReader, FactStore, bind_writer
+from atlas_brain.model.store import FactReader, FactStore, bind_reader, bind_writer
+from atlas_brain.runner import pack_receipts as custody
 from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
 from atlas_brain.runner.pack_runtime import (
     Executed,
@@ -41,6 +42,14 @@ DECLARATION = PackDeclaration(pack=PACK, entity_kinds=(EntityKindSpec(id="fhrp_l
 
 SOURCE_STEP = StepSpec(id=StepId("l3.fhrp/prepare_gateway_source"), pack=PACK, kind="derive", scope="estate",
     reads=(REPORTED_STATE,), produces=(), evaluator="l3.fhrp.prepare_fhrp_source")
+
+REPORTED_VIRTUAL_IP = k.FactId("l3.fhrp.reported_virtual_ip")
+VIP_STEP = StepSpec(id=StepId("l3.fhrp/derive_virtual_ip"), pack=PACK, kind="derive", scope="device",
+    reads=(REPORTED_STATE,), produces=(REPORTED_VIRTUAL_IP,), evaluator="l3.fhrp.build_reported_virtual_ip")
+VIP_DECLARATION = PackDeclaration(pack=PACK, entity_kinds=(EntityKindSpec(id="fhrp_local", pack=PACK, root=False),),
+    facts=(FactSpec(id=REPORTED_STATE, pack=PACK, subject="fhrp_local", value_type="text", step=STEP.id),
+           FactSpec(id=REPORTED_VIRTUAL_IP, pack=PACK, subject="fhrp_local", value_type="text", step=VIP_STEP.id)),
+    relations=(), steps=(STEP, VIP_STEP), operations=(BINDING,))
 
 
 def _need(condition: bool, code: str) -> None:
@@ -409,3 +418,103 @@ def reported_state_proofs[T](output: Executed[T]) -> tuple[tuple[hsrp.Row, tuple
     if type(value) is not hsrp.Result or output.receipt.parse is not value.parse:
         raise ValueError("hsrp_proof_input")
     return _claims(Executed(receipt=output.receipt, value=value))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class VipResult:
+    source: Result
+    store: FactStore
+    rows: tuple[Row, ...]
+    registration_sha256: str
+
+
+class _VipAdapter(Parser[hsrp.Result]):
+    def __init__(self, expected: dict[k.CaptureId, CaptureRequest]) -> None:
+        self.expected = expected
+        self.produced: dict[k.CaptureId, hsrp.Result] = {}
+
+    def parse(self, request: CaptureRequest) -> Parsed[hsrp.Result]:
+        _need(request.capture.id in self.expected and request.capture is self.expected[request.capture.id].capture
+              and request.context == self.expected[request.capture.id].context and request.capture.id not in self.produced, "vip_source")
+        value = hsrp.parse_capture(request.capture)
+        self.produced[request.capture.id] = value
+        return value, value.parse
+
+
+def _vip_contract() -> tuple[PackDeclaration, OperationBinding, StepSpec, StepSpec]:
+    _need(type(VIP_DECLARATION) is PackDeclaration and VIP_DECLARATION.pack == "l3.fhrp"
+          and VIP_DECLARATION.steps == (STEP, VIP_STEP) and VIP_DECLARATION.operations == (BINDING,)
+          and VIP_DECLARATION.entity_kinds == (EntityKindSpec(id="fhrp_local", pack=k.PackId("l3.fhrp"), root=False),)
+          and VIP_DECLARATION.relations == (), "vip_profile")
+    specs = tuple(sorted((f.id, f.pack, f.subject, f.value_type, f.step) for f in VIP_DECLARATION.facts))
+    _need(REPORTED_STATE == "l3.fhrp.reported_state" and REPORTED_VIRTUAL_IP == "l3.fhrp.reported_virtual_ip"
+          and specs == (("l3.fhrp.reported_state", "l3.fhrp", "fhrp_local", "text", "l3.fhrp/parse_hsrp_brief"),
+                   ("l3.fhrp.reported_virtual_ip", "l3.fhrp", "fhrp_local", "text", "l3.fhrp/derive_virtual_ip"))
+          and BINDING.operation == "iosxe.show_standby_brief" and BINDING.step == "l3.fhrp/parse_hsrp_brief"
+          and STEP.id == "l3.fhrp/parse_hsrp_brief" and STEP.pack == "l3.fhrp" and STEP.kind == "parse_build"
+          and STEP.scope == "device" and STEP.reads == () and STEP.produces == ("l3.fhrp.reported_state",)
+          and STEP.evaluator == "l3.fhrp.build_reported_state"
+          and VIP_STEP.id == "l3.fhrp/derive_virtual_ip" and VIP_STEP.pack == "l3.fhrp" and VIP_STEP.kind == "derive"
+          and VIP_STEP.scope == "device" and VIP_STEP.reads == ("l3.fhrp.reported_state",)
+          and VIP_STEP.produces == ("l3.fhrp.reported_virtual_ip",)
+          and VIP_STEP.evaluator == "l3.fhrp.build_reported_virtual_ip", "vip_profile")
+    return VIP_DECLARATION, BINDING, STEP, VIP_STEP
+
+
+def _vip_unknown(row: Row, reason: k.UnknownReason, evidence: tuple[k.Evidence, ...], step: StepSpec) -> k.Unknown:
+    need = k.EvidenceNeed(node=row.target.node.key, operation=hsrp.OP,
+        params=(("group", row.group), ("interface", row.interface)), resolves=(REPORTED_VIRTUAL_IP,),
+        reruns=(str(step.id),), after_s=None, unprintable=("reported_virtual_ip",))
+    return k.Unknown(reason=reason, detail="hsrp_virtual_ip_unresolved", evidence=evidence, candidates=(), next_evidence=(need,))
+
+
+def build_reported_virtual_ip(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> VipResult:
+    """Fixed trusted local profile; caller owns raw admission/budgets, not a folder/global API."""
+    declaration, binding, state_step, vip_step = _vip_contract()
+    plan = _plan(targets, requests)
+    compiled = compile_packs((declaration,))
+    adapter = _VipAdapter(plan.expected)
+    retained = custody.retain_requests(plan.requests)
+    outputs = execute_parsers((declaration,), (Handler(binding=binding, parser=adapter),), plan.requests)
+    custody.validate_retained_requests(plan.requests, retained)
+    _need((declaration, binding, state_step, vip_step) == _vip_contract() and type(outputs) is tuple
+          and all(type(output) is Executed and type(output.receipt) is ParseReceipt and type(output.receipt.capture) is Capture for output in outputs)
+          and set(adapter.produced) == set(plan.expected) and len(outputs) == len(plan.expected), "vip_source")
+    for output in outputs:
+        identifier = output.receipt.capture.id
+        _need(identifier in adapter.produced and output.value is adapter.produced[identifier]
+              and output.receipt.parse is adapter.produced[identifier].parse, "vip_source")
+    rows = _canonical_rows(plan, outputs, compiled.registration_sha256)
+    _need(len({row.subject for row in rows}) == len(rows), "vip_population")
+    original: dict[tuple[str, k.EntityKey, str, str], tuple[Executed[hsrp.Result], hsrp.Row]] = {}
+    for output in outputs:
+        for parsed, _ in _claims(output):
+            token = parsed.virtual_ip.token
+            _need(type(token.value) is str and token.value == token.raw, "vip_value")
+            original[(output.receipt.context or "", output.receipt.capture.source, parsed.interface.raw, parsed.group.raw)] = output, parsed
+    source = _materialize(plan, outputs, compiled.registration_sha256)
+    reader = bind_reader(source.store, step=vip_step)
+    values: list[Row] = []
+    for row in source.rows:
+        state = reader.read(fact=REPORTED_STATE, subject=row.subject)
+        _need(state is row.value, "vip_source")
+        state = row.value
+        if isinstance(state, k.Unknown):
+            value: k.Known[str] | k.Unknown = _vip_unknown(row, state.reason, state.evidence, vip_step)
+        else:
+            output, parsed = original[(row.target.context, row.target.node.key, row.interface, row.group)]
+            token = parsed.virtual_ip.token
+            if parsed.virtual_ip.kind == "ipv4":
+                _need(hsrp.ipv4_literal(token.raw), "vip_value")
+                value = k.Known(value=token.raw, basis=k.Basis.OBSERVED, raw=token.raw, evidence=state.evidence)
+            else:
+                _need(parsed.virtual_ip.kind == "unknown" and token.raw == "unknown", "vip_value")
+                witness = k.EvidenceRef(capture=output.receipt.capture.id, locator=token.span, role=k.EvidenceRole.WITNESS,
+                    excerpt_sha256=sha256(output.receipt.capture.raw[token.span.start:token.span.end]).hexdigest())
+                value = _vip_unknown(row, k.UnknownReason.NOT_OBSERVABLE, state.evidence + (witness,), vip_step)
+        values.append(Row(target=row.target, interface=row.interface, group=row.group, subject=row.subject, value=value))
+    store = FactStore()
+    writer = bind_writer(store, step=vip_step)
+    for row in values:
+        writer.write(fact=REPORTED_VIRTUAL_IP, subject=row.subject, value=row.value)
+    return VipResult(source=source, store=store, rows=tuple(values), registration_sha256=compiled.registration_sha256)
