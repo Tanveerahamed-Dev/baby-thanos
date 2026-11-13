@@ -75,11 +75,13 @@ def forbid_execution(monkeypatch):
 def admitted_inputs(root):
     envelope = gp.p4.admit_folder(root, LIMITS, declarations=(profile.STATE_VERSION_DECLARATION,))
     domains = tuple(b.Target(context=envelope.context, node=target.node,
-        groups=tuple(tuple(pair) for pair in json.loads(target.params)["groups"]))
+        groups=tuple(sorted(tuple(pair) for pair in json.loads(target.params)["groups"])))
         for target in envelope.targets if target.operation == b.hsrp.OP)
     requests = tuple(vi.prepare_version_request(capture_id=member.id, source=member.target.node.key,
         context=envelope.context, raw=member.raw) for member in envelope.captures if member.target.operation == gp.all_hsrp.OP)
-    return envelope, vi.retain_version_inputs(domains, requests)
+    retained = vi.retain_version_inputs(domains, requests)
+    gp.validate_state_version_correspondence(envelope, LIMITS, retained)
+    return envelope, retained
 
 
 def test_current_correspondence_preserves_exact_original_registry_witnesses_and_population(tmp_path, monkeypatch):
