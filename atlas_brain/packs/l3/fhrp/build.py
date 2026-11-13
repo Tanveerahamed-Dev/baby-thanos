@@ -18,7 +18,7 @@ from atlas_brain.model.pack_registration import (
     compile_packs,
 )
 from atlas_brain.model.specs import EntityKindSpec, FactSpec, StepId, StepSpec
-from atlas_brain.model.store import FactStore, bind_writer
+from atlas_brain.model.store import FactReader, FactStore, bind_writer
 from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
 from atlas_brain.runner.pack_runtime import (
     Executed,
@@ -38,6 +38,9 @@ BINDING = OperationBinding(operation=hsrp.OP, step=STEP.id)
 DECLARATION = PackDeclaration(pack=PACK, entity_kinds=(EntityKindSpec(id="fhrp_local", pack=PACK, root=False),),
     facts=(FactSpec(id=REPORTED_STATE, pack=PACK, subject="fhrp_local", value_type="text", step=STEP.id),),
     relations=(), steps=(STEP,), operations=(BINDING,))
+
+SOURCE_STEP = StepSpec(id=StepId("l3.fhrp/prepare_gateway_source"), pack=PACK, kind="derive", scope="estate",
+    reads=(REPORTED_STATE,), produces=(), evaluator="l3.fhrp.prepare_fhrp_source")
 
 
 def _need(condition: bool, code: str) -> None:
@@ -191,7 +194,7 @@ def _plan(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> 
     return _Plan(indexed=indexed, expected=expected, requests=requests, proofs=None)
 
 
-def _materialize(plan: _Plan, executed: tuple[Executed[hsrp.Result], ...], registration: str | None = None) -> Result:
+def _canonical_rows(plan: _Plan, executed: tuple[Executed[hsrp.Result], ...], registration: str | None = None) -> tuple[Row, ...]:
     indexed, expected = plan.indexed, plan.expected
     _need(type(executed) is tuple and len(executed) == len(expected)
           and {output.receipt.capture.id for output in executed} == set(expected), "receipt_coverage")
@@ -230,11 +233,16 @@ def _materialize(plan: _Plan, executed: tuple[Executed[hsrp.Result], ...], regis
                 reason = reason or (k.UnknownReason.CONFLICTING_EVIDENCE if candidates else k.UnknownReason.SUBJECT_ABSENT_FROM_CAPTURE)
                 value = _unknown(target, interface, group, output, candidates, reason, declared)
             rows.append(Row(target=target, interface=interface, group=group, subject=subject(target, interface, group), value=value))
+    return tuple(rows)
+
+
+def _materialize(plan: _Plan, executed: tuple[Executed[hsrp.Result], ...], registration: str | None = None) -> Result:
+    rows = _canonical_rows(plan, executed, registration)
     store = FactStore()
     writer = bind_writer(store, step=STEP)
     for row in rows:
         writer.write(fact=REPORTED_STATE, subject=row.subject, value=row.value)
-    return Result(store=store, rows=tuple(rows), executed=executed)
+    return Result(store=store, rows=rows, executed=executed)
 
 
 def build_reported_state(targets: tuple[Target, ...], requests: tuple[CaptureRequest, ...]) -> Result:
@@ -358,6 +366,31 @@ class StateOwner(Parser[hsrp.Result]):
         result = _materialize(self.plan, checked, self.registration)
         self.finished = True
         return result
+
+    def validate_gateway_source_values[T](self, result: Result, reader: FactReader, outputs: tuple[Executed[T], ...]) -> tuple[Target, ...]:
+        """Close original source values after the application's complete run/proof closure; no admission seal."""
+        _need(self.finished and type(result) is Result and type(result.rows) is tuple and type(result.executed) is tuple
+              and all(type(row) is Row for row in result.rows) and type(reader) is FactReader
+              and reader.store is result.store, "gateway_source_population")
+        checked = tuple(self.own(output) for output in outputs if output.receipt.capture.operation == hsrp.OP)
+        _need(len(checked) == len(self.plan.expected) == len(result.executed)
+              and all(a.receipt is b.receipt and a.value is b.value for a, b in zip(checked, result.executed, strict=True)),
+              "gateway_source_population")
+        expected = _canonical_rows(self.plan, checked, self.registration)
+        actual = {row.subject: row for row in result.rows}
+        _need(len(actual) == len(result.rows) == len(expected) and set(actual) == {row.subject for row in expected},
+              "gateway_source_population")
+        for wanted in expected:
+            row, value = actual[wanted.subject], wanted.value
+            _need(row.target == wanted.target and row.interface == wanted.interface and row.group == wanted.group,
+                  "gateway_source_population")
+            state = reader.read(fact=REPORTED_STATE, subject=row.subject)
+            if isinstance(value, k.Known):
+                _need(type(state) is k.Known and type(state.value) is str and type(state.raw) is str
+                      and state.basis is value.basis and state == value, "gateway_source_value")
+            else:
+                _need(type(state) is k.Unknown and state.reason is value.reason and state == value, "gateway_source_value")
+        return tuple(self.plan.indexed[key] for key in sorted(self.plan.indexed))
 
 
 def fact_rows(result: Result) -> tuple[tuple[k.FactId, Row, k.Known[str] | k.Unknown], ...]:
