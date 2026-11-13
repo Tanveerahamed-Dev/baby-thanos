@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 from test_gateway_source import LIMITS, folder
-from test_global_virtual_ip_owner import READ, inputs as producer_inputs
+from test_global_virtual_ip_owner import READ
+from test_global_virtual_ip_owner import inputs as producer_inputs
 
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.kernel import states as k
