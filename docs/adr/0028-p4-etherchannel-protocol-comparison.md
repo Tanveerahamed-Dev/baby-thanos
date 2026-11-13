@@ -1,6 +1,6 @@
 # ADR-0028: Source-bound declared EtherChannel protocol pairs
 
-Status: proposed.
+Status: accepted (owner-approved merge of PR #140).
 
 `prepare_protocol_comparisons(root, budgets, policies)` owns a fresh fixed STP/EC/HSRP run.
 Only root, budgets and typed policies are inputs; Store/plan/index/prepared carriers are not.
