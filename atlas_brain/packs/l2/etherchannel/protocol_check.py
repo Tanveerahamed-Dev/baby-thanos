@@ -69,6 +69,8 @@ def evaluate_declared(plan: policy.Plan, store: FactStore, subjects: tuple[k.Ent
                     problem = left != right
                     reason = None if problem else k.UnknownReason.AS_OF_MISSING
                     detail = "conditional_reported_protocol_difference" if problem else "untimed_equal_protocol_reports"
+                case _:
+                    pass
             unprintable = ("explicit_negotiation_protocol",) if reason is k.UnknownReason.NOT_OBSERVABLE else (
                 "collector_recorded_time", "declared_protocol_policy")
             needs = tuple(k.EvidenceNeed(node=point.node, operation=build.parse_summary.OP, params=(),
