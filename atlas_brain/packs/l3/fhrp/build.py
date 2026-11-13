@@ -533,7 +533,6 @@ class VirtualIpOwner(StateOwner):
         custody.validate_retained_requests(self.plan.requests, self.retained)
         _need(self.contract == _vip_contract() and set(self.produced) == set(self.plan.expected), "vip_profile")
         checked = tuple(self.own(output) for output in executed)
-        _canonical_rows(self.plan, checked, self.registration)
         originals: dict[tuple[str, k.EntityKey, str, str], tuple[Executed[hsrp.Result], hsrp.Row]] = {}
         for output in checked:
             for parsed, _ in _claims(output):
@@ -582,7 +581,6 @@ class VirtualIpOwner(StateOwner):
         return tuple(rows)
 
     def build_virtual_ip(self) -> VipResult:
-        custody.validate_retained_requests(self.plan.requests, self.retained)
         rows = self._virtual_ip_rows()
         source = self.source
         if source is None:

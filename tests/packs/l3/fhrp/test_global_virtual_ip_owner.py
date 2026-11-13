@@ -185,7 +185,7 @@ def test_fixed_literal_profile_drift_refuses_before_any_parser_or_fhrp_writer(tm
     + [("vip", "registration"), ("vip", "source")])
 def test_state_and_vip_canonical_store_population_and_every_value_close_in_owning_validator(tmp_path, monkeypatch, side, plant):
     inputs(tmp_path / "inputs")
-    build, finish, read = b.VirtualIpOwner.build_virtual_ip, gp.VirtualIpPack.finish, FactReader.read
+    build, writer, read = b.VirtualIpOwner.build_virtual_ip, b.bind_writer, FactReader.read
     fact = STATE if side == "state" else VIP
     def changed(result):
         row = next(row for row in reversed(result.rows) if (type(row.value) is k.Unknown) == (plant in ("reason", "need")))
@@ -216,7 +216,11 @@ def test_state_and_vip_canonical_store_population_and_every_value_close_in_ownin
     if side == "vip":
         monkeypatch.setattr(b.VirtualIpOwner, "build_virtual_ip", lambda self: changed(build(self)))
     else:
-        monkeypatch.setattr(gp.VirtualIpPack, "finish", lambda self, execution: changed(finish(self, execution)))
+        def state_changed(self):
+            self.source = changed(self.source)
+            return build(self)
+        monkeypatch.setattr(b.VirtualIpOwner, "build_virtual_ip", state_changed)
+        monkeypatch.setattr(b, "bind_writer", lambda store, *, step: writer(store, step=step) if step is b.STEP else pytest.fail("VIP writer before canonical STATE closure"))
     with pytest.raises(ValueError):
         run(tmp_path / "inputs")
 
