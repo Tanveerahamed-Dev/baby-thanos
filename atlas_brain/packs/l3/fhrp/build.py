@@ -529,7 +529,7 @@ class VirtualIpOwner(StateOwner):
         self.retained = custody.retain_requests(self.plan.requests)
         self.source: Result | None = None
 
-    def _virtual_ip_originals(self, executed: tuple[Executed[hsrp.Result], ...]) -> dict[tuple[str, k.EntityKey, str, str], tuple[Executed[hsrp.Result], hsrp.Row]]:
+    def virtual_ip_originals(self, executed: tuple[Executed[hsrp.Result], ...]) -> dict[tuple[str, k.EntityKey, str, str], tuple[Executed[hsrp.Result], hsrp.Row]]:
         custody.validate_retained_requests(self.plan.requests, self.retained)
         _need(self.contract == _vip_contract() and set(self.produced) == set(self.plan.expected), "vip_profile")
         checked = tuple(self.own(output) for output in executed)
@@ -543,16 +543,16 @@ class VirtualIpOwner(StateOwner):
         return originals
 
     def finish(self, executed: tuple[Executed[hsrp.Result], ...]) -> Result:
-        self._virtual_ip_originals(executed)
+        self.virtual_ip_originals(executed)
         self.source = super().finish(executed)
         return self.source
 
-    def _virtual_ip_rows(self) -> tuple[Row, ...]:
+    def virtual_ip_rows(self) -> tuple[Row, ...]:
         source = self.source
         _need(source is not None and self.finished and self.contract == _vip_contract(), "vip_source")
         if source is None:
             raise ValueError("hsrp_vip_source")
-        originals = self._virtual_ip_originals(source.executed)
+        originals = self.virtual_ip_originals(source.executed)
         self.validate_gateway_source_values(source, bind_reader(source.store, step=SOURCE_STEP), source.executed)
         reader = bind_reader(source.store, step=VIP_STEP)
         rows: list[Row] = []
@@ -581,7 +581,7 @@ class VirtualIpOwner(StateOwner):
         return tuple(rows)
 
     def build_virtual_ip(self) -> VipResult:
-        rows = self._virtual_ip_rows()
+        rows = self.virtual_ip_rows()
         source = self.source
         if source is None:
             raise ValueError("hsrp_vip_source")
@@ -595,7 +595,7 @@ class VirtualIpOwner(StateOwner):
         _need(type(result) is VipResult and result.source is self.source and result.registration_sha256 == self.registration
               and type(result.rows) is tuple and all(type(row) is Row for row in result.rows)
               and type(reader) is FactReader and reader.store is result.store, "vip_source")
-        wanted = self._virtual_ip_rows()
+        wanted = self.virtual_ip_rows()
         actual = {row.subject: row for row in result.rows}
         _need(len(actual) == len(result.rows) == len(wanted) and set(actual) == {row.subject for row in wanted}, "vip_population")
         for expected in wanted:
