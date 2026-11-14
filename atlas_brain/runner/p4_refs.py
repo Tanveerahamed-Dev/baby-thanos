@@ -170,7 +170,7 @@ class ProofIndex[T: VersionValue = LegacyValue]:
             _version_targets(self)
         for target in envelope.targets:
             if not versions or target.operation != all_hsrp.OP:
-                _bind(self, target, targets[target.id][1]["params"])
+                _bind(cast(ProofIndex[T], self), target, targets[target.id][1]["params"])
         self.ordered = tuple(self.bound[key] for key in sorted(self.bound, key=lambda key: (key.fact, key.subject)))
 
     @property
