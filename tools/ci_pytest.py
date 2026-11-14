@@ -1,4 +1,4 @@
-"""Run complete Windows test partitions and verify same-run coverage receipts."""
+"""Run complete native test partitions and verify same-run OS coverage receipts."""
 import argparse
 import json
 import os
@@ -166,6 +166,8 @@ def _atomic_json(path, value):
 
 
 def _run(args):
+    if sys.platform not in ("win32", "linux"):
+        raise ReceiptError("unsupported_native_platform")
     _positive(args.index, "shard_index")
     if args.index > args.count:
         raise ReceiptError("invalid_shard_index")
@@ -224,10 +226,13 @@ def _linked(path):
     return path.is_symlink() or path.is_junction()
 
 
-def _read_directory(args):
+def _read_directory(args, *, platform="win32"):
+    if type(platform) is not str or platform not in ("win32", "linux"):
+        raise ReceiptError("invalid_platform")
+    prefix = "windows" if platform == "win32" else "linux"
     root = Path(args.directory)
     expected = {
-        f"windows-pytest-{index}-{args.head}-{args.run_id}-{args.attempt}": index
+        f"{prefix}-pytest-{index}-{args.head}-{args.run_id}-{args.attempt}": index
         for index in range(1, args.count + 1)
     }
     if _linked(root) or not root.is_dir() or {p.name for p in root.iterdir()} != set(expected):
@@ -263,6 +268,7 @@ def main(argv=None):
             sub.add_argument("--index", required=True, type=int)
             sub.add_argument("--receipt", required=True)
         else:
+            sub.add_argument("--platform", choices=("win32", "linux"), default="win32")
             sub.add_argument("--directory", required=True)
             sub.add_argument("--jobs-result", required=True)
     args = parser.parse_args(argv)
@@ -273,8 +279,8 @@ def main(argv=None):
         if args.jobs_result != "success":
             raise ReceiptError("shard_jobs_not_successful")
         summary = verify_receipts(
-            _read_directory(args), head=args.head, run_id=args.run_id,
-            run_attempt=args.attempt, count=args.count,
+            _read_directory(args, platform=args.platform), head=args.head, run_id=args.run_id,
+            run_attempt=args.attempt, count=args.count, platform=args.platform,
         )
         print(json.dumps(summary, sort_keys=True))
         return 0

@@ -14,6 +14,23 @@ SKIPS = {
         "FIFO files are not supported on this platform",
 }
 
+LINUX_SKIPS = {
+    "tests/test_ci_pytest_cli.py::test_run_receipt_gauntlet[" + plant + "]":
+        "Windows run receipt witness"
+    for plant in (
+        "valid", "wrong-head", "selector", "silent-deselection",
+        "module-skip", "precollection-hook", "precollection-list",
+        "precollection-directory", "dirty-source", "source-change",
+        "failed-subtest", "skipped-subtest", "xfail", "xpass",
+    )
+}
+LINUX_SKIPS.update({
+    "tests/runner/test_evidence_facts.py::"
+    "test_windows_junction_root_and_members_are_refused[" + value + "]":
+        "Windows directory junction control"
+    for value in ("False", "True")
+})
+
 
 class ReceiptError(ValueError):
     pass
@@ -53,7 +70,8 @@ def shard_for(nodeid, count):
     return int.from_bytes(digest, "big") % count + 1
 
 
-def _reports(reports, selected, production):
+def _reports(reports, selected, production, platform="win32"):
+    skip_policy = SKIPS if platform == "win32" else LINUX_SKIPS
     if type(reports) is not dict or set(reports) != set(selected):
         raise ReceiptError("report_population_mismatch")
     passed = 0
@@ -81,12 +99,14 @@ def _reports(reports, selected, production):
         reason = skipped[0]["reason"].removeprefix("Skipped: ")
         if not reason or any(row["reason"] for row in rows if row not in skipped):
             raise ReceiptError("invalid_skip_reason")
-        if production and SKIPS.get(nodeid) != reason:
+        if production and skip_policy.get(nodeid) != reason:
             raise ReceiptError("unapproved_skip")
     return passed
 
 
-def verify_receipts(receipts, *, head, run_id, run_attempt, count):
+def verify_receipts(receipts, *, head, run_id, run_attempt, count, platform="win32"):
+    if type(platform) is not str or platform not in ("win32", "linux"):
+        raise ReceiptError("invalid_platform")
     _metadata(head, run_id, run_attempt, count)
     if type(receipts) is not list or len(receipts) != count:
         raise ReceiptError("receipt_count_mismatch")
@@ -99,7 +119,7 @@ def verify_receipts(receipts, *, head, run_id, run_attempt, count):
             raise ReceiptError("receipt_fields_mismatch")
         expected = {
             "schema": SCHEMA, "head": head, "run_id": run_id,
-            "run_attempt": run_attempt, "platform": "win32", "shard_count": count,
+            "run_attempt": run_attempt, "platform": platform, "shard_count": count,
         }
         if any(type(receipt[key]) is not type(value) or receipt[key] != value
                for key, value in expected.items()):
@@ -126,7 +146,7 @@ def verify_receipts(receipts, *, head, run_id, run_attempt, count):
         for key in ("failed_reports", "collection_errors"):
             if type(receipt[key]) is not list or receipt[key]:
                 raise ReceiptError("failed_or_incomplete_" + key)
-        passed += _reports(receipt["reports"], selected, production=True)
+        passed += _reports(receipt["reports"], selected, production=True, platform=platform)
         selected_all.extend(selected)
     if seen != set(range(1, count + 1)):
         raise ReceiptError("missing_shard")
