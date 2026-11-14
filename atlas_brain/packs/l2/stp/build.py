@@ -637,6 +637,13 @@ class _GlobalSTP[Peer](p4_pipeline.Pack[stp.Result | Peer]):
         return _materialize(plan, tuple(owned), self.producer)
 
 
+class RootGuardPack[Peer](_GlobalSTP[Peer]):
+    """Fixed legacy STP staging; ordinary preparation does not finish or write facts."""
+
+    def __init__(self, budgets: Budgets) -> None:
+        super().__init__(budgets)
+
+
 def build_root_guard_global[Peer](
     root: Path, budgets: Budgets, *, peers: tuple[p4_pipeline.Pack[stp.Result | Peer], ...],
 ) -> GlobalFacts[Peer]:
