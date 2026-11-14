@@ -517,7 +517,7 @@ def validate_mixed_context(envelope: p4.Envelope, budgets: Budgets) -> CompiledP
                     for path in (*discovery_rows, *side_rows)), "names")
     for path in paths:
         path.encode("utf-8")
-    captures = {capture.id: capture for capture in base.captures}
+    captures: dict[str, Capture] = {capture.id: capture for capture in base.captures}
     _mixed_need(len(captures) == len(base.captures) == len(discovery_rows), "capture")
     commands = {"iosxe.show_cdp_neighbors_detail": "show cdp neighbors detail",
                 "iosxe.show_lldp_neighbors_detail": "show lldp neighbors detail"}
@@ -527,7 +527,7 @@ def validate_mixed_context(envelope: p4.Envelope, budgets: Budgets) -> CompiledP
         _mixed_need(node in nodes and operation in commands and (node, operation) not in seen, "capture")
         identity = "cap:" + sha256(canonical((BASE_SCHEMA, base.id, base_digest, path, node, operation, digest))).hexdigest()
         _mixed_need(identity in captures, "capture")
-        capture = captures[k.CaptureId(identity)]
+        capture = captures[identity]
         _mixed_need(capture.source == nodes[node].key and capture.operation == operation
                     and capture.rendered == commands[operation] and capture.codec == "utf-8"
                     and sha256(capture.raw).hexdigest() == digest, "capture")
