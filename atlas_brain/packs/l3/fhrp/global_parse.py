@@ -7,14 +7,21 @@ from typing import cast
 
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence import p4_admission as p4
-from atlas_brain.evidence.admission import Budgets, record, strict_json, string
+from atlas_brain.evidence.admission import (
+    BudgetExceeded,
+    Budgets,
+    member_names,
+    record,
+    strict_json,
+    string,
+)
 from atlas_brain.evidence.capture import Capture, Scope
 from atlas_brain.evidence.synthetic import SCHEMA as BASE_SCHEMA
 from atlas_brain.evidence.synthetic import Node, SyntheticGroup
 from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
 from atlas_brain.model.pack_registration import CompiledPackSet, PackDeclaration
-from atlas_brain.packs.l3.fhrp import build, peer_profile
+from atlas_brain.packs.l3.fhrp import build, mixed_profile, peer_profile
 from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
 from atlas_brain.packs.l3.fhrp import parse_hsrp_brief as hsrp
 from atlas_brain.packs.l3.fhrp import version_profile as profile
@@ -442,3 +449,101 @@ def prepare_peer_state_version_inputs(envelope: p4.Envelope, budgets: Budgets) -
         validate_brief_request(request)
     return StateVersionInputs(envelope=envelope, budgets=budgets, compiled=compiled,
         targets=targets + selected, domains=domains, requests=requests, version=inputs, declarations=declarations)
+
+
+def _mixed_need(condition: bool, code: str) -> None:
+    k.require(condition, "fhrp_mixed_context_" + code)
+
+
+def _mixed_identifier(value: str) -> bool:
+    return type(value) is str and re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value, re.ASCII) is not None
+
+
+def validate_mixed_context(envelope: p4.Envelope, budgets: Budgets) -> CompiledPackSet:
+    """Recheck current fixed mixed registry correspondence; never admission or execution origin."""
+    _state_version_budgets(budgets)
+    _mixed_need(type(envelope) is p4.Envelope and type(envelope.raw) is bytes
+                and type(envelope.base) is SyntheticGroup and type(envelope.base.raw) is bytes, "graph")
+    base = envelope.base
+    _mixed_need(type(base.nodes) is tuple and 1 <= len(base.nodes) <= 32
+                and type(envelope.targets) is tuple and 1 <= len(envelope.targets) <= p4.MAX_TARGETS, "graph")
+    _mixed_need(type(base.captures) is tuple and 1 <= len(base.captures) <= 64
+                and all(type(item) is Capture and type(item.raw) is bytes for item in base.captures)
+                and type(envelope.captures) is tuple and len(envelope.captures) <= p4.MAX_CAPTURES
+                and all(type(item) is p4.CaptureMember and type(item.raw) is bytes for item in envelope.captures), "graph")
+    raws = (base.raw, envelope.raw) + tuple(item.raw for item in base.captures) + tuple(item.raw for item in envelope.captures)
+    if (len(raws) > budgets.artifacts or any(len(raw) > budgets.artifact_bytes for raw in raws)
+            or sum(map(len, raws)) > budgets.bundle_bytes):
+        raise BudgetExceeded("fhrp_mixed_context_raw_budget")
+    _state_version_graph(envelope, budgets)
+    compiled = mixed_profile.compile_mixed_profile()
+    _mixed_need(type(compiled) is CompiledPackSet and envelope.registration_sha256 == compiled.registration_sha256, "registration")
+    _mixed_need(_mixed_identifier(base.id) and _mixed_identifier(envelope.context)
+                and 1 <= len(base.nodes) <= 32 and 1 <= len(base.captures) <= 64
+                and 1 <= len(envelope.targets) <= p4.MAX_TARGETS and len(envelope.captures) <= p4.MAX_CAPTURES, "registry")
+    registry = record(strict_json(base.raw, budgets.nesting_depth, budgets.numeric_digits),
+                      ("schema", "semantic_group", "group", "nodes", "captures"))
+    side = record(strict_json(envelope.raw, budgets.nesting_depth, budgets.numeric_digits),
+                  ("schema", "semantic_group", "context", "base_sha256", "targets", "captures"))
+    base_digest, side_digest = sha256(base.raw).hexdigest(), sha256(envelope.raw).hexdigest()
+    _mixed_need(registry["schema"] == base.schema == BASE_SCHEMA and side["schema"] == p4.SCHEMA
+                and registry["semantic_group"] == side["semantic_group"] == "declared_synthetic"
+                and registry["group"] == base.id and side["context"] == envelope.context
+                and side["base_sha256"] == base_digest, "registry")
+    _reference(base.declaration, "synthetic_p2.groups", base.id, base_digest, "/group")
+    _reference(envelope.declaration, "synthetic_p4.context", envelope.context, side_digest, "/context")
+    node_rows = _records(registry["nodes"], ("id", "discovery_id", "ports"), "id")
+    nodes = {node.id: node for node in base.nodes}
+    _mixed_need(len(nodes) == len(base.nodes) == len(node_rows) and set(nodes) == set(node_rows)
+                and len({node.discovery_id for node in base.nodes}) == len(nodes), "node")
+    for node in base.nodes:
+        index, row = node_rows[node.id]
+        ports = _strings(row["ports"])
+        _mixed_need(_mixed_identifier(node.id) and node.group == base.id and node.discovery_id == row["discovery_id"]
+                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", node.discovery_id, re.ASCII) is not None
+                    and 1 <= len(ports) <= 128 and len(set(ports)) == len(ports)
+                    and all(re.fullmatch(r"[A-Za-z][A-Za-z0-9./:_-]{0,63}", port, re.ASCII) is not None for port in ports)
+                    and node.ports == tuple(sorted(ports)), "node")
+        _reference(node.declaration, "synthetic_p2.nodes", node.id, base_digest, f"/nodes/{index}")
+    discovery_rows = _records(registry["captures"], ("path", "node", "operation", "sha256"), "path")
+    side_rows = _records(side["captures"], ("target", "path", "sha256"), "path")
+    _mixed_need(len(discovery_rows) == len(base.captures) and len(side_rows) == len(envelope.captures), "capture")
+    paths = ["p2.json", "p4.json", *discovery_rows, *side_rows]
+    member_names(paths)
+    files = set(paths)
+    _mixed_need(not any("/".join(parts[:index]) in files for path in paths
+                        for parts in (path.split("/"),) for index in range(1, len(parts))), "names")
+    _mixed_need(all(path.casefold() not in ("p2.json", "p3.json", "p4.json", "manifest.json")
+                    for path in (*discovery_rows, *side_rows)), "names")
+    for path in paths:
+        path.encode("utf-8")
+    captures: dict[str, Capture] = {capture.id: capture for capture in base.captures}
+    _mixed_need(len(captures) == len(base.captures) == len(discovery_rows), "capture")
+    commands = {"iosxe.show_cdp_neighbors_detail": "show cdp neighbors detail",
+                "iosxe.show_lldp_neighbors_detail": "show lldp neighbors detail"}
+    seen: set[tuple[str, str]] = set()
+    for path, (_, row) in discovery_rows.items():
+        node, operation, digest = (string(row, field) for field in ("node", "operation", "sha256"))
+        _mixed_need(node in nodes and operation in commands and (node, operation) not in seen, "capture")
+        identity = "cap:" + sha256(canonical((BASE_SCHEMA, base.id, base_digest, path, node, operation, digest))).hexdigest()
+        _mixed_need(identity in captures, "capture")
+        capture = captures[identity]
+        _mixed_need(capture.source == nodes[node].key and capture.operation == operation
+                    and capture.rendered == commands[operation] and capture.codec == "utf-8"
+                    and sha256(capture.raw).hexdigest() == digest, "capture")
+        seen.add((node, operation))
+    target_rows = _records(side["targets"], ("id", "node", "operation", "params"), "id")
+    owners = {binding.operation: binding.step for binding in compiled.operations}
+    _mixed_need(len({target.id for target in envelope.targets}) == len(envelope.targets) == len(target_rows)
+                and {target.id for target in envelope.targets} == set(target_rows), "target")
+    for target in envelope.targets:
+        _mixed_need(_mixed_identifier(target.id) and target.operation in owners
+                    and target.owner == owners[target.operation], "target")
+        params = target_rows[target.id][1]["params"]
+        _mixed_need(type(params) is dict and len(cast(dict[str, object], params)) <= 32, "target")
+    _mixed_need(len({(target.node.key, target.operation, target.params) for target in envelope.targets})
+                == len(envelope.targets), "target")
+    _scope(envelope, budgets)
+    _mixed_need(compiled == mixed_profile.compile_mixed_profile()
+                and envelope.registration_sha256 == compiled.registration_sha256, "registration")
+    return compiled
