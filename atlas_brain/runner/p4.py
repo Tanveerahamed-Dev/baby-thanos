@@ -15,8 +15,9 @@ from atlas_brain.packs.l2.etherchannel import build as ec
 from atlas_brain.packs.l2.etherchannel.global_parse import SummaryPack
 from atlas_brain.packs.l2.stp import build as stp
 from atlas_brain.packs.l3.fhrp import build as fhrp
+from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
 from atlas_brain.packs.l3.fhrp.global_parse import StandbyBriefPack
-from atlas_brain.runner.p4_refs import ProofIndex, RootProofIndex, Scope, Value
+from atlas_brain.runner.p4_refs import FhrpVersionProofIndex, ProofIndex, RootProofIndex, Scope, Value
 from atlas_brain.runner.records import RunnerRefused
 
 SCHEMA = "atlas-brain.p4-observations/1"
@@ -28,6 +29,7 @@ type Owner = stp.Result | ec.Result | fhrp.Result
 type Spec = tuple[k.FactId, k.PackId, StepId, str, type[bool | int | str]]
 type Item = tuple[k.FactId, stp.Row | ec.Row | fhrp.Row, State]
 type Family = Literal["stp", "etherchannel", "hsrp"]
+type ObservationIndex = ProofIndex[Value] | FhrpVersionProofIndex
 
 
 def _need(condition: bool, code: str) -> None:
@@ -44,7 +46,7 @@ def _unknown(value: k.Unknown, evidence: list[dict[str, object]]) -> dict[str, o
             for need in value.next_evidence]}
 
 
-def _state(index: ProofIndex[Value], scope: Scope, value: State, expected: type[bool | int | str]) -> dict[str, object]:
+def _state(index: ObservationIndex, scope: Scope, value: State, expected: type[bool | int | str]) -> dict[str, object]:
     _need(type(value) in (k.Known, k.Unknown), "state")
     if isinstance(value, k.Known):
         _need(type(value.value) is expected, "value")
@@ -119,7 +121,7 @@ def _groups(value: object) -> tuple[tuple[str, str], ...]:
     return tuple((cast(list[str], pair)[0], cast(list[str], pair)[1]) for pair in cast(list[object], value))
 
 
-def _subjects(index: ProofIndex[Value]) -> tuple[set[k.EntityKey], set[k.EntityKey], set[k.EntityKey]]:
+def _subjects(index: ObservationIndex) -> tuple[set[k.EntityKey], set[k.EntityKey], set[k.EntityKey]]:
     envelope = index.execution.envelope
     trees: set[k.EntityKey] = set()
     channels: set[k.EntityKey] = set()
@@ -144,6 +146,8 @@ def _subjects(index: ProofIndex[Value]) -> tuple[set[k.EntityKey], set[k.EntityK
             local = fhrp.Target(context=envelope.context, node=target.node, groups=_groups(fields["groups"]))
             step, selected = fhrp.STEP.id, gateways
             subjects = {fhrp.subject(local, interface, group) for interface, group in local.groups}
+        elif type(index) is FhrpVersionProofIndex and target.operation == all_hsrp.OP:
+            continue
         else:
             raise RunnerRefused("p4_observations_profile")
         _need(target.owner == step and not selected & subjects, "population")
@@ -161,7 +165,7 @@ def _cell(row: stp.Row | ec.Row | fhrp.Row) -> tuple[k.EntityKey, Node, str, Sta
             raise RunnerRefused("p4_observations_row")
 
 
-def _facts(index: ProofIndex[Value], owner: Owner, family: Family,
+def _facts(index: ObservationIndex, owner: Owner, family: Family,
            subjects: set[k.EntityKey], *, roots: bool = False) -> tuple[str, dict[tuple[str, str], dict[str, object]]]:
     tree, channel = family == "stp", family == "etherchannel"
     baseline = _spec(stp.ROOT_GUARD if tree else ec.REPORTED_PROTOCOL if channel else fhrp.REPORTED_STATE, roots=roots)
@@ -219,9 +223,13 @@ def _facts(index: ProofIndex[Value], owner: Owner, family: Family,
 
 
 def close_owned_facts(
-    index: ProofIndex[Value], tree: stp.Result, channel: ec.Result, local: fhrp.Result,
+    index: ObservationIndex, tree: stp.Result, channel: ec.Result, local: fhrp.Result,
 ) -> tuple[set[k.EntityKey], set[k.EntityKey], set[k.EntityKey]]:
-    """Validate all owners' declared populations and evidence before another estate consumer."""
+    """Close the base five facts; owning semantic values need their separate validators.
+
+    A fixed VERSION index must still contain only these scopes at this point.
+    Close VERSION separately afterwards; this function never admits a Source.
+    """
     trees, channels, gateways = _subjects(index)
     kinds = (_facts(index, tree, "stp", trees)[0],
              _facts(index, channel, "etherchannel", channels)[0],
@@ -230,7 +238,7 @@ def close_owned_facts(
     return trees, channels, gateways
 
 
-def _metadata(index: ProofIndex[Value]) -> list[dict[str, object]]:
+def _metadata(index: ObservationIndex) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for capture in index.captures:
         receipt = index.receipts[capture.id]
@@ -250,13 +258,13 @@ def _metadata(index: ProofIndex[Value]) -> list[dict[str, object]]:
     return result
 
 
-def project_owned_facts(index: ProofIndex[Value], owner: Owner, family: Family) -> tuple[str, dict[tuple[str, str], dict[str, object]]]:
+def project_owned_facts(index: ObservationIndex, owner: Owner, family: Family) -> tuple[str, dict[tuple[str, str], dict[str, object]]]:
     """Project one owner against its complete independently declared subject set."""
     subjects = _subjects(index)
     return _facts(index, owner, family, subjects[("stp", "etherchannel", "hsrp").index(family)])
 
 
-def project_capture_metadata(index: ProofIndex[Value]) -> list[dict[str, object]]:
+def project_capture_metadata(index: ObservationIndex) -> list[dict[str, object]]:
     """Project original capture metadata; never broaden cell-specific evidence grants."""
     return _metadata(index)
 

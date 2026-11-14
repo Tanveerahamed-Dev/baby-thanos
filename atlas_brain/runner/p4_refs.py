@@ -17,6 +17,9 @@ from atlas_brain.model.store import FactReader, FactStore
 from atlas_brain.packs.l2.etherchannel import build as ec
 from atlas_brain.packs.l2.stp import build as stp
 from atlas_brain.packs.l3.fhrp import build as fhrp
+from atlas_brain.packs.l3.fhrp import global_parse as fhrp_inputs
+from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
+from atlas_brain.packs.l3.fhrp import version_profile as version
 from atlas_brain.runner import p4_pipeline as pipe
 from atlas_brain.runner.pack_receipts import ParseReceipt
 from atlas_brain.runner.pack_runtime import Executed
@@ -24,6 +27,7 @@ from atlas_brain.runner.records import RunnerRefused
 
 type LegacyValue = stp.stp.Result | ec.parse_summary.Result
 type Value = LegacyValue | fhrp.hsrp.Result
+type VersionValue = Value | all_hsrp.Result
 
 
 def _need(condition: bool, code: str) -> None:
@@ -69,12 +73,13 @@ def _table(value: object, fields: tuple[str, ...], table: str,
     return result
 
 
-class ProofIndex[T: Value = LegacyValue]:
+class ProofIndex[T: VersionValue = LegacyValue]:
     """Require admitted/completed owner inputs; check metadata and cell scope, not execution origin or fact values."""
 
     def __init__(self, execution: pipe.Result[T], budgets: Budgets) -> None:
         roots = type(self) is RootProofIndex
         virtual_ips = type(self) is FhrpVipProofIndex
+        versions = type(self) is FhrpVersionProofIndex
         _need(type(execution) is pipe.Result and type(execution.envelope) is Envelope, "capture")
         self.execution, self.budgets = execution, budgets
         envelope = execution.envelope
@@ -86,10 +91,15 @@ class ProofIndex[T: Value = LegacyValue]:
                     if roots else "")
         if virtual_ips:
             extended = compile_packs((stp.DECLARATION, ec.DECLARATION, fhrp.VIP_DECLARATION)).registration_sha256
-        _need(envelope.registration_sha256 == extended if roots or virtual_ips else envelope.registration_sha256 in (legacy, full), "profile")
+        if versions:
+            extended = fhrp_inputs.validate_peer_state_version_context(envelope, budgets).registration_sha256
+        _need(envelope.registration_sha256 == extended if roots or virtual_ips or versions
+              else envelope.registration_sha256 in (legacy, full), "profile")
         owners = {stp.BINDING.operation: stp.BINDING.step, ec.BINDING.operation: ec.BINDING.step}
-        if roots or virtual_ips or envelope.registration_sha256 == full:
+        if roots or virtual_ips or versions or envelope.registration_sha256 == full:
             owners[fhrp.BINDING.operation] = fhrp.BINDING.step
+        if versions:
+            owners[version.BINDING.operation] = version.BINDING.step
         self.registry_sha256, self.base_registry_sha256 = sha256(envelope.raw).hexdigest(), sha256(envelope.base.raw).hexdigest()
         base = record(strict_json(envelope.base.raw, budgets.nesting_depth, budgets.numeric_digits),
                       ("schema", "semantic_group", "group", "nodes", "captures"))
@@ -149,12 +159,18 @@ class ProofIndex[T: Value = LegacyValue]:
                   and capture.operation == member.target.operation and capture.raw == member.raw, "capture")
             valid = capture.operation == stp.stp.OP and type(output.value) is stp.stp.Result or (
                 capture.operation == ec.parse_summary.OP and type(output.value) is ec.parse_summary.Result) or (
-                capture.operation == fhrp.hsrp.OP and type(output.value) is fhrp.hsrp.Result)
+                capture.operation == fhrp.hsrp.OP and type(output.value) is fhrp.hsrp.Result) or (
+                versions and capture.operation == all_hsrp.OP and type(output.value) is all_hsrp.Result)
             _need(valid and receipt.parse is output.value.parse, "capture")
+            if versions and isinstance(output.value, all_hsrp.Result):
+                all_hsrp.validate_claims(capture, output.value)
             self.by_target[member.target.id].append(output)
         self.bound: dict[k.FactRef, Scope] = {}
+        if versions:
+            _version_targets(self)
         for target in envelope.targets:
-            _bind(self, target, targets[target.id][1]["params"])
+            if not versions or target.operation != all_hsrp.OP:
+                _bind(self, target, targets[target.id][1]["params"])
         self.ordered = tuple(self.bound[key] for key in sorted(self.bound, key=lambda key: (key.fact, key.subject)))
 
     @property
@@ -204,7 +220,39 @@ class RootProofIndex[T: Value = Value](ProofIndex[T]):
     """Closed Root4/EC/HSRP scopes after owning source closure; no standalone producer admission."""
 
 
-def _bind[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> None:
+class FhrpVersionProofIndex(ProofIndex[VersionValue]):
+    """Fixed full-peer capture metadata and initial five-fact scopes, never Source admission.
+
+    Close actual owning values and the base five facts before adding VERSION scopes.
+    An absent ALL declaration later uses BRIEF only as a negative registry anchor;
+    adding that scope first would pollute the base STATE operation census.
+    No owner-cache identity, execution origin or six-fact proof closure is established.
+    """
+
+
+def _version_targets[T: VersionValue](index: ProofIndex[T]) -> None:
+    def domain(target: Target) -> fhrp.Target:
+        value = record(strict_json(target.params, index.budgets.nesting_depth, index.budgets.numeric_digits), ("groups",))["groups"]
+        _need(type(value) is list and all(type(pair) is list and len(cast(list[object], pair)) == 2
+              and all(type(item) is str for item in cast(list[object], pair)) for pair in cast(list[object], value)), "scope")
+        return fhrp.Target(context=index.execution.envelope.context, node=target.node,
+            groups=tuple((cast(list[str], pair)[0], cast(list[str], pair)[1]) for pair in cast(list[object], value)))
+    brief: dict[str, fhrp.Target] = {}
+    detailed: set[str] = set()
+    for target in index.execution.envelope.targets:
+        if target.operation == fhrp.hsrp.OP:
+            _need(target.node.id not in brief, "population")
+            brief[target.node.id] = domain(target)
+    for target in index.execution.envelope.targets:
+        if target.operation == all_hsrp.OP:
+            _need(target.node.id in brief and target.node.id not in detailed, "population")
+            current, original = domain(target), brief[target.node.id]
+            _need(current.node is original.node and sorted(current.groups) == sorted(original.groups), "population")
+            _need(sum(member.target is target for member in index.execution.envelope.captures) <= 1, "capture")
+            detailed.add(target.node.id)
+
+
+def _bind[T: VersionValue](resolver: ProofIndex[T], target: Target, value: object) -> None:
     outputs_by_target: dict[str, list[Executed[T]]] = resolver.by_target
     domain: stp.Target | None = None
     if target.operation == stp.stp.OP:
@@ -293,7 +341,7 @@ def _bind[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> N
             declarations=resolver.declarations[target.id], spans=frozenset(spans), positive=frozenset(positive), required=frozenset(required))
 
 
-def _bind_hsrp[T: Value](resolver: ProofIndex[T], target: Target, value: object) -> None:
+def _bind_hsrp[T: VersionValue](resolver: ProofIndex[T], target: Target, value: object) -> None:
     pairs = record(value, ("groups",))["groups"]
     _need(type(pairs) is list and all(type(pair) is list and len(cast(list[object], pair)) == 2
           and all(type(item) is str for item in cast(list[object], pair)) for pair in cast(list[object], pairs)), "scope")
@@ -335,7 +383,7 @@ def _bind_hsrp[T: Value](resolver: ProofIndex[T], target: Target, value: object)
             required=frozenset(spans), witnesses=frozenset(witnesses))
 
 
-def _capture_leaf[T: Value](index: ProofIndex[T], ref: k.EvidenceRef, scope: Scope | None, positive: bool,
+def _capture_leaf[T: VersionValue](index: ProofIndex[T], ref: k.EvidenceRef, scope: Scope | None, positive: bool,
                   identity: k.CaptureId | None) -> dict[str, object]:
     _need(ref.capture in index.members and type(ref.role) is k.EvidenceRole, "scope")
     member, capture = index.members[ref.capture], index.snapshots[ref.capture]
