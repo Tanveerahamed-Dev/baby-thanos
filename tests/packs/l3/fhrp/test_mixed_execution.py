@@ -20,8 +20,8 @@ def no_stores(monkeypatch):
 
 @pytest.fixture
 def case(tmp_path):
-    _, files = admitted(tmp_path)
-    assert len((result := fresh.execute_mixed_inputs(tmp_path, LIMITS)).execution.executed) == 5
+    files, result = admitted(tmp_path)[1], fresh.execute_mixed_inputs(tmp_path, LIMITS)
+    assert len(result.execution.executed) == 5
     return tmp_path, files, result
 
 

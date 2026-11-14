@@ -15,16 +15,17 @@ from atlas_brain.packs.l3.fhrp import (
     global_parse,
     mixed_profile,
     mixed_vrrp_inputs,
+    version_profile,
+    vrrp_profile,
 )
 from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
 from atlas_brain.packs.l3.fhrp import parse_hsrp_brief as brief
 from atlas_brain.packs.l3.fhrp import parse_vrrp as vrrp
-from atlas_brain.packs.l3.fhrp import version_profile, vrrp_profile
-from atlas_brain.packs.l3.fhrp.version_owner import MixedGlobalVersionOwner
 from atlas_brain.packs.l3.fhrp.version_inputs import validate_fhrp_request_graph
+from atlas_brain.packs.l3.fhrp.version_owner import MixedGlobalVersionOwner
 from atlas_brain.packs.l3.fhrp.vrrp_owner import MixedVRRPOwner, VRRPOwner
 from atlas_brain.runner import p4_pipeline as pipeline
-from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt, validate_receipts
+from atlas_brain.runner import pack_receipts as receipts
 from atlas_brain.runner.pack_runtime import Executed, Handler
 
 type FhrpValue = brief.Result | all_hsrp.Result | vrrp.Result
@@ -91,13 +92,12 @@ def execute_mixed_inputs(root: Path, budgets: Budgets) -> MixedExecution:
         if fhrp.vrrp_owner is not None:
             fhrp.vrrp_owner.running = False
     k.require(type(execution) is pipeline.Result and type(execution.executed) is tuple
-              and all(type(output) is Executed and type(output.receipt) is ParseReceipt for output in execution.executed), "fhrp_mixed_execution_output")
+              and all(type(output) is Executed and type(output.receipt) is receipts.ParseReceipt for output in execution.executed), "fhrp_mixed_execution_output")
     k.require(limits == _limits(budgets)
               and compiled == global_parse.validate_mixed_context(execution.envelope, budgets), "fhrp_mixed_execution_current")
     owner, version, state = fhrp.vrrp_owner, fhrp.version, fhrp.state
-    k.require(type(owner) is MixedVRRPOwner and type(version) is MixedGlobalVersionOwner
-              and type(state) is build.StateOwner, "fhrp_mixed_execution_owner")
-    if owner is None or version is None or state is None:
+    if (type(owner) is not MixedVRRPOwner or type(version) is not MixedGlobalVersionOwner
+            or type(state) is not build.StateOwner):
         raise ValueError("fhrp_mixed_execution_owner")
     plan, channel_run, hsrp, local = tree.plan, channel.run, fhrp.hsrp, fhrp.vrrp_inputs
     k.require(plan is not None and channel_run is not None and hsrp is not None and local is not None, "fhrp_mixed_execution_owner")
@@ -109,11 +109,11 @@ def execute_mixed_inputs(root: Path, budgets: Budgets) -> MixedExecution:
     for request in requests:
         validate_fhrp_request_graph(request)
     for output in execution.executed:
-        validate_fhrp_request_graph(CaptureRequest(capture=output.receipt.capture, context=output.receipt.context))
+        validate_fhrp_request_graph(receipts.CaptureRequest(capture=output.receipt.capture, context=output.receipt.context))
         k.require(all(type(value) is str for value in (output.receipt.owner, output.receipt.registration_sha256)), "fhrp_mixed_execution_output")
     expected = {request.capture.id: request for request in requests}
     members = {member.id: member for member in execution.envelope.captures}
-    validate_receipts(mixed_profile.DECLARATIONS, requests, tuple(output.receipt for output in execution.executed))
+    receipts.validate_receipts(mixed_profile.DECLARATIONS, requests, tuple(output.receipt for output in execution.executed))
     k.require(len(expected) == len(members) == len(execution.executed) and set(expected) == set(members), "fhrp_mixed_execution_output")
     outputs: list[Executed[vrrp.Result]] = []
     classes = {stp.stp.OP: stp.stp.Result, ec.parse_summary.OP: ec.parse_summary.Result,
