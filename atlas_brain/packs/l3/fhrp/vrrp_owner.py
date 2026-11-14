@@ -1,14 +1,16 @@
-"""Actual local VRRP state production; no root admission, Reader seal or global source."""
+"""Actual local VRRP production and current Reader closure; no root, origin or deep-mutation seal."""
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 
 from atlas_brain.evidence.capture import Capture
 from atlas_brain.evidence.parsekit.rules import ParseResult
 from atlas_brain.kernel import states as k
-from atlas_brain.model.store import FactStore, bind_writer
+from atlas_brain.model.specs import StepSpec
+from atlas_brain.model.store import FactReader, FactStore, bind_writer
 from atlas_brain.packs.l3.fhrp import parse_vrrp as parser
 from atlas_brain.packs.l3.fhrp import vrrp_inputs as inputs
 from atlas_brain.packs.l3.fhrp import vrrp_profile as profile
+from atlas_brain.packs.l3.fhrp.version_inputs import validate_version_state_graph
 from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
 from atlas_brain.runner.pack_runtime import (
     Executed,
@@ -59,6 +61,16 @@ class VRRPResult:
     registration_sha256: str
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Production:
+    result: VRRPResult
+    store: FactStore
+    rows: tuple[Row, ...]
+    cells: tuple[tuple[k.EntityKey, k.Known[str] | k.Unknown], ...]
+    executed: tuple[Executed[parser.Result], ...]
+    registration_sha256: str
+
+
 def _rows(subjects: tuple[_Subject, ...], outcomes: dict[tuple[str, k.EntityKey], tuple[Executed[parser.Result], _Claims]]) -> tuple[Row, ...]:
     rows: list[Row] = []
     for target, interface, group, subject in subjects:
@@ -102,6 +114,7 @@ class VRRPOwner(Parser[parser.Result]):
         self.snapshots: dict[k.CaptureId, dict[str, object]] = {}
         self.executed: tuple[Executed[parser.Result], ...] | None = None
         self.production: VRRPResult | None = None
+        self.completed: _Production | None = None
         self.attempted = self.running = self.production_attempted = False
 
     def validate_inputs(self) -> None:
@@ -127,10 +140,11 @@ class VRRPOwner(Parser[parser.Result]):
         self.produced[capture.id], self.parsed[capture.id], self.snapshots[capture.id] = value, value.parse, asdict(value)
         return value, value.parse
 
-    def finish(self) -> VRRPResult:
-        _need(self.attempted and not self.running and not self.production_attempted and self.production is None
-              and type(self.executed) is tuple, "production_once")
-        self.production_attempted = True
+    def canonical_rows(self) -> tuple[Row, ...]:
+        """Reclose the owned batch without parsing, dispatch or Store production."""
+        _need(self.attempted and not self.running and type(self.executed) is tuple, "batch")
+        _need(self.completed is None or type(self.completed) is _Production
+              and self.executed is self.completed.executed, "batch")
         self.validate_inputs()
         batch = self.executed
         if batch is None:
@@ -163,13 +177,68 @@ class VRRPOwner(Parser[parser.Result]):
         rows = _rows(self.subjects, outcomes)
         self.validate_inputs()
         _need(all(type(self.snapshots[key]) is dict and asdict(value) == self.snapshots[key] for key, value in self.produced.items()), "cache")
+        return rows
+
+    def finish(self) -> VRRPResult:
+        _need(self.attempted and not self.running and not self.production_attempted and self.production is None
+              and self.completed is None and type(self.executed) is tuple, "production_once")
+        self.production_attempted = True
+        rows = self.canonical_rows()
+        batch = self.executed
+        if batch is None:
+            raise ValueError("vrrp_owner_batch")
         store = FactStore()
         writer = bind_writer(store, step=profile.STEP)
         for row in rows:
             writer.write(fact=profile.REPORTED_VRRP_STATE, subject=row.subject, value=row.value)
         result = VRRPResult(store=store, rows=rows, executed=batch, registration_sha256=self.registration[2])
+        self.completed = _Production(result=result, store=store, rows=rows, cells=tuple((row.subject, row.value) for row in rows),
+            executed=batch, registration_sha256=self.registration[2])
         self.production = result
         return result
+
+    def validate_values(self, result: VRRPResult, reader: FactReader) -> None:
+        """Close original production and all current Reader cells; no admission or value seal."""
+        completed = self.completed
+        _need(type(completed) is _Production and type(result) is VRRPResult, "value_source")
+        if completed is None:
+            raise ValueError("vrrp_owner_value_source")
+        _need(self.production_attempted and self.production is completed.result and result is completed.result
+              and type(result.store) is FactStore and result.store is completed.store
+              and result.rows is completed.rows and result.executed is completed.executed and self.executed is completed.executed
+              and type(result.registration_sha256) is str and result.registration_sha256 == completed.registration_sha256,
+              "value_source")
+        _need(type(reader) is FactReader and reader.store is completed.store and type(reader.step) is StepSpec, "reader")
+        step = reader.step
+        _need(all(type(value) is str for value in (step.id, step.pack, step.kind, step.scope, step.evaluator))
+              and step.pack == profile.PACK and type(step.reads) is tuple
+              and all(type(fact) is str for fact in step.reads) and step.reads == (profile.REPORTED_VRRP_STATE,)
+              and type(step.produces) is tuple and not step.produces, "reader")
+        StepSpec(id=step.id, pack=step.pack, kind=step.kind, scope=step.scope,
+                 reads=step.reads, produces=step.produces, evaluator=step.evaluator)
+        wanted = self.canonical_rows()
+        _need(result.registration_sha256 == self.registration[2] and type(result.rows) is tuple
+              and all(type(row) is Row and all(type(value) is str for value in
+                  (row.subject, row.interface, row.group)) for row in result.rows), "value_population")
+        actual, expected = {row.subject: row for row in result.rows}, {row.subject: row for row in wanted}
+        cells = dict(completed.cells)
+        _need(len(actual) == len(result.rows) == len(expected) == len(wanted) == len(cells) == len(completed.cells)
+              and set(actual) == set(expected) == set(cells), "value_population")
+        store = completed.store
+        references = {k.FactRef(fact=profile.REPORTED_VRRP_STATE, subject=subject) for subject in expected}
+        _need(type(store.owners) is dict and type(store.values) is dict
+              and all(type(fact) is str and type(owner) is str for fact, owner in store.owners.items())
+              and store.owners == {profile.REPORTED_VRRP_STATE: profile.STEP.id}
+              and all(type(ref) is k.FactRef and type(ref.fact) is str and type(ref.subject) is str for ref in store.values)
+              and set(store.values) == references, "value_store")
+        for subject, original in expected.items():
+            row, value = actual[subject], actual[subject].value
+            _need(row.target is original.target and row.interface == original.interface and row.group == original.group
+                  and value is cells[subject], "value_cell")
+            validate_version_state_graph(value)
+            _need(type(value) is type(original.value) and value == original.value, "value_cell")
+            _need(store.values[k.FactRef(fact=profile.REPORTED_VRRP_STATE, subject=subject)] is value
+                  and reader.read(fact=profile.REPORTED_VRRP_STATE, subject=subject) is value, "value_reader")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
