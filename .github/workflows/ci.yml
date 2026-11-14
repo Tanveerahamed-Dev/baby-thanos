@@ -56,7 +56,7 @@ jobs:
       - run: uv run --no-sync ruff check .
       - run: uv run --no-sync pyright
       - run: uv run --no-sync python tools/fence.py
-      - run: uv run --no-sync pytest -q
+      - run: uv run --no-sync pytest -q --durations=20
   windows_tests:
     name: Windows full suite (${{ matrix.shard }}/4)
     runs-on: windows-latest

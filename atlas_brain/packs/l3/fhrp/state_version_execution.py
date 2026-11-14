@@ -183,3 +183,12 @@ class StateVersionExecution:
 
 def execute_state_version_inputs(root: Path, budgets: Budgets) -> StateVersionExecution:
     return StateVersionExecution(root, budgets).execute()
+
+
+def validate_state_version_population(
+    owner: build.StateOwner, source: VersionInputs, requests: tuple[CaptureRequest, ...], registration: str,
+    held: dict[_Key, build.Target], proofs: dict[_Key, tuple[k.RegistryRef, ...]],
+) -> None:
+    """Compare current typed population data; this grants no readiness or admission."""
+    k.require(type(owner) is build.StateOwner and type(source) is VersionInputs, "hsrp_state_version_population")
+    _state_population(owner, source, requests, registration, held, proofs)
