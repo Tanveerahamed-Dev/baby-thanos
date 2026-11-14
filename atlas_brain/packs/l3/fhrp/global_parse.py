@@ -14,10 +14,9 @@ from atlas_brain.evidence.synthetic import Node, SyntheticGroup
 from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
 from atlas_brain.model.pack_registration import CompiledPackSet, PackDeclaration
-from atlas_brain.packs.l3.fhrp import build
+from atlas_brain.packs.l3.fhrp import build, peer_profile
 from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
 from atlas_brain.packs.l3.fhrp import parse_hsrp_brief as hsrp
-from atlas_brain.packs.l3.fhrp import peer_profile
 from atlas_brain.packs.l3.fhrp import version_profile as profile
 from atlas_brain.packs.l3.fhrp.version_inputs import (
     VersionInputs,
