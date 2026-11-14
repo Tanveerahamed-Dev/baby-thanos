@@ -34,6 +34,11 @@ def _need(condition: bool, code: str) -> None:
     k.require(condition, "fhrp_mixed_component_" + code)
 
 
+def _cells(items: tuple[tuple[k.FactId, stp.Row | ec.Row | build.Row, Cell], ...]) -> Cells:
+    _need(all(type(row) in (stp.Row, ec.Row, build.Row) for _, row, _ in items), "cell")
+    return tuple((fact, row.subject, value) for fact, row, value in items)
+
+
 def _reader(result: OwnedResult, step: StepSpec, subjects: tuple[k.EntityKey, ...], held: Held, cells: Cells) -> FactReader:
     store, rows, original = held
     _need(result.store is store and result.rows is rows, "store")
@@ -103,11 +108,11 @@ class MixedComponentRun:
         execution.validate_mixed_execution(source, budgets)
         outputs = source.execution.executed
         self.tree = tree = source.tree.finish(source.execution)
-        tree_held = tree.store, tree.rows, tuple((fact, row.subject, value) for fact, row, value in stp.fact_rows(tree))
+        tree_held = tree.store, tree.rows, _cells(stp.fact_rows(tree))
         self.channel = channel = source.channel.finish(source.execution)
-        channel_held = channel.store, channel.rows, tuple((fact, row.subject, value) for fact, row, value in ec.fact_rows(channel))
+        channel_held = channel.store, channel.rows, _cells(ec.fact_rows(channel))
         self.state = state_result = state.finish(tuple(state.own(output) for output in outputs if output.receipt.capture.operation == build.hsrp.OP))
-        state_held = state_result.store, state_result.rows, tuple((fact, row.subject, value) for fact, row, value in build.fact_rows(state_result))
+        state_held = state_result.store, state_result.rows, _cells(build.fact_rows(state_result))
         self.version = version_result = version.finish(tuple(output for output in outputs if output.receipt.capture.operation == version_profile.parser.OP))
         version_held = version_result.store, version_result.rows, tuple((version_profile.REPORTED_PROTOCOL_VERSION, row.subject, row.value) for row in version_result.rows)
         self.vrrp = vrrp_result = owner.finish()
@@ -116,11 +121,11 @@ class MixedComponentRun:
         stores = (tree.store, channel.store, state_result.store, version_result.store, vrrp_result.store)
         _need(all(first is not second for index, first in enumerate(stores) for second in stores[index + 1:]), "store")
         source.tree.validate_root_guard_values(tree, _reader(tree, stp.STEP, tree_subjects, tree_held,
-            tuple((fact, row.subject, value) for fact, row, value in stp.fact_rows(tree))), outputs)
+            _cells(stp.fact_rows(tree))), outputs)
         source.channel.owner.validate_reported_protocol_values(channel, _reader(channel, ec.STEP, channel_subjects, channel_held,
-            tuple((fact, row.subject, value) for fact, row, value in ec.fact_rows(channel))), outputs)
+            _cells(ec.fact_rows(channel))), outputs)
         state.validate_gateway_source_values(state_result, _reader(state_result, build.STEP, hsrp_subjects, state_held,
-            tuple((fact, row.subject, value) for fact, row, value in build.fact_rows(state_result))), outputs)
+            _cells(build.fact_rows(state_result))), outputs)
         version.validate_values(version_result, _reader(version_result, version_profile.STEP, hsrp_subjects, version_held,
             tuple((version_profile.REPORTED_PROTOCOL_VERSION, row.subject, row.value) for row in version_result.rows)))
         owner.validate_values(vrrp_result, _reader(vrrp_result, vrrp_profile.STEP, vrrp_subjects, vrrp_held,
