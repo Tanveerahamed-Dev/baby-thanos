@@ -4,7 +4,6 @@ from enum import StrEnum
 
 import pytest
 from test_mixed_version_owner import dispatch, freeze, reader, stage
-from test_peer_execution import forbidden
 
 from atlas_brain.kernel import states as k
 from atlas_brain.model.store import FactWriter
