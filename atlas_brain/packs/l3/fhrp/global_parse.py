@@ -547,3 +547,90 @@ def validate_mixed_context(envelope: p4.Envelope, budgets: Budgets) -> CompiledP
     _mixed_need(compiled == mixed_profile.compile_mixed_profile()
                 and envelope.registration_sha256 == compiled.registration_sha256, "registration")
     return compiled
+
+
+def _mixed_hsrp_need(condition: bool, code: str) -> None:
+    k.require(condition, "fhrp_mixed_hsrp_" + code)
+
+
+def _mixed_hsrp_targets(
+    envelope: p4.Envelope, budgets: Budgets, domains: tuple[build.Target, ...],
+) -> dict[k.EntityKey, p4.Target]:
+    by_node = {domain.node.key: domain for domain in domains}
+    declared: dict[k.EntityKey, p4.Target] = {}
+    for target in envelope.targets:
+        if target.operation != all_hsrp.OP:
+            continue
+        _mixed_hsrp_need(target.owner == profile.STEP.id and target.node.key in by_node
+                         and target.node.key not in declared, "target")
+        domain = by_node[target.node.key]
+        params = record(strict_json(target.params, budgets.nesting_depth, budgets.numeric_digits), ("groups",))
+        _mixed_hsrp_need(target.node is domain.node and tuple(sorted(_pairs(params["groups"]))) == domain.groups, "target")
+        declared[target.node.key] = target
+    return declared
+
+
+def validate_mixed_hsrp_correspondence(
+    envelope: p4.Envelope, budgets: Budgets, inputs: VersionInputs,
+) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
+    """Bind only current HSRP models inside the fixed mixed context; never admission or origin."""
+    compiled = validate_mixed_context(envelope, budgets)
+    _mixed_hsrp_need(type(inputs) is VersionInputs and type(inputs.indexed) is dict and type(inputs.expected) is dict
+                     and all(type(key) is tuple and len(key) == 2 and all(type(value) is str for value in key)
+                         for key in inputs.indexed) and all(type(key) is str for key in inputs.expected), "input")
+    validate_version_inputs(inputs)
+    _, domains, _ = _scope(envelope, budgets)
+    _mixed_hsrp_need(len(domains) == len(inputs.targets) and set(inputs.indexed) ==
+                     {(target.context, target.node.key) for target in domains} and all(
+                         inputs.indexed[target.context, target.node.key].node is target.node
+                         and inputs.indexed[target.context, target.node.key].groups == target.groups for target in domains), "population")
+    declared = _mixed_hsrp_targets(envelope, budgets, domains)
+    brief = {target.node.key: target for target in envelope.targets if target.operation == hsrp.OP}
+    members: dict[str, p4.CaptureMember] = {member.id: member for member in envelope.captures if member.target.operation == all_hsrp.OP}
+    _mixed_hsrp_need(len(members) == len(inputs.requests) == len(inputs.expected) and set(members) == set(inputs.expected)
+                     and len({member.target.node.key for member in members.values()}) == len(members), "capture")
+    for request in inputs.requests:
+        capture = request.capture
+        member = members[capture.id]
+        _mixed_hsrp_need(member.target is declared.get(capture.source) and capture.raw is member.raw
+                         and capture.id == member.id and capture.source == member.target.node.key
+                         and capture.bytes_sha256 == member.sha256 and request.context == envelope.context, "capture")
+    result: dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]] = {}
+    for domain in inputs.targets:
+        evidence = domain.node.declaration.evidence + envelope.declaration.evidence + brief[domain.node.key].declaration.evidence
+        if domain.node.key in declared:
+            evidence += declared[domain.node.key].declaration.evidence
+        _mixed_hsrp_need(all(type(ref) is k.RegistryRef for ref in evidence), "declaration")
+        result[domain.context, domain.node.key] = cast(tuple[k.RegistryRef, ...], evidence)
+    _mixed_hsrp_need(compiled == validate_mixed_context(envelope, budgets), "registration")
+    validate_version_inputs(inputs)
+    return result
+
+
+def prepare_mixed_hsrp_inputs(envelope: p4.Envelope, budgets: Budgets) -> StateVersionInputs:
+    """Prepare only original BRIEF/ALL inputs; VRRP and the complete mixed run remain outside."""
+    compiled = validate_mixed_context(envelope, budgets)
+    targets, domains, requests = _scope(envelope, budgets)
+    _mixed_hsrp_targets(envelope, budgets, domains)
+    for request in requests:
+        validate_brief_request(request)
+    selected = tuple(target for target in envelope.targets if target.operation == all_hsrp.OP)
+    all_requests = tuple(prepare_version_request(capture_id=member.id, source=member.target.node.key,
+        context=envelope.context, raw=member.raw) for member in envelope.captures if member.target.operation == all_hsrp.OP)
+    inputs = retain_version_inputs(domains, all_requests)
+    declarations = validate_mixed_hsrp_correspondence(envelope, budgets, inputs)
+    _mixed_hsrp_need(compiled == validate_mixed_context(envelope, budgets), "registration")
+    for request in requests:
+        validate_brief_request(request)
+    brief_members: dict[str, p4.CaptureMember] = {member.id: member for member in envelope.captures if member.target.operation == hsrp.OP}
+    _mixed_hsrp_need(len(brief_members) == len(requests) and set(brief_members) == {request.capture.id for request in requests}, "capture")
+    original_targets = {target.node.key: target for target in targets}
+    for request in requests:
+        capture = request.capture
+        member = brief_members[capture.id]
+        _mixed_hsrp_need(member.target is original_targets.get(capture.source) and capture.raw is member.raw
+                         and capture.source == member.target.node.key and capture.bytes_sha256 == member.sha256
+                         and request.context == envelope.context, "capture")
+    validate_version_inputs(inputs)
+    return StateVersionInputs(envelope=envelope, budgets=budgets, compiled=compiled,
+        targets=targets + selected, domains=domains, requests=requests, version=inputs, declarations=declarations)
