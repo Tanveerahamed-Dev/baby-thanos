@@ -289,6 +289,30 @@ class GlobalVersionOwner(VersionOwner):
         return global_inputs.validate_state_version_correspondence(self.envelope, self.budgets, _state(self.inputs).source)
 
 
+class PeerGlobalVersionOwner(VersionOwner):
+    """Own the fixed STP/EC/FHRP peer run's VERSION subset; no source admission."""
+
+    def __init__(self, envelope: p4.Envelope, budgets: Budgets, targets: tuple[build.Target, ...],
+                 requests: tuple[CaptureRequest, ...]) -> None:
+        global_inputs.validate_peer_state_version_context(envelope, budgets)
+        source = retain_version_inputs(targets, requests)
+        global_inputs.validate_peer_state_version_correspondence(envelope, budgets, source)
+        k.digest(envelope.registration_sha256)
+        self.envelope, self.budgets = envelope, budgets
+        self.inputs = _Invocation(source=source, registration_sha256=envelope.registration_sha256,
+            produced={}, produced_values={}, claims={}, owned={})
+
+    def validate_registration(self) -> None:
+        state = _state(self.inputs)
+        global_inputs.validate_peer_state_version_context(self.envelope, self.budgets)
+        global_inputs.validate_peer_state_version_correspondence(self.envelope, self.budgets, state.source)
+        _need(type(self.envelope.registration_sha256) is str
+              and self.envelope.registration_sha256 == state.registration_sha256, "global_registration")
+
+    def declaration_evidence(self) -> dict[_Key, tuple[k.RegistryRef, ...]]:
+        return global_inputs.validate_peer_state_version_correspondence(self.envelope, self.budgets, _state(self.inputs).source)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class VersionExecution:
     owner: VersionOwner

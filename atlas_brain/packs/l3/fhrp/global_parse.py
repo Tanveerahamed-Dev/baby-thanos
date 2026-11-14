@@ -17,6 +17,7 @@ from atlas_brain.model.pack_registration import CompiledPackSet, PackDeclaration
 from atlas_brain.packs.l3.fhrp import build
 from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
 from atlas_brain.packs.l3.fhrp import parse_hsrp_brief as hsrp
+from atlas_brain.packs.l3.fhrp import peer_profile
 from atlas_brain.packs.l3.fhrp import version_profile as profile
 from atlas_brain.packs.l3.fhrp.version_inputs import (
     VersionInputs,
@@ -372,3 +373,73 @@ def prepare_state_version_inputs(root: Path, budgets: Budgets) -> StateVersionIn
         validate_brief_request(request)
     return StateVersionInputs(envelope=envelope, budgets=budgets, compiled=compiled,
         targets=targets, domains=domains, requests=requests, version=version, declarations=declarations)
+
+
+def validate_peer_state_version_context(envelope: p4.Envelope, budgets: Budgets) -> CompiledPackSet:
+    """Close finite trusted peer metadata; this supplies no admission or execution seal."""
+    _state_version_graph(envelope, budgets)
+    compiled = peer_profile.compile_peer_state_version_profile()
+    k.require(envelope.registration_sha256 == compiled.registration_sha256, "fhrp_peer_registration")
+    return compiled
+
+
+def validate_peer_state_version_correspondence(
+    envelope: p4.Envelope, budgets: Budgets, inputs: VersionInputs,
+) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
+    """Recheck the full named peer context; no admission or ownership seal."""
+    validate_peer_state_version_context(envelope, budgets)
+    validate_version_inputs(inputs)
+    _, domains, _ = _scope(envelope, budgets)
+    k.require(len(domains) == len(inputs.targets) and all(
+        (target.context, target.node.key) in inputs.indexed
+        and inputs.indexed[target.context, target.node.key].node is target.node
+        and inputs.indexed[target.context, target.node.key].groups == target.groups for target in domains), "hsrp_state_version_population")
+    brief = {target.node.key: target for target in envelope.targets if target.operation == hsrp.OP}
+    declared: dict[k.EntityKey, p4.Target] = {}
+    owners = {"iosxe.show_spanning_tree_interface_detail": "l2.stp/parse_root_guard",
+              "iosxe.show_etherchannel_summary": "l2.etherchannel/parse_protocol"}
+    for target in envelope.targets:
+        if target.operation == hsrp.OP:
+            continue
+        if target.operation in owners:
+            k.require(target.owner == owners[target.operation], "fhrp_peer_target")
+            continue
+        k.require(target.operation == all_hsrp.OP and target.owner == profile.STEP.id
+                  and target.node.key not in declared and target.node.key in brief, "hsrp_state_version_target")
+        params = record(strict_json(target.params, budgets.nesting_depth, budgets.numeric_digits), ("groups",))
+        groups = tuple(sorted(_pairs(params["groups"])))
+        domain = inputs.indexed[envelope.context, target.node.key]
+        k.require(target.node is domain.node and groups == domain.groups, "hsrp_state_version_target")
+        declared[target.node.key] = target
+    members = {member.id: member for member in envelope.captures if member.target.operation == all_hsrp.OP}
+    k.require(len(members) == len(inputs.requests) and set(members) == set(inputs.expected)
+              and len({member.target.node.key for member in members.values()}) == len(members), "hsrp_state_version_capture")
+    for request in inputs.requests:
+        member, capture = members[request.capture.id], request.capture
+        k.require(member.target is declared.get(capture.source) and capture.raw is member.raw
+                  and capture.bytes_sha256 == member.sha256 and request.context == envelope.context, "hsrp_state_version_capture")
+    result: dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]] = {}
+    for domain in inputs.targets:
+        evidence = domain.node.declaration.evidence + envelope.declaration.evidence + brief[domain.node.key].declaration.evidence
+        if domain.node.key in declared:
+            evidence += declared[domain.node.key].declaration.evidence
+        k.require(all(type(ref) is k.RegistryRef for ref in evidence), "hsrp_state_version_declaration")
+        result[domain.context, domain.node.key] = cast(tuple[k.RegistryRef, ...], evidence)
+    return result
+
+
+def prepare_peer_state_version_inputs(envelope: p4.Envelope, budgets: Budgets) -> StateVersionInputs:
+    """Prepare this pack's original models inside an already-owned full peer envelope."""
+    compiled = validate_peer_state_version_context(envelope, budgets)
+    targets, domains, requests = _scope(envelope, budgets)
+    for request in requests:
+        validate_brief_request(request)
+    selected = tuple(target for target in envelope.targets if target.operation == all_hsrp.OP)
+    all_requests = tuple(prepare_version_request(capture_id=member.id, source=member.target.node.key,
+        context=envelope.context, raw=member.raw) for member in envelope.captures if member.target.operation == all_hsrp.OP)
+    inputs = retain_version_inputs(domains, all_requests)
+    declarations = validate_peer_state_version_correspondence(envelope, budgets, inputs)
+    for request in requests:
+        validate_brief_request(request)
+    return StateVersionInputs(envelope=envelope, budgets=budgets, compiled=compiled,
+        targets=targets + selected, domains=domains, requests=requests, version=inputs, declarations=declarations)
