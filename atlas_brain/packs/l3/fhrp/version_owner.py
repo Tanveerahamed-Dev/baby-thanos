@@ -124,6 +124,7 @@ class VersionOwner(Parser[parser.Result]):
         return GlobalVersionOwner(envelope, budgets, targets, requests)
 
     def declaration_evidence(self) -> dict[_Key, tuple[k.RegistryRef, ...]]:
+        _mixed_receiver(self)
         return {key: cast(tuple[k.RegistryRef, ...], target.node.declaration.evidence)
                 for key, target in _state(self.inputs).source.indexed.items()}
 
@@ -131,7 +132,7 @@ class VersionOwner(Parser[parser.Result]):
         raise ValueError("hsrp_version_registration_context")
 
     def parse(self, request: CaptureRequest) -> Parsed[parser.Result]:
-        self.validate_registration()
+        _registration_context(self)
         validate_version_request(request)
         state = _state(self.inputs)
         _need(request.capture.id in state.source.expected and request.capture is state.source.expected[request.capture.id].capture
@@ -143,7 +144,7 @@ class VersionOwner(Parser[parser.Result]):
         return value, value.parse
 
     def own[T](self, output: Executed[T]) -> Executed[parser.Result]:
-        self.validate_registration()
+        _registration_context(self)
         state = _state(self.inputs)
         _need(type(output) is Executed and type(output.receipt) is ParseReceipt
               and type(output.receipt.capture) is Capture, "receipt")
@@ -162,7 +163,7 @@ class VersionOwner(Parser[parser.Result]):
         return owned
 
     def canonical_rows[T](self, outputs: tuple[Executed[T], ...]) -> tuple[build.Row, ...]:
-        self.validate_registration()
+        _registration_context(self)
         state = _state(self.inputs)
         validate_version_inputs(state.source)
         _need(type(outputs) is tuple and len(outputs) == len(state.source.expected)
@@ -173,19 +174,20 @@ class VersionOwner(Parser[parser.Result]):
         state.owned.clear()
         outcomes: dict[_Key, tuple[Executed[parser.Result], _Claims]] = {}
         for output in outputs:
-            out = self.own(output)
+            out = _BASE_VERSION_OWNER.own(self, output) if type(self) is _MIXED_VERSION_OWNER else self.own(output)
             key = (out.receipt.context or "", out.receipt.capture.source)
             target = state.source.indexed[key]
             _need(out.value.reason is not None or all((row.interface.raw, row.group.raw) in target.groups for row in out.value.rows), "population")
             outcomes[key] = out, state.claims[out.receipt.capture.id]
-        return _rows(state, outcomes, self.declaration_evidence())
+        return _rows(state, outcomes, _declaration_context(self))
 
 
     def finish[T](self, outputs: tuple[Executed[T], ...]) -> VersionResult:
         """Consume this invocation once; close all candidate rows before any Writer."""
+        _mixed_receiver(self)
         _need(not self.production_attempted and self.production is None, "production_once")
         self.production_attempted = True
-        rows = self.canonical_rows(outputs)
+        rows = _canonical_context(self, outputs)
         state = _state(self.inputs)
         executed = tuple(state.owned[out.receipt.capture.id] for out in outputs)
         registration = state.registration_sha256
@@ -202,6 +204,7 @@ class VersionOwner(Parser[parser.Result]):
 
     def validate_values(self, result: VersionResult, reader: FactReader) -> None:
         """Close this actual production's canonical cells; no admission or recursive-proof seal."""
+        _mixed_receiver(self)
         completed = self.completed
         _need(type(completed) is _Production and type(result) is VersionResult, "value_source")
         if completed is None:
@@ -219,7 +222,7 @@ class VersionOwner(Parser[parser.Result]):
               and type(step.produces) is tuple and not step.produces, "reader")
         StepSpec(id=step.id, pack=step.pack, kind=step.kind, scope=step.scope,
                  reads=step.reads, produces=step.produces, evaluator=step.evaluator)
-        wanted = self.canonical_rows(completed.executed)
+        wanted = _canonical_context(self, completed.executed)
         state = _state(self.inputs)
         _need(result.registration_sha256 == state.registration_sha256 and type(result.rows) is tuple
               and all(type(row) is build.Row and all(type(value) is str for value in
@@ -325,3 +328,57 @@ def execute_local_version_inputs(
     owner = VersionOwner.for_local(targets, requests)
     outputs = execute_parsers((profile.DECLARATION,), (Handler(binding=profile.BINDING, parser=owner),), requests)
     return VersionExecution(owner=owner, executed=outputs)
+
+
+class MixedGlobalVersionOwner(VersionOwner):
+    """Own only VERSION inside the fixed mixed run; never source admission or origin."""
+
+    def __init__(self, envelope: p4.Envelope, budgets: Budgets, targets: tuple[build.Target, ...],
+                 requests: tuple[CaptureRequest, ...]) -> None:
+        _need(type(self) is _MIXED_VERSION_OWNER, "mixed_receiver")
+        global_inputs.validate_mixed_context(envelope, budgets)
+        source = retain_version_inputs(targets, requests)
+        global_inputs.validate_mixed_hsrp_correspondence(envelope, budgets, source)
+        k.digest(envelope.registration_sha256)
+        self.envelope, self.budgets = envelope, budgets
+        self.inputs = _Invocation(source=source, registration_sha256=envelope.registration_sha256,
+            produced={}, produced_values={}, claims={}, owned={})
+
+    def validate_registration(self) -> None:
+        _need(type(self) is _MIXED_VERSION_OWNER, "mixed_receiver")
+        state = _state(self.inputs)
+        global_inputs.validate_mixed_hsrp_correspondence(self.envelope, self.budgets, state.source)
+        _need(type(state.registration_sha256) is str and type(self.envelope.registration_sha256) is str
+              and self.envelope.registration_sha256 == state.registration_sha256, "mixed_registration")
+
+    def declaration_evidence(self) -> dict[_Key, tuple[k.RegistryRef, ...]]:
+        _need(type(self) is _MIXED_VERSION_OWNER, "mixed_receiver")
+        return global_inputs.validate_mixed_hsrp_correspondence(self.envelope, self.budgets, _state(self.inputs).source)
+
+
+_BASE_VERSION_OWNER = VersionOwner
+_MIXED_VERSION_OWNER = MixedGlobalVersionOwner
+
+
+def _mixed_receiver(owner: VersionOwner) -> None:
+    _need(not isinstance(owner, _MIXED_VERSION_OWNER) or type(owner) is _MIXED_VERSION_OWNER, "mixed_receiver")
+
+
+def _registration_context(owner: VersionOwner) -> None:
+    _mixed_receiver(owner)
+    if type(owner) is _MIXED_VERSION_OWNER:
+        _MIXED_VERSION_OWNER.validate_registration(owner)
+    else:
+        owner.validate_registration()
+
+
+def _declaration_context(owner: VersionOwner) -> dict[_Key, tuple[k.RegistryRef, ...]]:
+    _mixed_receiver(owner)
+    if type(owner) is _MIXED_VERSION_OWNER:
+        return _MIXED_VERSION_OWNER.declaration_evidence(owner)
+    return owner.declaration_evidence()
+
+
+def _canonical_context[T](owner: VersionOwner, outputs: tuple[Executed[T], ...]) -> tuple[build.Row, ...]:
+    _mixed_receiver(owner)
+    return _BASE_VERSION_OWNER.canonical_rows(owner, outputs) if type(owner) is _MIXED_VERSION_OWNER else owner.canonical_rows(outputs)
