@@ -750,14 +750,14 @@ class RootGuardPack[Peer](_GlobalSTP[Peer]):
         checked: list[Executed[stp.Result]] = []
         for output in own:
             receipt, capture = output.receipt, output.receipt.capture
-            value = self.produced[capture.id]
-            k.require(type(value) is stp.Result and output.value is value and receipt.parse is value.parse
+            parsed_result = self.produced[capture.id]
+            k.require(type(parsed_result) is stp.Result and output.value is parsed_result and receipt.parse is parsed_result.parse
                       and capture is requests[capture.id].capture and receipt.owner == step.id
                       and receipt.context == requests[capture.id].context
                       and receipt.registration_sha256 == self.registration, "stp_root_guard_source_cache")
             key = (receipt.context or "", capture.source, capture.rendered)
             k.require(key in grouped, "stp_root_guard_source_population")
-            narrowed = Executed(receipt=receipt, value=value)
+            narrowed = Executed(receipt=receipt, value=parsed_result)
             grouped[key].append(narrowed)
             checked.append(narrowed)
         expected_rows = tuple(row for key in sorted(fresh.indexed) for row in _rows(fresh.indexed[key], grouped[key],
