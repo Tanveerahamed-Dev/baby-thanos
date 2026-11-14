@@ -82,7 +82,7 @@ class LocalVRRPProofIndex:
                 registry.append(ref)
                 continue
             if not isinstance(ref, k.EvidenceRef):
-                raise ValueError("vrrp_proofs_evidence")
+                raise TypeError("vrrp_proofs_evidence")
             _need(type(ref) is k.EvidenceRef and type(ref.capture) is str
                   and type(ref.role) is k.EvidenceRole and capture is not None, "evidence")
             if capture is None:

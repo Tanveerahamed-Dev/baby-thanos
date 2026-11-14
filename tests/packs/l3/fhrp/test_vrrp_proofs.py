@@ -28,6 +28,9 @@ def actual(monkeypatch, mode="normal"):
     raw = BODY + block("Vl61", "101", "Backup") if mode == "two" else b"" if mode == "empty" else (
         BODY + BODY if mode == "duplicate" else BODY + b"unrecognized\n" if mode == "partial" else BODY)
     targets, requests = supplied(raw, missing=mode == "missing")
+    if mode == "contexts":
+        targets += (replace(targets[0], context="other"),)
+        requests += (replace(requests[0], context="other", capture=replace(requests[0].capture, id="cap:other")),)
     execution = owning.execute_local_vrrp_inputs(() if mode == "zero" else targets, () if mode == "zero" else requests)
     reader = reader_for(execution.result.store)
     foreign = FactStore()
@@ -42,7 +45,7 @@ def actual(monkeypatch, mode="normal"):
     return index, foreign
 
 
-@pytest.mark.parametrize("mode", ["normal", "two", "empty", "duplicate", "partial", "missing", "zero"])
+@pytest.mark.parametrize("mode", ["normal", "two", "contexts", "empty", "duplicate", "partial", "missing", "zero"])
 def test_actual_rows_return_only_original_scoped_byte_leaves_and_unexpanded_registry_refs(monkeypatch, mode):
     index, _ = actual(monkeypatch, mode)
     if not index.result.rows:
@@ -55,7 +58,7 @@ def test_actual_rows_return_only_original_scoped_byte_leaves_and_unexpanded_regi
         assert result.unexpanded_registry_refs == row.target.node.declaration.evidence
         assert all(ref is original for ref, original in zip(result.unexpanded_registry_refs, row.target.node.declaration.evidence, strict=True))
         assert tuple(leaf.reference for leaf in result.capture_leaves) == tuple(ref for ref in row.value.evidence if type(ref) is k.EvidenceRef)
-        request = next((request for request in index.owner.inputs.requests if request.capture.source == row.target.node.key), None)
+        request = next((request for request in index.owner.inputs.requests if request.context == row.target.context and request.capture.source == row.target.node.key), None)
         assert bool(result.capture_leaves) is (request is not None)
         for leaf in result.capture_leaves:
             ref, capture = leaf.reference, leaf.capture
@@ -76,6 +79,7 @@ def test_actual_rows_return_only_original_scoped_byte_leaves_and_unexpanded_regi
                 assert result.capture_leaves == ()
         else:
             assert not result.next_evidence and result.capture_leaves
+            assert all(b"Authentication" not in leaf.raw for leaf in result.capture_leaves)
         with pytest.raises(AttributeError):
             result.state = None
         assert index.resolve(replace(reference)) == result
@@ -126,7 +130,7 @@ def test_reference_is_exact_plain_owned_vrrp_and_never_cross_protocol_or_recursi
         index.resolve(reference)
 
 
-@pytest.mark.parametrize("plant", ["hash", "role", "span", "whole", "capture", "registry", "recursive"])
+@pytest.mark.parametrize("plant", ["hash", "role", "span", "whole", "capture", "registry", "recursive", "rich_row"])
 def test_actual_known_evidence_mutation_is_reclosed_before_leaf_resolution(monkeypatch, plant):
     index, _ = actual(monkeypatch)
     row = next(row for row in index.result.rows if type(row.value) is k.Known)
@@ -134,6 +138,12 @@ def test_actual_known_evidence_mutation_is_reclosed_before_leaf_resolution(monke
     original = index.resolve(reference)
     if plant == "recursive":
         evidence = row.value.evidence + (reference,)
+    elif plant == "rich_row":
+        output = index.result.executed[0]
+        rich = next(item for item in output.value.rows if item.interface.raw == row.interface and item.group.raw == row.group)
+        point, capture = rich.span, output.receipt.capture
+        evidence = row.value.evidence + (k.EvidenceRef(capture=capture.id, locator=point, role=k.EvidenceRole.SUBJECT,
+            excerpt_sha256=sha256(capture.raw[point.start:point.end]).hexdigest()),)
     else:
         selected = next(ref for ref in row.value.evidence if type(ref) is (k.RegistryRef if plant == "registry" else k.EvidenceRef))
         changes = {"locator": k.ByteSpan(start=selected.locator.start + 1, end=selected.locator.end)} if plant == "span" else {
