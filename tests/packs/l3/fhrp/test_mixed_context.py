@@ -14,7 +14,6 @@ from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence import p4_admission as p4
 from atlas_brain.evidence.admission import BudgetExceeded
 from atlas_brain.evidence.text import text_lines
-from atlas_brain.kernel import states as k
 from atlas_brain.model.store import FactStore, FactWriter
 from atlas_brain.packs.l2.stp import build as stp
 from atlas_brain.packs.l3.fhrp import global_parse as preparation
