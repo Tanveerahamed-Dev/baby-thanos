@@ -19,6 +19,7 @@ from atlas_brain.packs.l2.stp import build as stp
 from atlas_brain.packs.l3.fhrp import build as fhrp
 from atlas_brain.packs.l3.fhrp import global_parse as fhrp_inputs
 from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
+from atlas_brain.packs.l3.fhrp import version_owner as vo
 from atlas_brain.packs.l3.fhrp import version_profile as version
 from atlas_brain.runner import p4_pipeline as pipe
 from atlas_brain.runner.pack_receipts import ParseReceipt
@@ -60,6 +61,7 @@ class Scope:
     positive: frozenset[tuple[k.CaptureId, k.ByteSpan]]
     required: frozenset[tuple[k.CaptureId, k.ByteSpan]] = frozenset()
     witnesses: frozenset[tuple[k.CaptureId, k.ByteSpan]] = frozenset()
+    whole_captures: frozenset[k.CaptureId] | None = None
 
 
 def _table(value: object, fields: tuple[str, ...], table: str,
@@ -190,30 +192,36 @@ class ProofIndex[T: VersionValue = LegacyValue]:
         """Positive requests mean any Known observation, including Known(False), never the fact's truthiness."""
         _need(type(scope) is Scope and type(scope.reference) is k.FactRef and type(positive) is bool, "scope")
         _need(self.scope(scope.reference.fact, scope.reference.subject) is scope, "scope")
-        _need(type(evidence) is tuple and all(type(ref) in (k.RegistryRef, k.EvidenceRef) for ref in evidence), "reference")
-        _need(tuple(ref for ref in evidence if type(ref) is k.RegistryRef) == scope.declarations, "registry")
-        result: list[dict[str, object]] = []
-        for ref in evidence:
-            if type(ref) is k.RegistryRef:
-                _need(ref in self.records, "registry")
-                result.append({"kind": "registry", "table": ref.table, "row_id": ref.row_id, "table_digest": ref.table_digest,
-                    "citation": ref.citation, "value": strict_json(self.records[ref], self.budgets.nesting_depth, self.budgets.numeric_digits)})
-            elif type(ref) is k.EvidenceRef:
-                result.append(_capture_leaf(self, ref, scope, positive, None))
-            else:
-                raise RunnerRefused("p4_projection_reference")
-        _need(not positive or any(type(ref) is k.EvidenceRef and ref.role is k.EvidenceRole.SUBJECT
-                  and type(ref.locator) is k.ByteSpan and (ref.capture, ref.locator) in scope.positive for ref in evidence), "positive")
-        supplied = {(ref.capture, ref.locator) for ref in evidence if type(ref) is k.EvidenceRef
-                    and ref.role is k.EvidenceRole.SUBJECT and type(ref.locator) is k.ByteSpan}
-        _need(not positive or scope.required <= supplied, "positive")
-        return result
+        return _resolve_evidence(self, scope, evidence, positive)
 
     def metadata_evidence(self, identity: k.CaptureId, evidence: tuple[k.Evidence, ...]) -> list[dict[str, object]]:
         """Resolve capture-local SUBJECT byte/whole leaves, with no subject or positive request."""
         _need(identity in self.members, "capture")
         _need(type(evidence) is tuple and all(type(ref) is k.EvidenceRef for ref in evidence), "reference")
         return [_capture_leaf(self, ref, None, False, identity) for ref in evidence if type(ref) is k.EvidenceRef]
+
+
+def _resolve_evidence[T: VersionValue](
+    index: ProofIndex[T], scope: Scope, evidence: tuple[k.Evidence, ...], positive: bool,
+) -> list[dict[str, object]]:
+    _need(type(evidence) is tuple and all(type(ref) in (k.RegistryRef, k.EvidenceRef) for ref in evidence), "reference")
+    _need(tuple(ref for ref in evidence if type(ref) is k.RegistryRef) == scope.declarations, "registry")
+    result: list[dict[str, object]] = []
+    for ref in evidence:
+        if type(ref) is k.RegistryRef:
+            _need(ref in index.records, "registry")
+            result.append({"kind": "registry", "table": ref.table, "row_id": ref.row_id, "table_digest": ref.table_digest,
+                "citation": ref.citation, "value": strict_json(index.records[ref], index.budgets.nesting_depth, index.budgets.numeric_digits)})
+        elif type(ref) is k.EvidenceRef:
+            result.append(_capture_leaf(index, ref, scope, positive, None))
+        else:
+            raise RunnerRefused("p4_projection_reference")
+    _need(not positive or any(type(ref) is k.EvidenceRef and ref.role is k.EvidenceRole.SUBJECT
+              and type(ref.locator) is k.ByteSpan and (ref.capture, ref.locator) in scope.positive for ref in evidence), "positive")
+    supplied = {(ref.capture, ref.locator) for ref in evidence if type(ref) is k.EvidenceRef
+                and ref.role is k.EvidenceRole.SUBJECT and type(ref.locator) is k.ByteSpan}
+    _need(not positive or scope.required <= supplied, "positive")
+    return result
 
 
 class RootProofIndex[T: Value = Value](ProofIndex[T]):
@@ -226,8 +234,101 @@ class FhrpVersionProofIndex(ProofIndex[VersionValue]):
     Close actual owning values and the base five facts before adding VERSION scopes.
     An absent ALL declaration later uses BRIEF only as a negative registry anchor;
     adding that scope first would pollute the base STATE operation census.
-    No owner-cache identity, execution origin or six-fact proof closure is established.
+    The constructor establishes no owner-cache identity, origin or VERSION proof closure.
     """
+
+    protocol_version_reader: FactReader | None = None
+    protocol_version_result: vo.VersionResult | None = None
+    protocol_version_owner: vo.PeerGlobalVersionOwner | None = None
+
+    def close_protocol_version(
+        self, result: vo.VersionResult, reader: FactReader, owner: vo.PeerGlobalVersionOwner,
+    ) -> None:
+        """Stage owning VERSION proofs; the fresh Source still owns base-five ordering/admission."""
+        _need(type(self) is FhrpVersionProofIndex and self.protocol_version_reader is None
+              and not any(scope.reference.fact == version.REPORTED_PROTOCOL_VERSION for scope in self.scopes), "profile")
+        _need(type(owner) is vo.PeerGlobalVersionOwner and owner.envelope is self.execution.envelope
+              and owner.budgets is self.budgets, "store")
+        owner.validate_values(result, reader)
+        outputs = self.execution.executed
+        _need(type(outputs) is tuple and all(type(out) is Executed and type(out.receipt) is ParseReceipt
+              and type(out.receipt.capture) is Capture for out in outputs), "capture")
+        detailed = tuple(out for out in outputs if out.receipt.capture.operation == all_hsrp.OP)
+        _need(len(result.executed) == len(detailed) and all(any(out.receipt is actual.receipt
+              and out.value is actual.value for actual in detailed) for out in result.executed)
+              and len({out.receipt.capture.id for out in detailed}) == len(detailed), "capture")
+        _need(result.registration_sha256 == self.execution.envelope.registration_sha256, "profile")
+        sources = tuple(scope for scope in self.scopes if scope.reference.fact == fhrp.REPORTED_STATE)
+        expected = {k.FactRef(fact=version.REPORTED_PROTOCOL_VERSION, subject=scope.reference.subject) for scope in sources}
+        _need(len(sources) == len(expected) == len(result.rows) and set(result.store.values) == expected
+              and result.store.owners == {version.REPORTED_PROTOCOL_VERSION: version.STEP.id}, "population")
+        rows = {row.subject: row for row in result.rows}
+        _need(len(rows) == len(result.rows) and set(rows) == {scope.reference.subject for scope in sources}, "population")
+        pending: dict[k.FactRef, Scope] = {}
+        for source in sources:
+            labels, row = dict(source.labels), rows[source.reference.subject]
+            _need(row.target.node is source.target.node and row.target.context == self.execution.envelope.context
+                  and row.interface == labels["interface"] and row.group == labels["group"], "scope")
+            targets = tuple(target for target in self.execution.envelope.targets
+                            if target.operation == all_hsrp.OP and target.node is source.target.node)
+            _need(len(targets) <= 1, "population")
+            target = targets[0] if targets else source.target
+            declarations = source.declarations + (self.declarations[target.id][-1:] if targets else ())
+            cells: list[tuple[k.CaptureId, all_hsrp.Row, tuple[k.ByteSpan, ...], bool]] = []
+            captures: set[k.CaptureId] = set()
+            for output in detailed:
+                capture = output.receipt.capture
+                _need(capture.id in self.members and self.snapshots.get(capture.id) is capture
+                      and self.receipts.get(capture.id) is output.receipt and type(output.value) is all_hsrp.Result, "capture")
+                if self.members[capture.id].target is not target:
+                    continue
+                if not isinstance(output.value, all_hsrp.Result):
+                    raise RunnerRefused("p4_projection_capture")
+                captures.add(capture.id)
+                for rich, points in all_hsrp.validate_claims(capture, output.value):
+                    if rich.interface.raw == row.interface and rich.group.raw == row.group:
+                        eligible = (output.value.reason is None and rich.reason is None and rich.address_family == "ipv4"
+                            and rich.version is not None and rich.virtual_ip is not None
+                            and output.receipt.parse.quality == "complete" and capture.integrity is k.IntegrityState.COMPLETE)
+                        cells.append((capture.id, rich, points, eligible))
+            spans: frozenset[tuple[k.CaptureId, k.ByteSpan]] = frozenset()
+            anchors: frozenset[tuple[k.CaptureId, k.ByteSpan]] = frozenset()
+            witnesses: frozenset[tuple[k.CaptureId, k.ByteSpan]] = frozenset()
+            if len(cells) == 1 and cells[0][3]:
+                identity, rich, points, _ = cells[0]
+                if rich.version is None:
+                    raise RunnerRefused("p4_projection_positive")
+                spans = frozenset((identity, point) for point in points)
+                anchors = frozenset(((identity, rich.version.span),))
+            else:
+                witnesses = frozenset((identity, point) for identity, _, points, _ in cells for point in points)
+            reference = k.FactRef(fact=version.REPORTED_PROTOCOL_VERSION, subject=row.subject)
+            _need(reference not in self.bound and reader.read(fact=reference.fact, subject=row.subject) is row.value, "store")
+            selected = Scope(reference=reference, target=target,
+                labels=tuple((key, target.id if key == "target" else value) for key, value in source.labels),
+                declarations=declarations, spans=spans, positive=anchors, required=spans,
+                witnesses=witnesses, whole_captures=frozenset(captures))
+            _resolve_evidence(self, selected, row.value.evidence, type(row.value) is k.Known)
+            pending[reference] = selected
+        combined = {**self.bound, **pending}
+        ordered = tuple(combined[key] for key in sorted(combined, key=lambda key: (key.fact, key.subject)))
+        self.bound, self.ordered = combined, ordered
+        self.protocol_version_reader, self.protocol_version_result, self.protocol_version_owner = reader, result, owner
+
+    def resolve_protocol_version_reference(self, reference: k.FactRef) -> list[dict[str, object]]:
+        """Expand one current owning VERSION cell; never accept recursive facts or admit a Source."""
+        reader, result, owner = self.protocol_version_reader, self.protocol_version_result, self.protocol_version_owner
+        _need(type(self) is FhrpVersionProofIndex and type(reference) is k.FactRef
+              and type(reference.fact) is str and type(reference.subject) is str
+              and reference.fact == version.REPORTED_PROTOCOL_VERSION, "reference")
+        if reader is None or result is None or owner is None:
+            raise RunnerRefused("p4_projection_reference")
+        _need(type(owner) is vo.PeerGlobalVersionOwner and owner.envelope is self.execution.envelope
+              and owner.budgets is self.budgets, "store")
+        owner.validate_values(result, reader)
+        value = reader.read(fact=reference.fact, subject=reference.subject)
+        _need(type(value) in (k.Known, k.Unknown), "reference")
+        return self.resolve(self.scope(reference.fact, reference.subject), value.evidence, positive=type(value) is k.Known)
 
 
 def _version_targets[T: VersionValue](index: ProofIndex[T]) -> None:
@@ -404,6 +505,8 @@ def _capture_leaf[T: VersionValue](index: ProofIndex[T], ref: k.EvidenceRef, sco
     elif type(ref.locator) is k.WholeCapture:
         _need(ref.role is (k.EvidenceRole.WITNESS if scope is not None else k.EvidenceRole.SUBJECT), "role")
         _need(not positive, "reference")
+        _need(scope is None or scope.whole_captures is None or type(scope.whole_captures) is frozenset
+              and ref.capture in scope.whole_captures, "scope")
         actual = index.hashes[capture.id]
         leaf["locator"] = "whole_capture"
     else:
