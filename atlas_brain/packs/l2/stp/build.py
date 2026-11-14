@@ -637,11 +637,157 @@ class _GlobalSTP[Peer](p4_pipeline.Pack[stp.Result | Peer]):
         return _materialize(plan, tuple(owned), self.producer)
 
 
+def _root_guard_source_state(state: k.Known[bool] | k.Known[str] | k.Unknown,
+                             wanted: k.Known[bool] | k.Known[str] | k.Unknown) -> None:
+    if isinstance(wanted, k.Known):
+        if type(state) is not k.Known:
+            raise ValueError("stp_root_guard_source_value")
+        k.require(type(state.value) is type(wanted.value) and type(state.raw) is type(wanted.raw)
+                  and state.basis is wanted.basis, "stp_root_guard_source_value")
+        k.Known(value=state.value, raw=state.raw, basis=state.basis, evidence=state.evidence)
+    else:
+        if type(state) is not k.Unknown:
+            raise ValueError("stp_root_guard_source_value")
+        k.require(type(state.candidates) is tuple and all(type(value) is str for value in state.candidates), "stp_root_guard_source_value")
+        k.Unknown(reason=state.reason, detail=state.detail, evidence=state.evidence,
+                  candidates=state.candidates, next_evidence=state.next_evidence)
+        for need in state.next_evidence:
+            k.require(all(type(values) is tuple and all(type(value) is str for value in values)
+                          for values in (need.resolves, need.reruns, need.unprintable)), "stp_root_guard_source_value")
+            k.EvidenceNeed(node=need.node, operation=need.operation, params=need.params, resolves=need.resolves,
+                reruns=need.reruns, after_s=need.after_s, unprintable=need.unprintable)
+    for ref in state.evidence:
+        if type(ref) is k.RegistryRef:
+            k.RegistryRef(table=ref.table, row_id=ref.row_id, table_digest=ref.table_digest, citation=ref.citation)
+        elif type(ref) is k.EvidenceRef:
+            locator = ref.locator
+            if type(locator) is k.ByteSpan:
+                k.ByteSpan(start=locator.start, end=locator.end)
+            else:
+                k.require(type(locator) is k.WholeCapture, "stp_root_guard_source_value")
+            k.EvidenceRef(capture=ref.capture, locator=locator, role=ref.role, excerpt_sha256=ref.excerpt_sha256)
+        else:
+            raise ValueError("stp_root_guard_source_value")
+    k.require(state == wanted, "stp_root_guard_source_value")
+
+
 class RootGuardPack[Peer](_GlobalSTP[Peer]):
     """Fixed legacy STP staging; ordinary preparation does not finish or write facts."""
 
     def __init__(self, budgets: Budgets) -> None:
         super().__init__(budgets)
+
+    def validate_root_guard_values(self, result: Result, reader: FactReader,
+                                   outputs: tuple[Executed[stp.Result | Peer], ...]) -> tuple[Target, ...]:
+        """Compare actual legacy owning values; callers still own whole-run/profile/proof closure."""
+        envelope, plan, producer = self.envelope, self.plan, self.producer
+        if envelope is None or plan is None:
+            raise ValueError("stp_root_guard_source_run")
+        k.require(type(self.budgets) is Budgets and all(type(value) is int and value > 0 for value in
+            (self.budgets.bundle_bytes, self.budgets.artifact_bytes, self.budgets.artifacts, self.budgets.nesting_depth,
+             self.budgets.numeric_digits, self.budgets.compression_ratio, self.budgets.archive_index_bytes)),
+            "stp_root_guard_source_budget")
+        k.require(type(envelope) is p4_admission.Envelope and type(plan) is _Plan
+                  and type(self) is RootGuardPack and type(producer) is _Producer and producer.roots is False
+                  and producer.declaration is DECLARATION and producer.step is STEP and producer.binding is BINDING,
+                  "stp_root_guard_source_profile")
+        contract = projection_contract()
+        step = StepSpec(id=contract[0][2], pack=contract[0][1], kind="parse_build", scope="device", reads=(),
+            produces=tuple(spec[0] for spec in contract), evaluator="l2.stp.build_root_guard")
+        binding = OperationBinding(operation="iosxe.show_spanning_tree_interface_detail", step=step.id)
+        literal = PackDeclaration(pack=step.pack, entity_kinds=(EntityKindSpec(id="stp_port_vlan", pack=step.pack, root=False),),
+            facts=tuple(FactSpec(id=fact, pack=pack, subject=kind, value_type="boolean" if value is bool else "text",
+                step=owner) for fact, pack, owner, kind, value in contract), relations=(), steps=(step,), operations=(binding,))
+        runtime = PackDeclaration(pack=DECLARATION.pack, entity_kinds=DECLARATION.entity_kinds, facts=DECLARATION.facts,
+            relations=DECLARATION.relations, steps=(producer.step,), operations=(producer.binding,))
+        identities = tuple((item.catalogue_bytes, item.registration_bytes, item.registration_sha256)
+            for item in (compile_packs((DECLARATION,)), compile_packs((runtime,)), compile_packs((literal,))))
+        k.require(type(ROOT_GUARD) is str and type(REPORTED_ROLE) is str
+                  and (REPORTED_ROLE, ROOT_GUARD) == step.produces and producer.step == step and producer.binding == binding
+                  and identities[0] == identities[1] == identities[2],
+                  "stp_root_guard_source_profile")
+        k.require(type(self.registration) is str and self.registration == envelope.registration_sha256,
+                  "stp_root_guard_source_run")
+        base = envelope.base
+        k.require(type(base) is SyntheticGroup and type(envelope.raw) is bytes and type(base.raw) is bytes
+                  and all(type(value) is str for value in (base.id, base.schema, envelope.context)) and type(base.nodes) is tuple
+                  and all(type(node) is Node and all(type(value) is str for value in (node.id, node.group, node.discovery_id))
+                      and type(node.ports) is tuple and all(type(port) is str for port in node.ports) for node in base.nodes)
+                  and type(envelope.targets) is tuple and all(type(target) is p4_admission.Target
+                      and all(type(value) is str for value in (target.id, target.operation, target.owner))
+                      and type(target.params) is bytes and any(target.node is node for node in base.nodes) for target in envelope.targets)
+                  and type(envelope.captures) is tuple and all(type(member) is p4_admission.CaptureMember
+                      and all(type(value) is str for value in (member.id, member.path, member.sha256))
+                      and type(member.raw) is bytes and any(member.target is target for target in envelope.targets) for member in envelope.captures),
+                  "stp_root_guard_source_graph")
+        fresh = _scope(envelope, self.budgets, producer, singleton=False, capture_requests=False)
+        k.require(type(plan.indexed) is dict and all(type(key) is tuple and len(key) == 3
+                  and all(type(value) is str for value in key) for key in plan.indexed)
+                  and set(plan.indexed) == set(fresh.indexed)
+                  and plan.proofs == fresh.proofs and type(plan.requests) is tuple
+                  and all(type(request) is CaptureRequest and type(request.capture) is Capture
+                      and all(type(value) is str for value in (request.capture.id, request.capture.source,
+                          request.capture.operation, request.capture.rendered, request.capture.codec))
+                      and type(request.capture.raw) is bytes and type(request.capture.lines) is tuple
+                      for request in plan.requests), "stp_root_guard_source_population")
+        for key, target in plan.indexed.items():
+            wanted = fresh.indexed[key]
+            k.require(type(target) is Target and target.node is wanted.node and target == wanted, "stp_root_guard_source_population")
+            Target(context=target.context, node=target.node, port=target.port, vlans=target.vlans)
+        k.require(type(outputs) is tuple and all(type(output) is Executed and type(output.receipt) is ParseReceipt
+                  and type(output.receipt.capture) is Capture and type(output.receipt.capture.operation) is str
+                  for output in outputs), "stp_root_guard_source_receipt")
+        own = tuple(output for output in outputs if output.receipt.capture.operation == stp.OP)
+        k.require(all(all(type(value) is str for value in (output.receipt.capture.id, output.receipt.capture.source,
+                  output.receipt.capture.rendered, output.receipt.owner, output.receipt.context,
+                  output.receipt.registration_sha256)) for output in own), "stp_root_guard_source_receipt")
+        requests = {request.capture.id: request for request in plan.requests}
+        k.require(len(requests) == len(plan.requests) == len(own) and type(self.produced) is dict
+                  and all(type(key) is str and type(value) is stp.Result for key, value in self.produced.items())
+                  and set(requests) == set(self.produced) == {output.receipt.capture.id for output in own},
+                  "stp_root_guard_source_population")
+        grouped: dict[_Key, list[Executed[stp.Result]]] = {key: [] for key in fresh.indexed}
+        checked: list[Executed[stp.Result]] = []
+        for output in own:
+            receipt, capture = output.receipt, output.receipt.capture
+            parsed_result = self.produced[capture.id]
+            k.require(type(parsed_result) is stp.Result and output.value is parsed_result and receipt.parse is parsed_result.parse
+                      and capture is requests[capture.id].capture and receipt.owner == step.id
+                      and receipt.context == requests[capture.id].context
+                      and receipt.registration_sha256 == self.registration, "stp_root_guard_source_cache")
+            key = (receipt.context or "", capture.source, capture.rendered)
+            k.require(key in grouped, "stp_root_guard_source_population")
+            narrowed = Executed(receipt=receipt, value=parsed_result)
+            grouped[key].append(narrowed)
+            checked.append(narrowed)
+        expected_rows = tuple(row for key in sorted(fresh.indexed) for row in _rows(fresh.indexed[key], grouped[key],
+            () if fresh.proofs is None else fresh.proofs[key], step, roots=False))
+        k.require(type(result) is Result and type(result.store) is FactStore and type(result.rows) is tuple
+                  and all(type(row) is Row and type(row.subject) is str and type(row.vlan) is int for row in result.rows)
+                  and type(result.executed) is tuple and all(type(output) is Executed and type(output.receipt) is ParseReceipt
+                      for output in result.executed) and len(result.executed) == len(checked)
+                  and all(a.receipt is b.receipt and a.value is b.value for a, b in zip(result.executed, checked, strict=True))
+                  and type(reader) is FactReader and reader.store is result.store, "stp_root_guard_source_store")
+        owners = {fact: owner for fact, _, owner, _, _ in contract}
+        references = {k.FactRef(fact=fact, subject=row.subject) for row in expected_rows for fact in owners}
+        k.require(type(result.store.owners) is dict and result.store.owners == owners
+                  and all(type(fact) is str and type(owner) is str for fact, owner in result.store.owners.items())
+                  and type(result.store.values) is dict and all(type(ref) is k.FactRef
+                      and type(ref.fact) is str and type(ref.subject) is str for ref in result.store.values)
+                  and set(result.store.values) == references, "stp_root_guard_source_store")
+        rows = {row.subject: row for row in result.rows}
+        k.require(len(rows) == len(result.rows) == len(expected_rows)
+                  and set(rows) == {row.subject for row in expected_rows}, "stp_root_guard_source_population")
+        for wanted in expected_rows:
+            row = rows[wanted.subject]
+            k.require(type(row.target) is Target and row.target.node is wanted.target.node and row.target == wanted.target
+                      and row.vlan == wanted.vlan, "stp_root_guard_source_population")
+            Target(context=row.target.context, node=row.target.node, port=row.target.port, vlans=row.target.vlans)
+            for fact, value in ((REPORTED_ROLE, wanted.role), (ROOT_GUARD, wanted.value)):
+                actual_value = original_state(fact, row)
+                k.require(reader.read(fact=fact, subject=row.subject) is actual_value, "stp_root_guard_source_store")
+                _root_guard_source_state(actual_value, value)
+        return tuple(plan.indexed[key] for key in sorted(plan.indexed))
 
 
 def build_root_guard_global[Peer](
