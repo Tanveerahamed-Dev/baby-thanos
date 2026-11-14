@@ -1,8 +1,8 @@
 """Fresh fixed VERSION Source closure for trusted callbacks and frozen kernel payloads.
-Current map/cell checks are not a deep-mutation, execution-origin or field seal.
-"""
+Current map/cell checks are not a deep-mutation, execution-origin or field seal."""
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from atlas_brain.evidence.admission import Budgets
 from atlas_brain.evidence.p4_admission import Envelope
@@ -38,7 +38,7 @@ def _budget_values(budgets: Budgets) -> tuple[int, ...]:
 
 def prepare_fhrp_version_source(root: Path, budgets: Budgets) -> FhrpVersionSource:
     """Own one fresh snapshot and all closures; never admit a supplied component or Source."""
-    k.require(isinstance(root, Path) and type(budgets) is Budgets, "fhrp_version_source_input")
+    k.require(isinstance(cast(object, root), Path) and type(budgets) is Budgets, "fhrp_version_source_input")
     expected = _budget_values(budgets)
     k.require(all(type(value) is int and value > 0 for value in expected), "fhrp_version_source_budget")
     first = profile.compile_peer_state_version_profile()
