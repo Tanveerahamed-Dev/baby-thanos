@@ -6,8 +6,50 @@ on:
     branches: [main]
 permissions:
   contents: read
+env:
+  P0_REVIEWED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 jobs:
+  p0_regression_linux:
+    name: P0 runner regression (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      receipt: ${{ steps.context.outputs.receipt }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.13.1'
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv run --no-sync python tools/p0_ci_context.py check --platform linux
+      - run: uv run --no-sync pytest -q -rs --durations=20 tests/runner
+      - id: context
+        run: uv run --no-sync python tools/p0_ci_context.py record --platform linux
+  p0_regression_windows:
+    name: P0 runner regression (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    outputs:
+      receipt: ${{ steps.context.outputs.receipt }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.13.1'
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv run --no-sync python tools/p0_ci_context.py check --platform win32
+      - run: uv run --no-sync pytest -q -rs --durations=20 tests/runner
+      - id: context
+        run: uv run --no-sync python tools/p0_ci_context.py record --platform win32
   p0-runner:
+    needs: [p0_regression_linux, p0_regression_windows]
+    if: always()
     strategy:
       fail-fast: false
       matrix:
@@ -23,7 +65,13 @@ jobs:
           version: '0.13.1'
           enable-cache: false
       - run: uv sync --locked
-      - run: uv run --no-sync pytest -q -rs --durations=20 tests/runner
+      - name: Require exact successful regression cohort
+        env:
+          P0_LINUX_CONTEXT: ${{ needs.p0_regression_linux.outputs.receipt }}
+          P0_WINDOWS_CONTEXT: ${{ needs.p0_regression_windows.outputs.receipt }}
+          P0_LINUX_RESULT: ${{ needs.p0_regression_linux.result }}
+          P0_WINDOWS_RESULT: ${{ needs.p0_regression_windows.result }}
+        run: uv run --no-sync python tools/p0_ci_context.py verify
       - name: Compare repeated demo bytes and retain evidence
         shell: bash
         run: |
@@ -110,7 +158,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: p0-demo-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          name: p0-demo-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: .ci-evidence/p0-demo/
           include-hidden-files: true
           if-no-files-found: error
