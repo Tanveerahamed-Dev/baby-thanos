@@ -1,12 +1,17 @@
 """Actual local VRRP production and current Reader closure; no root, origin or deep-mutation seal."""
 from dataclasses import asdict, dataclass
 from hashlib import sha256
+from typing import cast
 
+from atlas_brain.evidence import p4_admission as p4
+from atlas_brain.evidence.admission import Budgets
 from atlas_brain.evidence.capture import Capture
 from atlas_brain.evidence.parsekit.rules import ParseResult
 from atlas_brain.kernel import states as k
 from atlas_brain.model.specs import StepSpec
 from atlas_brain.model.store import FactReader, FactStore, bind_writer
+from atlas_brain.packs.l3.fhrp import global_parse as global_inputs
+from atlas_brain.packs.l3.fhrp import mixed_vrrp_inputs as mixed_inputs
 from atlas_brain.packs.l3.fhrp import parse_vrrp as parser
 from atlas_brain.packs.l3.fhrp import vrrp_inputs as inputs
 from atlas_brain.packs.l3.fhrp import vrrp_profile as profile
@@ -71,7 +76,8 @@ class _Production:
     registration_sha256: str
 
 
-def _rows(subjects: tuple[_Subject, ...], outcomes: dict[tuple[str, k.EntityKey], tuple[Executed[parser.Result], _Claims]]) -> tuple[Row, ...]:
+def _rows(subjects: tuple[_Subject, ...], outcomes: dict[tuple[str, k.EntityKey], tuple[Executed[parser.Result], _Claims]],
+          declarations: dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]) -> tuple[Row, ...]:
     rows: list[Row] = []
     for target, interface, group, subject in subjects:
         outcome = outcomes.get((target.context, target.node.key))
@@ -81,7 +87,7 @@ def _rows(subjects: tuple[_Subject, ...], outcomes: dict[tuple[str, k.EntityKey]
         reason = k.UnknownReason.NOT_COLLECTED if output is None else output.value.reason
         reason = reason or (rich.reason if rich is not None else k.UnknownReason.CONFLICTING_EVIDENCE
                            if candidates else k.UnknownReason.SUBJECT_ABSENT_FROM_CAPTURE)
-        evidence: tuple[k.Evidence, ...] = target.node.declaration.evidence
+        evidence: tuple[k.Evidence, ...] = declarations[target.context, target.node.key]
         points = tuple(point for row, witness in claims if row.interface.raw == interface and row.group.raw == group for point in witness)
         if reason is None:
             if output is None or rich is None or rich.state is None:
@@ -106,6 +112,7 @@ def _rows(subjects: tuple[_Subject, ...], outcomes: dict[tuple[str, k.EntityKey]
 
 class VRRPOwner(Parser[parser.Result]):
     def __init__(self, targets: tuple[inputs.VRRPTarget, ...], requests: tuple[CaptureRequest, ...]) -> None:
+        _receiver(self)
         self.inputs = inputs.retain_vrrp_inputs(targets, requests)
         self.registration = _registration()
         self.subjects = _subjects(self.inputs)
@@ -118,16 +125,29 @@ class VRRPOwner(Parser[parser.Result]):
         self.attempted = self.running = self.production_attempted = False
 
     def validate_inputs(self) -> None:
+        _receiver(self)
         inputs.validate_vrrp_inputs(self.inputs)
-        _need(self.registration == _registration() and self.inputs.registration_sha256 == self.registration[2], "registration")
+        if type(self) is _MIXED_VRRP_OWNER:
+            _MIXED_VRRP_OWNER.validate_registration(self)
+        else:
+            _need(self.registration == _registration() and self.inputs.registration_sha256 == self.registration[2], "registration")
         expected = _subjects(self.inputs)
         _need(type(self.subjects) is tuple and len(self.subjects) == len(expected)
               and all(type(held) is tuple and len(held) == 4 and held[0] is wanted[0]
                   and all(type(value) is str for value in held[1:]) and held[1:] == wanted[1:]
                   for held, wanted in zip(self.subjects, expected, strict=True)), "subjects")
 
+    def validate_registration(self) -> None:
+        _receiver(self)
+        _need(self.registration == _registration() and self.inputs.registration_sha256 == self.registration[2], "registration")
+
+    def declaration_evidence(self) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
+        _LOCAL_VRRP_OWNER.validate_inputs(self)
+        return {(target.context, target.node.key): cast(tuple[k.RegistryRef, ...], target.node.declaration.evidence)
+                for target in self.inputs.targets}
+
     def parse(self, request: CaptureRequest) -> Parsed[parser.Result]:
-        self.validate_inputs()
+        _LOCAL_VRRP_OWNER.validate_inputs(self)
         inputs.validate_vrrp_request(request)
         expected = {item.capture.id: item for item in self.inputs.requests}
         capture = request.capture
@@ -136,16 +156,17 @@ class VRRPOwner(Parser[parser.Result]):
         value = parser.parse_capture(capture)
         _need(type(value) is parser.Result, "cache")
         parser.validate_claims(capture, value)
-        self.validate_inputs()
+        _LOCAL_VRRP_OWNER.validate_inputs(self)
         self.produced[capture.id], self.parsed[capture.id], self.snapshots[capture.id] = value, value.parse, asdict(value)
         return value, value.parse
 
     def canonical_rows(self) -> tuple[Row, ...]:
         """Reclose the owned batch without parsing, dispatch or Store production."""
+        _receiver(self)
         _need(self.attempted and not self.running and type(self.executed) is tuple, "batch")
         _need(self.completed is None or type(self.completed) is _Production
               and self.executed is self.completed.executed, "batch")
-        self.validate_inputs()
+        _LOCAL_VRRP_OWNER.validate_inputs(self)
         batch = self.executed
         if batch is None:
             raise ValueError("vrrp_owner_batch")
@@ -174,16 +195,17 @@ class VRRPOwner(Parser[parser.Result]):
             outcomes[(receipt.context or "", capture.source)] = (output, claims)
             found.add(capture.id)
         _need(found == set(expected), "coverage")
-        rows = _rows(self.subjects, outcomes)
-        self.validate_inputs()
+        rows = _rows(self.subjects, outcomes, _declaration_context(self))
+        _LOCAL_VRRP_OWNER.validate_inputs(self)
         _need(all(type(self.snapshots[key]) is dict and asdict(value) == self.snapshots[key] for key, value in self.produced.items()), "cache")
         return rows
 
     def finish(self) -> VRRPResult:
+        _receiver(self)
         _need(self.attempted and not self.running and not self.production_attempted and self.production is None
               and self.completed is None and type(self.executed) is tuple, "production_once")
         self.production_attempted = True
-        rows = self.canonical_rows()
+        rows = _LOCAL_VRRP_OWNER.canonical_rows(self)
         batch = self.executed
         if batch is None:
             raise ValueError("vrrp_owner_batch")
@@ -199,6 +221,7 @@ class VRRPOwner(Parser[parser.Result]):
 
     def validate_values(self, result: VRRPResult, reader: FactReader) -> None:
         """Close original production and all current Reader cells; no admission or value seal."""
+        _receiver(self)
         completed = self.completed
         _need(type(completed) is _Production and type(result) is VRRPResult, "value_source")
         if completed is None:
@@ -216,7 +239,7 @@ class VRRPOwner(Parser[parser.Result]):
               and type(step.produces) is tuple and not step.produces, "reader")
         StepSpec(id=step.id, pack=step.pack, kind=step.kind, scope=step.scope,
                  reads=step.reads, produces=step.produces, evaluator=step.evaluator)
-        wanted = self.canonical_rows()
+        wanted = _LOCAL_VRRP_OWNER.canonical_rows(self)
         _need(result.registration_sha256 == self.registration[2] and type(result.rows) is tuple
               and all(type(row) is Row and all(type(value) is str for value in
                   (row.subject, row.interface, row.group)) for row in result.rows), "value_population")
@@ -254,6 +277,49 @@ def execute_local_vrrp_inputs(targets: tuple[inputs.VRRPTarget, ...], requests: 
         batch = execute_parsers((profile.DECLARATION,), (Handler(binding=profile.BINDING, parser=owner),), owner.inputs.requests)
     finally:
         owner.running = False
-    owner.validate_inputs()
+    _LOCAL_VRRP_OWNER.validate_inputs(owner)
     owner.executed = batch
-    return VRRPExecution(owner=owner, result=owner.finish())
+    return VRRPExecution(owner=owner, result=_LOCAL_VRRP_OWNER.finish(owner))
+
+
+class MixedVRRPOwner(VRRPOwner):
+    """Own the fixed mixed run's VRRP subset; current metadata is not an origin seal."""
+
+    def __init__(self, envelope: p4.Envelope, budgets: Budgets,
+                 targets: tuple[inputs.VRRPTarget, ...], requests: tuple[CaptureRequest, ...]) -> None:
+        _need(type(self) is _MIXED_VRRP_OWNER, "receiver")
+        compiled = global_inputs.validate_mixed_context(envelope, budgets)
+        super().__init__(targets, requests)
+        self.envelope, self.budgets = envelope, budgets
+        self.registration = (compiled.catalogue_bytes, compiled.registration_bytes, compiled.registration_sha256)
+        _LOCAL_VRRP_OWNER.validate_inputs(self)
+
+    def validate_registration(self) -> None:
+        _need(type(self) is _MIXED_VRRP_OWNER, "receiver")
+        compiled = global_inputs.validate_mixed_context(self.envelope, self.budgets)
+        mixed_inputs.validate_mixed_vrrp_correspondence(self.envelope, self.budgets, self.inputs)
+        _need(type(self.registration) is tuple and len(self.registration) == 3
+              and type(self.registration[0]) is bytes and type(self.registration[1]) is bytes
+              and type(self.registration[2]) is str and self.registration ==
+                  (compiled.catalogue_bytes, compiled.registration_bytes, compiled.registration_sha256)
+              and self.envelope.registration_sha256 == self.registration[2]
+              and self.inputs.registration_sha256 != self.registration[2], "mixed_registration")
+
+    def declaration_evidence(self) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
+        _need(type(self) is _MIXED_VRRP_OWNER, "receiver")
+        return mixed_inputs.validate_mixed_vrrp_correspondence(self.envelope, self.budgets, self.inputs)
+
+
+_LOCAL_VRRP_OWNER = VRRPOwner
+_MIXED_VRRP_OWNER = MixedVRRPOwner
+
+
+def _receiver(owner: VRRPOwner) -> None:
+    _need(type(owner) is _LOCAL_VRRP_OWNER or type(owner) is _MIXED_VRRP_OWNER, "receiver")
+
+
+def _declaration_context(owner: VRRPOwner) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
+    _receiver(owner)
+    if type(owner) is _MIXED_VRRP_OWNER:
+        return _MIXED_VRRP_OWNER.declaration_evidence(owner)
+    return _LOCAL_VRRP_OWNER.declaration_evidence(owner)
