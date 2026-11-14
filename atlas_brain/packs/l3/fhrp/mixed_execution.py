@@ -6,7 +6,7 @@ from typing import cast
 from atlas_brain.evidence import p4_admission as p4
 from atlas_brain.evidence.admission import Budgets
 from atlas_brain.kernel import states as k
-from atlas_brain.model.pack_registration import PackDeclaration
+from atlas_brain.model.pack_registration import CompiledPackSet, PackDeclaration
 from atlas_brain.packs.l2.etherchannel import build as ec
 from atlas_brain.packs.l2.etherchannel.global_parse import SummaryPack
 from atlas_brain.packs.l2.stp import build as stp
@@ -15,6 +15,7 @@ from atlas_brain.packs.l3.fhrp import (
     global_parse,
     mixed_profile,
     mixed_vrrp_inputs,
+    state_version_execution,
     version_profile,
     vrrp_profile,
 )
@@ -69,6 +70,10 @@ class MixedExecution:
     tree: stp.RootGuardPack[ec.parse_summary.Result | FhrpValue]
     channel: SummaryPack[stp.stp.Result | FhrpValue]
     fhrp: MixedFhrpPack[stp.stp.Result | ec.parse_summary.Result]
+    budgets: Budgets
+    limits: tuple[int, ...]
+    compiled: CompiledPackSet
+    vrrp_executed: tuple[Executed[vrrp.Result], ...]
 
 
 def _limits(budgets: Budgets) -> tuple[int, ...]:
@@ -79,21 +84,22 @@ def _limits(budgets: Budgets) -> tuple[int, ...]:
     return values
 
 
-def execute_mixed_inputs(root: Path, budgets: Budgets) -> MixedExecution:
-    k.require(isinstance(cast(object, root), Path), "fhrp_mixed_execution_input")
-    limits, compiled = _limits(budgets), mixed_profile.compile_mixed_profile()
-    tree = stp.RootGuardPack[ec.parse_summary.Result | FhrpValue](budgets)
-    channel = SummaryPack[stp.stp.Result | FhrpValue](budgets)
-    fhrp = MixedFhrpPack[stp.stp.Result | ec.parse_summary.Result](budgets)
-    packs: tuple[pipeline.Pack[Value], ...] = (tree, channel, fhrp)
-    try:
-        execution = pipeline.execute_p4_folder(root, budgets, packs=packs)
-    finally:
-        if fhrp.vrrp_owner is not None:
-            fhrp.vrrp_owner.running = False
+def _validate_parts(
+    execution: pipeline.Result[Value], tree: stp.RootGuardPack[ec.parse_summary.Result | FhrpValue],
+    channel: SummaryPack[stp.stp.Result | FhrpValue],
+    fhrp: MixedFhrpPack[stp.stp.Result | ec.parse_summary.Result],
+    budgets: Budgets, limits: tuple[int, ...], compiled: CompiledPackSet,
+) -> tuple[Executed[vrrp.Result], ...]:
+    k.require(type(tree) is stp.RootGuardPack and type(channel) is SummaryPack
+              and type(fhrp) is MixedFhrpPack, "fhrp_mixed_execution_owner")
+    k.require(tree.producer.declaration is stp.DECLARATION and tree.producer.step is stp.STEP
+              and tree.producer.binding is stp.BINDING and tree.producer.roots is False, "fhrp_mixed_execution_current")
     k.require(type(execution) is pipeline.Result and type(execution.executed) is tuple
               and all(type(output) is Executed and type(output.receipt) is receipts.ParseReceipt for output in execution.executed), "fhrp_mixed_execution_output")
-    k.require(limits == _limits(budgets)
+    k.require(type(limits) is tuple and len(limits) == 7 and all(type(value) is int and value > 0 for value in limits)
+              and type(compiled) is CompiledPackSet and limits == _limits(budgets)
+              and type(compiled.catalogue_bytes) is bytes and type(compiled.registration_bytes) is bytes
+              and type(compiled.registration_sha256) is str
               and compiled == global_parse.validate_mixed_context(execution.envelope, budgets), "fhrp_mixed_execution_current")
     owner, version, state = fhrp.vrrp_owner, fhrp.version, fhrp.state
     if (type(owner) is not MixedVRRPOwner or type(version) is not MixedGlobalVersionOwner
@@ -105,9 +111,15 @@ def execute_mixed_inputs(root: Path, budgets: Budgets) -> MixedExecution:
         raise ValueError("fhrp_mixed_execution_owner")
     k.require(execution.envelope is tree.envelope is channel_run.envelope is hsrp.envelope is local.envelope
               is owner.envelope is version.envelope and all(pack.budgets is budgets for pack in (tree, channel, fhrp)), "fhrp_mixed_execution_current")
+    k.require(all(type(value) is str and value == compiled.registration_sha256
+        for value in (tree.registration, channel_run.registration, channel.owner.registration)), "fhrp_mixed_execution_current")
     requests = plan.requests + channel.owner.plan.requests + hsrp.requests + hsrp.version.requests + local.requests
     for request in requests:
         validate_fhrp_request_graph(request)
+    caches = ((tree.produced, plan.requests), (channel.owner.produced, channel.owner.plan.requests), (state.produced, hsrp.requests))
+    k.require(all(type(cache) is dict and all(type(key) is str for key in cache)
+                  and set(cache) == {request.capture.id for request in requests} for cache, requests in caches),
+              "fhrp_mixed_execution_cache")
     for output in execution.executed:
         validate_fhrp_request_graph(receipts.CaptureRequest(capture=output.receipt.capture, context=output.receipt.context))
         k.require(all(type(value) is str for value in (output.receipt.owner, output.receipt.registration_sha256)), "fhrp_mixed_execution_output")
@@ -134,8 +146,87 @@ def execute_mixed_inputs(root: Path, budgets: Budgets) -> MixedExecution:
             if type(output.value) is not vrrp.Result:
                 raise TypeError("fhrp_mixed_execution_output")
             outputs.append(Executed(receipt=output.receipt, value=output.value))
-    owner.executed = tuple(outputs)
+    declarations = global_parse.validate_mixed_hsrp_correspondence(execution.envelope, budgets, hsrp.version)
+    k.require(declarations == hsrp.declarations
+              and mixed_vrrp_inputs.validate_mixed_vrrp_correspondence(execution.envelope, budgets, local.vrrp)
+              == local.declarations, "fhrp_mixed_execution_current")
+    k.require(type(hsrp.domains) is tuple and len(hsrp.domains) == len(hsrp.version.targets)
+              and all(type(actual) is build.Target and actual.node is wanted.node and actual == wanted
+                  for actual, wanted in zip(hsrp.domains, hsrp.version.targets, strict=True)), "fhrp_mixed_execution_current")
+    for target in hsrp.domains:
+        build.Target(context=target.context, node=target.node, groups=target.groups)
+    state_version_execution.validate_state_version_population(state, hsrp.version, hsrp.requests,
+        compiled.registration_sha256, dict(state.plan.indexed),
+        {key: refs[1:3] for key, refs in declarations.items()})
+    return tuple(outputs)
+
+
+def _canonical(source: pipeline.Result[Value],
+    fhrp: MixedFhrpPack[stp.stp.Result | ec.parse_summary.Result],
+    batch: tuple[Executed[vrrp.Result], ...],
+) -> None:
+    owner, version = fhrp.vrrp_owner, fhrp.version
+    if owner is None or version is None:
+        raise ValueError("fhrp_mixed_execution_owner")
+    k.require(owner.executed is batch, "fhrp_mixed_execution_output")
     VRRPOwner.canonical_rows(owner)
     MixedGlobalVersionOwner.canonical_rows(version,
-        tuple(output for output in execution.executed if output.receipt.capture.operation == all_hsrp.OP))
-    return MixedExecution(execution=execution, tree=tree, channel=channel, fhrp=fhrp)
+        tuple(output for output in source.executed if output.receipt.capture.operation == all_hsrp.OP))
+
+
+def validate_mixed_execution(source: MixedExecution, budgets: Budgets) -> None:
+    """Compare current source/cache data; no parsing, dispatch, Store or origin authority."""
+    k.require(type(source) is MixedExecution and source.budgets is budgets, "fhrp_mixed_execution_current")
+    checked = _validate_parts(source.execution, source.tree, source.channel, source.fhrp,
+        budgets, source.limits, source.compiled)
+    plan, channel, execution = source.tree.plan, source.channel, source.execution
+    if plan is None:
+        raise ValueError("fhrp_mixed_execution_owner")
+    tree_targets = stp.declared_root_guard_targets(execution.envelope, budgets)
+    tree_domains = {(row.target.context, row.target.node.key, stp.stp.command(row.target.port)): row.target for row in tree_targets}
+    fresh = SummaryPack[Value](budgets)
+    fresh.prepare(execution.envelope)
+    for actual, wanted, size in ((plan.indexed, tree_domains, 3), (channel.owner.plan.indexed, fresh.owner.plan.indexed, 2)):
+        k.require(type(actual) is dict and all(type(key) is tuple and len(key) == size
+                  and all(type(value) is str for value in key) for key in actual) and set(actual) == set(wanted), "fhrp_mixed_execution_current")
+    k.require(all(type(plan.indexed[key]) is stp.Target and plan.indexed[key].node is target.node and plan.indexed[key] == target
+                  for key, target in tree_domains.items()) and all(type(channel.owner.plan.indexed[key]) is ec.Target
+                  and channel.owner.plan.indexed[key].node is target.node and channel.owner.plan.indexed[key] == target
+                  for key, target in fresh.owner.plan.indexed.items()), "fhrp_mixed_execution_current")
+    for tree_target in plan.indexed.values():
+        stp.Target(context=tree_target.context, node=tree_target.node, port=tree_target.port, vlans=tree_target.vlans)
+    for channel_target in channel.owner.plan.indexed.values():
+        ec.Target(context=channel_target.context, node=channel_target.node, groups=channel_target.groups, ports=channel_target.ports)
+    for proofs in (plan.proofs, channel.owner.plan.proofs):
+        k.require(type(proofs) is dict and all(type(key) is tuple and all(type(value) is str for value in key) and type(refs) is tuple
+                  and all(type(ref) is k.RegistryRef and all(type(value) is str for value in (ref.table, ref.row_id, ref.table_digest, ref.citation))
+                      for ref in refs) for key, refs in (proofs or {}).items()), "fhrp_mixed_execution_current")
+    k.require(plan.proofs == {(row.target.context, row.target.node.key, stp.stp.command(row.target.port)): row.evidence[1:]
+                  for row in tree_targets} and channel.owner.plan.proofs == fresh.owner.plan.proofs, "fhrp_mixed_execution_current")
+    batch = source.vrrp_executed
+    k.require(type(batch) is tuple and len(batch) == len(checked)
+              and all(type(actual) is Executed and actual.receipt is wanted.receipt and actual.value is wanted.value
+                  for actual, wanted in zip(batch, checked, strict=True)), "fhrp_mixed_execution_output")
+    _canonical(source.execution, source.fhrp, batch)
+
+
+def execute_mixed_inputs(root: Path, budgets: Budgets) -> MixedExecution:
+    k.require(isinstance(cast(object, root), Path), "fhrp_mixed_execution_input")
+    limits, compiled = _limits(budgets), mixed_profile.compile_mixed_profile()
+    tree = stp.RootGuardPack[ec.parse_summary.Result | FhrpValue](budgets)
+    channel = SummaryPack[stp.stp.Result | FhrpValue](budgets)
+    fhrp = MixedFhrpPack[stp.stp.Result | ec.parse_summary.Result](budgets)
+    packs: tuple[pipeline.Pack[Value], ...] = (tree, channel, fhrp)
+    try:
+        execution = pipeline.execute_p4_folder(root, budgets, packs=packs)
+    finally:
+        if fhrp.vrrp_owner is not None:
+            fhrp.vrrp_owner.running = False
+    batch = _validate_parts(execution, tree, channel, fhrp, budgets, limits, compiled)
+    owner = fhrp.vrrp_owner
+    if owner is None:
+        raise ValueError("fhrp_mixed_execution_owner")
+    owner.executed = batch
+    _canonical(execution, fhrp, batch)
+    return MixedExecution(execution=execution, tree=tree, channel=channel, fhrp=fhrp,
+        budgets=budgets, limits=limits, compiled=compiled, vrrp_executed=batch)
