@@ -367,7 +367,7 @@ def _mixed_receiver(owner: VersionOwner) -> None:
 def _registration_context(owner: VersionOwner) -> None:
     _mixed_receiver(owner)
     if type(owner) is _MIXED_VERSION_OWNER:
-        _MIXED_VERSION_OWNER.validate_registration(cast(MixedGlobalVersionOwner, owner))
+        _MIXED_VERSION_OWNER.validate_registration(owner)
     else:
         owner.validate_registration()
 
@@ -375,7 +375,7 @@ def _registration_context(owner: VersionOwner) -> None:
 def _declaration_context(owner: VersionOwner) -> dict[_Key, tuple[k.RegistryRef, ...]]:
     _mixed_receiver(owner)
     if type(owner) is _MIXED_VERSION_OWNER:
-        return _MIXED_VERSION_OWNER.declaration_evidence(cast(MixedGlobalVersionOwner, owner))
+        return _MIXED_VERSION_OWNER.declaration_evidence(owner)
     return owner.declaration_evidence()
 
 
