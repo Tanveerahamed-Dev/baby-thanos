@@ -101,8 +101,8 @@ def test_actual_five_stores_keep_independent_declared_populations_readers_and_or
         owned = getattr(result, field)
         assert owned is getattr(run, field) and owned.store.owners == {value: spec(field).id for value in spec(field).produces}
         assert set(owned.store.values) == {k.FactRef(fact=value, subject=row.subject) for row in owned.rows for value in spec(field).produces}
-    assert set(row.subject for row in result.state.rows) == set(row.subject for row in result.version.rows)
-    assert not set(row.subject for row in result.state.rows) & set(row.subject for row in result.vrrp.rows)
+    assert {row.subject for row in result.state.rows} == {row.subject for row in result.version.rows}
+    assert not {row.subject for row in result.state.rows} & {row.subject for row in result.vrrp.rows}
     monkeypatch.setattr(component.execution, "execute_mixed_inputs", forbidden)
     with pytest.raises(ValueError, match="^fhrp_mixed_component_once$"):
         run.build()
