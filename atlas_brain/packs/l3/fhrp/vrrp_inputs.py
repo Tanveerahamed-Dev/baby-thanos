@@ -8,6 +8,7 @@ from typing import cast
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence.capture import Capture, Scope
 from atlas_brain.evidence.synthetic import Node
+from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
 from atlas_brain.packs.l3.fhrp import vrrp_profile as profile
 from atlas_brain.packs.l3.fhrp.version_inputs import validate_fhrp_request_graph
@@ -132,3 +133,65 @@ def validate_vrrp_inputs(inputs: VRRPInputs) -> None:
     for request, held in zip(inputs.requests, inputs.retained_requests, strict=True):
         _need(type(held) is tuple and len(held) == 3 and held[0] is request and held[1] is request.capture
               and type(held[2]) is bytes and held[2] == _snapshot(request), "request")
+
+
+def classify_vrrp_frame(raw: bytes) -> k.IntegrityState:
+    """Classify fixed synthetic framing only; the VRRP parser still owns every body byte."""
+    _need(type(raw) is bytes, "frame")
+    profile.compile_vrrp_profile()
+    try:
+        text = raw.decode("utf-8").replace("\r\n", "\n")
+    except UnicodeError as error:
+        raise ValueError("vrrp_inputs_frame") from error
+    _need(not any(ord(char) < 32 and char not in "\n\t" or 127 <= ord(char) <= 159
+                  or char in "\u2028\u2029" for char in text), "frame")
+    lines = [line for line in text.split("\n") if line.strip(" \t")]
+    prompt = r"[A-Za-z0-9_.:-]+[>#]"
+    opening = re.fullmatch("(" + prompt + r")[ ]?show vrrp", lines[0], re.ASCII) if lines else None
+    uncertain = False
+    if opening is not None:
+        lines = lines[1:]
+        if lines and re.fullmatch(prompt, lines[-1], re.ASCII) is not None:
+            _need(lines[-1] == opening[1], "frame")
+            lines = lines[:-1]
+        else:
+            uncertain = True
+    else:
+        if lines and lines[0] == "show vrrp":
+            lines = lines[1:]
+        if lines and re.fullmatch(prompt, lines[-1], re.ASCII) is not None:
+            uncertain = True
+            lines = lines[:-1]
+    heading = (r"[A-Za-z][A-Za-z0-9./:_-]{0,63} +-[ ]+Group +[A-Za-z0-9_.:-]{1,64}"
+               r"(?: - Address-Family [A-Za-z0-9]{1,16})?[ \t]*")
+    forbidden = (r"(?:[a-z0-9_.:-]+(?:\([^)]*\))?[>#].*|(?:do[ \t]+)?sh(?:ow|o)?(?:[ \t].*)?|!|"
+                 r"building configuration\.\.\.(?:[ \t].*)?|"
+                 r"(?:end|exit|configure|building configuration|current configuration|banner|interface|router|vlan|"
+                 r"hostname|spanning-tree|switchport|standby|vrrp|description|shutdown|no|default)(?:[ \t:].*)?)")
+    _need(not any(re.fullmatch(forbidden, line.strip(" \t").casefold(), re.ASCII) is not None
+                  for line in lines if re.fullmatch(heading, line, re.ASCII) is None), "frame")
+    if any(line.lstrip(" \t").startswith("%") or line.strip(" \t").casefold() in
+           ("command authorization failed", "command authorization failed.") for line in lines):
+        return k.IntegrityState.ERROR
+    if any(line.strip(" \t").casefold() in ("--more--", "<--- more --->", "--(more)--") for line in lines):
+        return k.IntegrityState.PAGING_ARTIFACTS
+    if any(line.strip(" \t").casefold() in ("[truncated]", "<output truncated>") for line in lines):
+        return k.IntegrityState.TRUNCATED
+    if uncertain:
+        return k.IntegrityState.UNVERIFIED_PROMPT
+    if not lines:
+        return k.IntegrityState.EMPTY
+    return k.IntegrityState.COMPLETE if re.fullmatch(heading, lines[0], re.ASCII) is not None else k.IntegrityState.UNKNOWN_FORMAT
+
+
+def prepare_vrrp_request(
+    *, capture_id: k.CaptureId, source: k.EntityKey, context: str, raw: bytes,
+) -> CaptureRequest:
+    """Prepare caller-owned coordinates and original raw bytes, never admission or a body verdict."""
+    _need(all(type(value) is str and bool(value) for value in (capture_id, source, context)), "request")
+    capture = Capture(id=capture_id, source=source, operation=profile.parser.OP, rendered=profile.parser.COMMAND,
+        codec="utf-8", raw=raw, integrity=classify_vrrp_frame(raw), lines=text_lines(raw, "utf-8"),
+        read_scope=k.ReadScope.UNKNOWN, view=k.ViewConsistency.UNKNOWN)
+    request = CaptureRequest(capture=capture, context=context)
+    validate_vrrp_request(request)
+    return request
