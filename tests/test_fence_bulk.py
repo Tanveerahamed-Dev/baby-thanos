@@ -98,6 +98,12 @@ def test_per_file_binding_failure_does_not_erase_another_files_decision(monkeypa
         if path == "atlas_brain/a.py" and calls[path] == 2:
             raise ValueError("planted per-file error")
         return original(tree, path, ignored_arg_roots)
+    original_index = fence.ImportIndex
+    def changed_context(mapping, forbidden=()):
+        index = original_index(mapping, forbidden)
+        index.ignored_arg_classes.add("planted.unused_class")
+        return index
+    monkeypatch.setattr(fence, "ImportIndex", changed_context)
     monkeypatch.setattr(fence, "import_bindings", broken)
     assert fence.bulk_source_refusals(sources) == {
         "atlas_brain/a.py": {"unresolved-provenance"}, "atlas_brain/b.py": set()}

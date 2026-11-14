@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Mapping
 from functools import cache
 from pathlib import Path, PurePosixPath
 
@@ -451,26 +452,61 @@ def import_bindings(tree, path, ignored_arg_roots=None):
     return aliases, exports, declarations
 
 
-class ImportIndex:
-    def __init__(self, sources, forbidden=()):
-        self.modules = {}
-        self.forbidden = frozenset(forbidden)
-        packages = set()
-        trees = {path: ast.parse(source) for path, source in sources.items()}
-        self.classes = set().union(*(_binding_module.declared_classes(tree,
+def _binding_policy():
+    """Data dependencies of binding generation; implementations and ASTs stay trusted."""
+    return (admitted_apis(), frozenset(STDLIB_API), frozenset(_binding_module.BUILTINS),
+            frozenset(_binding_module.SCALARS), frozenset(_binding_module.SCALAR_APIS),
+            frozenset(_binding_module.CARRIERS), RESULT_VALUE, CARRIER_RETURN, CALLABLE_VALUE)
+
+
+class _SourceSnapshot(Mapping):
+    """Private read-only source correspondence; analysis lives for one invocation only."""
+
+    def __init__(self, sources, parsed=None):
+        self.sources = dict(sources)
+        self.trees, self.parsed = {}, {}
+        for path, source in self.sources.items():
+            held = None if parsed is None else parsed.get(path)
+            self.trees[path] = held[1] if held is not None and held[0] == source else ast.parse(source)
+            self.parsed[path] = (source, self.trees[path])
+        self.classes = frozenset().union(*(_binding_module.declared_classes(tree,
             path.removesuffix(".py").replace("/", ".").removesuffix(".__init__"),
-            lambda node: isinstance(node, ast.ClassDef)) for path, tree in trees.items()))
-        self.ignored_arg_classes = _binding_module.ignored_argument_classes({
-            path.removesuffix(".py").replace("/", ".").removesuffix(".__init__"): tree for path, tree in trees.items()})
-        for path, tree in trees.items():
+            lambda node: isinstance(node, ast.ClassDef)) for path, tree in self.trees.items()))
+        self.ignored_arg_classes = frozenset(_binding_module.ignored_argument_classes({
+            path.removesuffix(".py").replace("/", ".").removesuffix(".__init__"): tree for path, tree in self.trees.items()}))
+        self.binding_policy = _binding_policy()
+        self.bindings, self.modules, self.packages = {}, {}, set()
+        for path, tree in self.trees.items():
             module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
             if module in self.modules:
                 raise ValueError("ambiguous engine module")
-            self.modules[module] = import_bindings(tree, path, self.ignored_arg_classes)[1:]
+            bindings = import_bindings(tree, path, self.ignored_arg_classes)
+            self.bindings[path], self.modules[module] = bindings, bindings[1:]
             if path.endswith("/__init__.py"):
-                packages.add(module)
+                self.packages.add(module)
+
+    def __getitem__(self, path):
+        return self.sources[path]
+
+    def __iter__(self):
+        return iter(self.sources)
+
+    def __len__(self):
+        return len(self.sources)
+
+
+class ImportIndex:
+    def __init__(self, sources, forbidden=()):
+        if isinstance(sources, _SourceSnapshot) and sources.binding_policy != _binding_policy():
+            sources = _SourceSnapshot(sources.sources, sources.parsed)
+        self.snapshot = sources if isinstance(sources, _SourceSnapshot) else _SourceSnapshot(sources)
+        self.modules = {module: (dict(exports), set(declarations))
+                        for module, (exports, declarations) in self.snapshot.modules.items()}
+        self.classes = set(self.snapshot.classes)
+        self.ignored_arg_classes = set(self.snapshot.ignored_arg_classes)
+        self.forbidden = frozenset(forbidden)
         for module, (exports, declarations) in self.modules.items():
-            if module not in packages and any(m.startswith(module + ".") for m in self.modules):
+            if module not in self.snapshot.packages and any(m.startswith(module + ".") for m in self.modules):
                 raise ValueError("non-package module has descendants")
             if any(self.namespace(module + "." + key) and target != module + "." + key for key, target in exports.items()):
                 raise ValueError("ambiguous imported module export")
@@ -619,7 +655,17 @@ def source_refusals(source: str, sources=None, path="atlas_brain/probe.py") -> s
 
 def bulk_source_refusals(sources) -> dict[str, set[str]]:
     """Check one immutable source snapshot; share no index across invocations."""
+    return _bulk_source_refusals(sources)
+
+
+def _bulk_source_refusals(sources, parsed=None):
     snapshot = dict(sources)
+    if not snapshot:
+        return {}
+    try:
+        snapshot = _SourceSnapshot(snapshot, parsed)
+    except ValueError:
+        return {path: {"unresolved-provenance"} for path in snapshot}
     scoped_modules = frozenset(p.removesuffix(".py").replace("/", ".") for p in SCOPED_API)
     indexes = {}
     result = {}
@@ -636,14 +682,21 @@ def bulk_source_refusals(sources) -> dict[str, set[str]]:
 
 
 def _indexed_refusals(source, path, index) -> set[str]:
-    tree = ast.parse(source)
+    snapshot = index.snapshot
+    held = snapshot.parsed.get(path)
+    current = held is not None and held[0] == source
+    tree = held[1] if current else ast.parse(source)
     apis = (STDLIB_API | SCOPED_API.get(path, set()) | RUNTIME_API.get(path, set())
             | RUNNER_API.get(path, set()) | RUNNER_EVIDENCE_API.get(path, set()))
     factories = constructor_members(frozenset(apis))
-    all_factories = constructor_members(admitted_apis())
+    all_apis = admitted_apis()
+    all_factories = constructor_members(all_apis)
     scoped_modules = {p.removesuffix(".py").replace("/", ".") for p in SCOPED_API}
     try:
-        aliases, exports, declarations = import_bindings(tree, path, index.ignored_arg_classes)
+        retained = (current and index.ignored_arg_classes == snapshot.ignored_arg_classes
+                    and _binding_policy() == snapshot.binding_policy)
+        aliases, exports, declarations = (snapshot.bindings[path] if retained else
+            import_bindings(tree, path, index.ignored_arg_classes))
     except ValueError:
         return {"unresolved-provenance"}
     def admitted(name):
@@ -739,7 +792,7 @@ def main() -> int:
         failures.add((path, kind))
         print(json.dumps({"path": path if repository_path(path) else "<non-repository-path>",
                           "class": kind, "name": name}, sort_keys=True))
-    sources = {}
+    sources, parsed = {}, {}
     for path in paths:
         if not allowed(path):
             refuse(path, "path", "unapproved-path")
@@ -750,7 +803,7 @@ def main() -> int:
                     refuse(path, "import", "source-link")
                     continue
                 source = Path(path).read_text(encoding="utf-8")
-                ast.parse(source)
+                parsed[path] = (source, ast.parse(source))
                 sources[path] = source
             except SyntaxError:
                 refuse(path, "import", "invalid-syntax")
@@ -762,7 +815,7 @@ def main() -> int:
                     refuse(path, "machine-data", "invalid-shape")
             except (OSError, ValueError, TypeError):
                 refuse(path, "machine-data", "invalid-data")
-    for path, refusals in bulk_source_refusals(sources).items():
+    for path, refusals in _bulk_source_refusals(sources, parsed).items():
         for name in sorted(refusals):
             refuse(path, "import", name)
     try:
