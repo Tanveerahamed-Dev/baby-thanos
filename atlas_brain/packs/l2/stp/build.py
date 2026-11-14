@@ -640,13 +640,13 @@ class _GlobalSTP[Peer](p4_pipeline.Pack[stp.Result | Peer]):
 def _root_guard_source_state(state: k.Known[bool] | k.Known[str] | k.Unknown,
                              wanted: k.Known[bool] | k.Known[str] | k.Unknown) -> None:
     if isinstance(wanted, k.Known):
-        if not isinstance(state, k.Known):
+        if type(state) is not k.Known:
             raise ValueError("stp_root_guard_source_value")
         k.require(type(state.value) is type(wanted.value) and type(state.raw) is type(wanted.raw)
                   and state.basis is wanted.basis, "stp_root_guard_source_value")
         k.Known(value=state.value, raw=state.raw, basis=state.basis, evidence=state.evidence)
     else:
-        if not isinstance(state, k.Unknown):
+        if type(state) is not k.Unknown:
             raise ValueError("stp_root_guard_source_value")
         k.require(type(state.candidates) is tuple and all(type(value) is str for value in state.candidates), "stp_root_guard_source_value")
         k.Unknown(reason=state.reason, detail=state.detail, evidence=state.evidence,
