@@ -17,7 +17,13 @@ from atlas_brain.packs.l2.stp import build as stp
 from atlas_brain.packs.l3.fhrp import build as fhrp
 from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
 from atlas_brain.packs.l3.fhrp.global_parse import StandbyBriefPack
-from atlas_brain.runner.p4_refs import FhrpVersionProofIndex, ProofIndex, RootProofIndex, Scope, Value
+from atlas_brain.runner.p4_refs import (
+    FhrpVersionProofIndex,
+    ProofIndex,
+    RootProofIndex,
+    Scope,
+    Value,
+)
 from atlas_brain.runner.records import RunnerRefused
 
 SCHEMA = "atlas-brain.p4-observations/1"
