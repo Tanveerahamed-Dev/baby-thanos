@@ -131,8 +131,8 @@ def test_coherent_row_record_token_and_state_pair_forgeries_are_byte_authenticat
 def test_recognized_physical_lines_cannot_be_hidden_as_genuine_no_match(monkeypatch, plant):
     sample, result = actual(monkeypatch)
     row = result.rows[0]
-    removed = set(record.span.start for record in result.parse.records if plant == "all" or record.rule_id == (
-        "state" if plant == "state" else "master_down"))
+    removed = {record.span.start for record in result.parse.records if plant == "all" or record.rule_id == (
+        "state" if plant == "state" else "master_down")}
     records = tuple(record for record in result.parse.records if record.span.start not in removed)
     lines = tuple(replace(line, status="unrecognised", rule_id="", reason="") if line.span.start in removed else line
         for line in result.parse.lines)
