@@ -7,12 +7,25 @@ from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
-from test_ci_pytest import ATTEMPT, COUNT, FIFO, FIFO_REASON, HEAD, MUTATIONS, NODES, RUN_ID, _receipts, _verify
+import test_ci_pytest_cli
+from test_ci_pytest import (
+    ATTEMPT,
+    COUNT,
+    FIFO,
+    FIFO_REASON,
+    HEAD,
+    MUTATIONS,
+    NODES,
+    RUN_ID,
+    _receipts,
+    _verify,
+)
 from test_ci_pytest_cli import _cli, _commit, _run
-from test_ci_pytest_cli import isolated_repo as isolated_repo
 
 from tools import ci_pytest as driver
 from tools import ci_pytest_receipts as receipts
+
+isolated_repo = test_ci_pytest_cli.isolated_repo
 
 PLANTS = ("valid", "wrong-head", "selector", "silent-deselection", "module-skip", "precollection-hook",
     "precollection-list", "precollection-directory", "dirty-source", "source-change", "failed-subtest", "skipped-subtest", "xfail", "xpass")
