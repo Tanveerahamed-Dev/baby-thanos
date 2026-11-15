@@ -14,7 +14,7 @@ from .records import DEFAULT_WORKERS, EXIT_OK, EXIT_REFUSED, RunnerRefused
 
 ROLES = ("parent", "coordinator", "worker")
 FLAGS = frozenset({"--evidence", "--out", "--workers", "--role", "--steps", "--parent-denied", "--format"})
-USAGE = """usage: python -m atlas_brain.runner --evidence DIR --out DIR [--workers N] [--format p4-observations|p4-root-observations]
+USAGE = """usage: python -m atlas_brain.runner --evidence DIR --out DIR [--workers N] [--format p4-observations|p4-root-observations|p4-root-mixed-observations]
 
 Analyse raw IOS-XE show-version/interface captures (P0/P1), or a declared
 synthetic P2 p2.json group: schema 1 discovery/trunk observations, or schema 2
@@ -26,7 +26,8 @@ Execute deterministic witness steps and write SUMMARY.txt
 plus MANIFEST.json under --out. Egress is denied and counted; identical inputs
 give identical output bytes across worker counts.
 P4 uses --format p4-observations; p4-root-observations explicitly adds reported
-root priority and MAC. Both require a new output directory with an existing parent.
+root priority and MAC. p4-root-mixed-observations also retains HSRP version and VRRP.
+All P4 modes require a new output directory with an existing parent.
 Each writes result.json, three facts/*.jsonl files and MANIFEST.sha256. The Root mode
 keeps pure API bytes; its separate stdout receipt counts runner witnesses only.
 These observations do not establish protocol health or platform qualification.
@@ -55,7 +56,7 @@ def _parse(arguments: list[str]) -> Options:
         position += 2
     role = values.get("--role", "parent")
     output_format = values.get("--format", "legacy")
-    if output_format not in ("legacy", "p4-observations", "p4-root-observations") or role == "worker" and output_format != "legacy":
+    if output_format not in ("legacy", "p4-observations", "p4-root-observations", "p4-root-mixed-observations") or role == "worker" and output_format != "legacy":
         raise RunnerRefused("invalid_format")
     if role not in ROLES:
         raise RunnerRefused("invalid_role")
@@ -85,7 +86,8 @@ def _run(arguments: list[str]) -> int:
         raise RunnerRefused("missing_evidence" if options.evidence is None else "missing_out")
     evidence, out = options.evidence, options.out
     if options.role == "coordinator":
-        execute = (coordinator.run_p4_root if options.output_format == "p4-root-observations" else
+        execute = (coordinator.run_p4_root_mixed if options.output_format == "p4-root-mixed-observations" else
+                   coordinator.run_p4_root if options.output_format == "p4-root-observations" else
                    coordinator.run_p4 if options.output_format == "p4-observations" else coordinator.run)
         print("runner: ok egress_denied=" + str(execute(
             evidence=evidence, out=out, workers=options.workers, parent_denied=options.parent_denied)))
