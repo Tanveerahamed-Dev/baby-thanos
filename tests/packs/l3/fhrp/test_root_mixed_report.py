@@ -133,7 +133,7 @@ def test_genuine_modes_preserve_every_original_raw_leaf_cell_local_identity_and_
     envelope = run.source.execution.envelope
     assert (header["group"], header["context"], header["registration_sha256"]) == (envelope.base.id, envelope.context, envelope.registration_sha256)
     expected = (0, 0, 0, 2) if mode == "only_vrrp" else (1, 1, 5, 0 if mode == "zero_vrrp" else 1 if mode in ("no_all", "no_all_target") else 2)
-    assert header["denominator"] == {name: {"kind": KINDS[index if index < 2 else 2], "declared": count}
+    assert header["denominator"] == {name: {"kind": KINDS[min(2, index)], "declared": count}
         for index, (name, count) in enumerate(zip(("stp", "etherchannel", "hsrp", "vrrp"), expected, strict=True))}
     blobs = {row["sha256"]: bytes.fromhex(row["data"]) for row in header["raws"]}
     assert blobs == {sha256(raw).hexdigest(): raw for raw in inputs.values()}
