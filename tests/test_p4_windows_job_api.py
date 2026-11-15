@@ -157,13 +157,12 @@ def test_failed_configuration_closes_only_new_job_and_preserves_native_primary_e
     with ExitStack() as outer:
         existing = new_job(native, outer)
         created = None
-        with pytest.raises(OSError) as error:
-            with ExitStack() as rollback:
-                created = native.CreateJobObjectW(None, None)
-                api.check(created)
-                rollback.callback(close, created)
-                limits = api.ExtendedLimit()
-                api.check(native.SetInformationJobObject(created, -1, api.c.byref(limits), api.c.sizeof(limits)))
+        with pytest.raises(OSError) as error, ExitStack() as rollback:
+            created = native.CreateJobObjectW(None, None)
+            api.check(created)
+            rollback.callback(close, created)
+            limits = api.ExtendedLimit()
+            api.check(native.SetInformationJobObject(created, -1, api.c.byref(limits), api.c.sizeof(limits)))
         assert error.value.winerror != 0 and closed == [created] and created != existing
         assert active(native, existing) == 0
 
@@ -179,10 +178,9 @@ def test_close_acknowledgement_failure_retains_original_configuration_error_chai
         def close_then_refuse():
             api.check(native.CloseHandle(created))
             raise OSError("planted close acknowledgement")
-        with pytest.raises(OSError, match="planted close acknowledgement") as error:
-            with ExitStack() as rollback:
-                rollback.callback(close_then_refuse)
-                limits = api.ExtendedLimit()
-                api.check(native.SetInformationJobObject(created, -1, api.c.byref(limits), api.c.sizeof(limits)))
+        with pytest.raises(OSError, match="planted close acknowledgement") as error, ExitStack() as rollback:
+            rollback.callback(close_then_refuse)
+            limits = api.ExtendedLimit()
+            api.check(native.SetInformationJobObject(created, -1, api.c.byref(limits), api.c.sizeof(limits)))
         assert isinstance(error.value.__context__, OSError) and error.value.__context__.winerror != 0
         assert active(native, existing) == 0
