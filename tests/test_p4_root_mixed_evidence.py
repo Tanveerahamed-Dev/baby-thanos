@@ -56,9 +56,9 @@ def registration():
 def metadata(identifier, layer, node, raw):
     ref = {"type": "capture", "layer": layer, "capture": identifier, "role": "subject",
         "locator": {"kind": "whole_capture"}, "excerpt_sha256": digest(raw)}
-    return {"channel": "cli", "scope": dict(node=node, vrf=None, context=None, vdc=None, tenant=None, afi=None, instance=None, plane="exec"),
-        "collected_utc": dict(state="unknown", reason="as_of_missing", detail="no_collector_time",
-            candidates=[], next_evidence=[], evidence=[ref]), "error": None,
+    return {"channel": "cli", "scope": {"node": node, "vrf": None, "context": None, "vdc": None, "tenant": None, "afi": None, "instance": None, "plane": "exec"},
+        "collected_utc": {"state": "unknown", "reason": "as_of_missing", "detail": "no_collector_time",
+            "candidates": [], "next_evidence": [], "evidence": [ref]}, "error": None,
         "integrity_evidence": [deepcopy(ref)], "read_scope_evidence": [], "envelope": None}
 
 
@@ -138,9 +138,9 @@ def expected(mode, members, registration):
     captures += sorted(extra)
     wire = []
     for identifier, layer, node, operation, command, path, target in captures:
-        value = dict(layer=layer, id=identifier, raw=digest(members[path]), node="node:demo:" + node,
-            operation=operation, rendered=command, codec="utf-8", integrity="empty" if path == "vrrp.txt" and mode == "empty" else "complete",
-            read_scope="unknown", view="unknown", metadata_recorded=False, metadata=metadata(identifier, layer, "node:demo:" + node, members[path]))
+        value = {"layer": layer, "id": identifier, "raw": digest(members[path]), "node": "node:demo:" + node,
+            "operation": operation, "rendered": command, "codec": "utf-8", "integrity": "empty" if path == "vrrp.txt" and mode == "empty" else "complete",
+            "read_scope": "unknown", "view": "unknown", "metadata_recorded": False, "metadata": metadata(identifier, layer, "node:demo:" + node, members[path])}
         if target is not None:
             value.update(path=path, target=target["id"], owner=BINDINGS[operation][0], context="round",
                 registration_sha256=registration, parse_quality="partial" if path == "vrrp.txt" and mode in ("empty", "partial") else "complete",
@@ -150,14 +150,14 @@ def expected(mode, members, registration):
     for table, prefix, table_hash, rows in (("synthetic_p2.nodes", "nodes", p2, base["nodes"]),
         ("synthetic_p4.targets", "targets", p4, side["targets"])):
         for index, row in enumerate(rows):
-            catalogue.append(dict(table=table, row_id=row["id"], table_sha256=table_hash, pointer=f"/{prefix}/{index}",
-                raw=table_hash, encoding="hex", canonical=encoded(row).hex()))
-    catalogue.append(dict(table="synthetic_p4.context", row_id="round", table_sha256=p4, pointer="/context",
-        raw=p4, encoding="hex", canonical=encoded("round").hex()))
+            catalogue.append({"table": table, "row_id": row["id"], "table_sha256": table_hash, "pointer": f"/{prefix}/{index}",
+                "raw": table_hash, "encoding": "hex", "canonical": encoded(row).hex()})
+    catalogue.append({"table": "synthetic_p4.context", "row_id": "round", "table_sha256": p4, "pointer": "/context",
+        "raw": p4, "encoding": "hex", "canonical": encoded("round").hex()})
     blobs = {digest(raw): raw for raw in members.values()}
-    return dict(raws=[dict(sha256=key, bytes=len(raw), encoding="hex", data=raw.hex()) for key, raw in sorted(blobs.items())],
-        registries=[dict(layer="p2", raw=p2), dict(layer="p4", raw=p4)], captures=wire, registry_catalogue=catalogue,
-        anchors=anchors(members), physical_inputs=dict(files=FIXTURES[mode][1], bytes=sum(map(len, members.values()))))
+    return {"raws": [{"sha256": key, "bytes": len(raw), "encoding": "hex", "data": raw.hex()} for key, raw in sorted(blobs.items())],
+        "registries": [{"layer": "p2", "raw": p2}, {"layer": "p4", "raw": p4}], "captures": wire, "registry_catalogue": catalogue,
+        "anchors": anchors(members), "physical_inputs": {"files": FIXTURES[mode][1], "bytes": sum(map(len, members.values()))}}
 
 
 @pytest.mark.parametrize("mode", MODES)
