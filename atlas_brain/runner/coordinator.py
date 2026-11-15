@@ -6,7 +6,7 @@ import subprocess
 import sys
 from hashlib import sha256
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from atlas_brain.contract.canonical import canonical
 
@@ -181,6 +181,9 @@ def _spawn_workers(workers: int) -> tuple[tuple[str, int], ...]:
     return tuple(sorted(results))
 
 
+type P4Format = Literal["p4-observations", "p4-root-observations", "p4-root-mixed-observations"]
+
+
 P4_NAMES = ("MANIFEST.sha256", "facts/etherchannel_group.jsonl", "facts/fhrp_local.jsonl",
             "facts/stp_port_vlan.jsonl", "result.json")
 
@@ -251,21 +254,30 @@ def _publish_p4(out: Path, stage: Path, files: dict[str, bytes]) -> None:
 
 def run_p4(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
     """Retain the existing five-fact CLI publication contract."""
-    return _run_p4(evidence=evidence, out=out, workers=workers, parent_denied=parent_denied, roots=False)
+    return _run_p4(evidence=evidence, out=out, workers=workers, parent_denied=parent_denied, output_format="p4-observations")
 
 
 def run_p4_root(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
     """Publish exact Root API files; runner witness data is a separate stdout receipt."""
-    return _run_p4(evidence=evidence, out=out, workers=workers, parent_denied=parent_denied, roots=True)
+    return _run_p4(evidence=evidence, out=out, workers=workers, parent_denied=parent_denied, output_format="p4-root-observations")
 
 
-def _run_p4(*, evidence: Path, out: Path, workers: int, parent_denied: int, roots: bool) -> int:
+def run_p4_root_mixed(*, evidence: Path, out: Path, workers: int, parent_denied: int) -> int:
+    """Publish exact Root9 HEX API files and a separate runner-only stdout witness."""
+    return _run_p4(evidence=evidence, out=out, workers=workers, parent_denied=parent_denied, output_format="p4-root-mixed-observations")
+
+
+def _run_p4(*, evidence: Path, out: Path, workers: int, parent_denied: int, output_format: P4Format) -> int:
     """Stable-tree rename visibility; no fsync or hostile-race safety claim."""
     from atlas_brain.contract.manifest import manifest
     from atlas_brain.evidence.admission import Budgets
 
-    from . import p4
+    from . import p4, p4_root_mixed_report
 
+    if output_format not in ("p4-observations", "p4-root-observations", "p4-root-mixed-observations"):
+        raise RunnerRefused("invalid_format")
+    roots = output_format != "p4-observations"
+    mixed = output_format == "p4-root-mixed-observations"
     if type(workers) is not int or workers < 1:
         raise RunnerRefused("invalid_workers")
     if type(parent_denied) is not int or parent_denied not in (0, tripwire.WITNESS_ATTEMPTS):
@@ -292,7 +304,8 @@ def _run_p4(*, evidence: Path, out: Path, workers: int, parent_denied: int, root
         raise RunnerRefused("output_unwritable") from error
     try:
         limits = Budgets(bundle_bytes=16 * 1024 * 1024, artifact_bytes=4 * 1024 * 1024, artifacts=128)
-        files = dict(p4.analyse_root_observations_folder(evidence, limits) if roots else p4.analyse_folder(evidence, limits))
+        files = dict(p4_root_mixed_report.analyse_root_mixed_folder(evidence, limits) if mixed else
+                     p4.analyse_root_observations_folder(evidence, limits) if roots else p4.analyse_folder(evidence, limits))
     except RunnerRefused:
         raise
     except OSError as error:
@@ -313,11 +326,14 @@ def _run_p4(*, evidence: Path, out: Path, workers: int, parent_denied: int, root
     if not isinstance(payload, dict):
         raise RunnerRefused("p4_output_invalid")
     record = cast(dict[str, object], payload)
-    expected_schema = p4.ROOT_SCHEMA if roots else p4.SCHEMA
+    expected_schema = p4_root_mixed_report.SCHEMA if mixed else p4.ROOT_SCHEMA if roots else p4.SCHEMA
     if (record.get("schema") != expected_schema or record.get("scope") != "observations_only"
             or record.get("checks") != "not_implemented" or "execution" in record):
         raise RunnerRefused("p4_output_invalid")
     if roots and record.get("root_scope") != "local_reported_priority_and_mac_not_intended_root":
+        raise RunnerRefused("p4_output_invalid")
+    if mixed and (record.get("semantic_group") != "declared_synthetic"
+                  or record.get("qualification") != "synthetic_observations_only"):
         raise RunnerRefused("p4_output_invalid")
     coordinator_denied = tripwire.probe()
     if type(coordinator_denied) is not int or coordinator_denied != tripwire.WITNESS_ATTEMPTS:
@@ -342,8 +358,9 @@ def _run_p4(*, evidence: Path, out: Path, workers: int, parent_denied: int, root
         files["MANIFEST.sha256"] = manifest({name: raw for name, raw in files.items() if name != "MANIFEST.sha256"})
     _publish_p4(out, stage, files)
     if roots:
-        receipt = {"schema": "atlas-brain.p4-root-cli-witness/1", "format": "p4-root-observations",
+        receipt = {"schema": "atlas-brain.p4-root-mixed-cli-witness/1" if mixed else "atlas-brain.p4-root-cli-witness/1",
+            "format": output_format,
             "report_schema": expected_schema, "manifest_sha256": sha256(files["MANIFEST.sha256"]).hexdigest(),
             "execution": record["execution"], "scope": "runner_witness_only"}
-        print("P4_ROOT_CLI_RECEIPT " + canonical(receipt).decode("ascii"))
+        print(("P4_ROOT_MIXED_CLI_RECEIPT " if mixed else "P4_ROOT_CLI_RECEIPT ") + canonical(receipt).decode("ascii"))
     return total
