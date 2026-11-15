@@ -101,13 +101,13 @@ jobs:
           --run-id ${{ github.run_id }} --attempt ${{ github.run_attempt }}
           --jobs-result "${{ needs.linux_tests.result }}"
   windows_tests:
-    name: Windows full suite (${{ matrix.shard }}/4)
+    name: Windows full suite (${{ matrix.shard }}/8)
     runs-on: windows-latest
     timeout-minutes: 10 # unchanged hard limit; budget 5 minutes per shard
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -124,7 +124,7 @@ jobs:
       - name: Run complete collection shard
         run: >-
           uv run --no-sync python tools/ci_pytest.py run
-          --index ${{ matrix.shard }} --count 4 --head ${{ github.event.pull_request.head.sha || github.sha }}
+          --index ${{ matrix.shard }} --count 8 --head ${{ github.event.pull_request.head.sha || github.sha }}
           --run-id ${{ github.run_id }} --attempt ${{ github.run_attempt }}
           --receipt .ci-evidence/windows-shards/shard-${{ matrix.shard }}.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -158,7 +158,7 @@ jobs:
       - name: Require complete Windows regression
         run: >-
           uv run --no-sync python tools/ci_pytest.py verify
-          --directory .ci-evidence/windows-receipts --count 4 --head ${{ github.event.pull_request.head.sha || github.sha }}
+          --directory .ci-evidence/windows-receipts --count 8 --head ${{ github.event.pull_request.head.sha || github.sha }}
           --run-id ${{ github.run_id }} --attempt ${{ github.run_attempt }}
           --jobs-result "${{ needs.windows_tests.result }}"
   privacy:
