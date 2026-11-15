@@ -129,6 +129,8 @@ class VRRPOwner(Parser[parser.Result]):
         inputs.validate_vrrp_inputs(self.inputs)
         if type(self) is _MIXED_VRRP_OWNER:
             _MIXED_VRRP_OWNER.validate_registration(self)
+        elif type(self) is _ROOT_MIXED_VRRP_OWNER:
+            _ROOT_MIXED_VRRP_OWNER.validate_registration(self)
         else:
             _need(self.registration == _registration() and self.inputs.registration_sha256 == self.registration[2], "registration")
         expected = _subjects(self.inputs)
@@ -310,16 +312,47 @@ class MixedVRRPOwner(VRRPOwner):
         return mixed_inputs.validate_mixed_vrrp_correspondence(self.envelope, self.budgets, self.inputs)
 
 
+class RootMixedVRRPOwner(VRRPOwner):
+    """Own the fixed Root9 mixed run's VRRP subset; current metadata is not an origin seal."""
+
+    def __init__(self, envelope: p4.Envelope, budgets: Budgets,
+                 targets: tuple[inputs.VRRPTarget, ...], requests: tuple[CaptureRequest, ...]) -> None:
+        _need(type(self) is _ROOT_MIXED_VRRP_OWNER, "receiver")
+        compiled = global_inputs.validate_root_mixed_context(envelope, budgets)
+        super().__init__(targets, requests)
+        self.envelope, self.budgets = envelope, budgets
+        self.registration = (compiled.catalogue_bytes, compiled.registration_bytes, compiled.registration_sha256)
+        _LOCAL_VRRP_OWNER.validate_inputs(self)
+
+    def validate_registration(self) -> None:
+        _need(type(self) is _ROOT_MIXED_VRRP_OWNER, "receiver")
+        compiled = global_inputs.validate_root_mixed_context(self.envelope, self.budgets)
+        mixed_inputs.validate_root_mixed_vrrp_correspondence(self.envelope, self.budgets, self.inputs)
+        _need(type(self.registration) is tuple and len(self.registration) == 3
+              and type(self.registration[0]) is bytes and type(self.registration[1]) is bytes
+              and type(self.registration[2]) is str and self.registration ==
+                  (compiled.catalogue_bytes, compiled.registration_bytes, compiled.registration_sha256)
+              and self.envelope.registration_sha256 == self.registration[2]
+              and self.inputs.registration_sha256 != self.registration[2], "mixed_registration")
+
+    def declaration_evidence(self) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
+        _need(type(self) is _ROOT_MIXED_VRRP_OWNER, "receiver")
+        return mixed_inputs.validate_root_mixed_vrrp_correspondence(self.envelope, self.budgets, self.inputs)
+
+
 _LOCAL_VRRP_OWNER = VRRPOwner
 _MIXED_VRRP_OWNER = MixedVRRPOwner
+_ROOT_MIXED_VRRP_OWNER = RootMixedVRRPOwner
 
 
 def _receiver(owner: VRRPOwner) -> None:
-    _need(type(owner) is _LOCAL_VRRP_OWNER or type(owner) is _MIXED_VRRP_OWNER, "receiver")
+    _need(type(owner) is _LOCAL_VRRP_OWNER or type(owner) is _MIXED_VRRP_OWNER or type(owner) is _ROOT_MIXED_VRRP_OWNER, "receiver")
 
 
 def _declaration_context(owner: VRRPOwner) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
     _receiver(owner)
     if type(owner) is _MIXED_VRRP_OWNER:
         return _MIXED_VRRP_OWNER.declaration_evidence(owner)
+    if type(owner) is _ROOT_MIXED_VRRP_OWNER:
+        return _ROOT_MIXED_VRRP_OWNER.declaration_evidence(owner)
     return _LOCAL_VRRP_OWNER.declaration_evidence(owner)
