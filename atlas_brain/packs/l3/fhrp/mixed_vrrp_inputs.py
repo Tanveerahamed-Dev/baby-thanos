@@ -84,14 +84,21 @@ def _bound(
     return declarations
 
 
-def validate_mixed_vrrp_correspondence(
+def _mixed_vrrp_correspondence(
     envelope: p4.Envelope, budgets: Budgets, inputs: local.VRRPInputs,
 ) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
     """Close the current complete declared VRRP subset; no facts or origin tokens."""
-    compiled = context.validate_mixed_context(envelope, budgets)
     _need(type(inputs) is local.VRRPInputs, "input")
     local.validate_vrrp_inputs(inputs)
     declarations = _bound(envelope, budgets, inputs)
+    return declarations
+
+
+def validate_mixed_vrrp_correspondence(
+    envelope: p4.Envelope, budgets: Budgets, inputs: local.VRRPInputs,
+) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
+    compiled = context.validate_mixed_context(envelope, budgets)
+    declarations = _mixed_vrrp_correspondence(envelope, budgets, inputs)
     _need(compiled == context.validate_mixed_context(envelope, budgets)
           and inputs.registration_sha256 != compiled.registration_sha256, "registration")
     local.validate_vrrp_inputs(inputs)
@@ -99,16 +106,35 @@ def validate_mixed_vrrp_correspondence(
     return declarations
 
 
-def prepare_mixed_vrrp_inputs(envelope: p4.Envelope, budgets: Budgets) -> MixedVRRPInputs:
-    """Retain original selected targets and raw members without parsing or producing facts."""
-    compiled = context.validate_mixed_context(envelope, budgets)
+def validate_root_mixed_vrrp_correspondence(
+    envelope: p4.Envelope, budgets: Budgets, inputs: local.VRRPInputs,
+) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
+    compiled = context.validate_root_mixed_context(envelope, budgets)
+    declarations = _mixed_vrrp_correspondence(envelope, budgets, inputs)
+    _need(compiled == context.validate_root_mixed_context(envelope, budgets)
+          and inputs.registration_sha256 != compiled.registration_sha256, "registration")
+    local.validate_vrrp_inputs(inputs)
+    _need(declarations == _bound(envelope, budgets, inputs), "declaration")
+    return declarations
+
+
+type _MixedVrrpParts = tuple[tuple[p4.Target, ...], tuple[local.VRRPTarget, ...], tuple[CaptureRequest, ...], local.VRRPInputs]
+
+
+def _mixed_vrrp_candidates(envelope: p4.Envelope, budgets: Budgets) -> _MixedVrrpParts:
     selected, domains = _select(envelope, budgets)
     members = _members(envelope, selected)
     requests = tuple(local.prepare_vrrp_request(capture_id=member.id, source=member.target.node.key,
         context=envelope.context, raw=member.raw) for member in members.values())
     inputs = local.retain_vrrp_inputs(domains, requests)
-    declarations = validate_mixed_vrrp_correspondence(envelope, budgets, inputs)
-    _need(compiled == context.validate_mixed_context(envelope, budgets), "registration")
+    return selected, domains, requests, inputs
+
+
+def _finish_mixed_vrrp_inputs(
+    envelope: p4.Envelope, budgets: Budgets, compiled: CompiledPackSet, parts: _MixedVrrpParts,
+    declarations: dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]],
+) -> MixedVRRPInputs:
+    selected, domains, requests, inputs = parts
     local.validate_vrrp_inputs(inputs)
     _need(declarations == _bound(envelope, budgets, inputs), "declaration")
     current = tuple(target for target in envelope.targets if target.operation == profile.parser.OP)
@@ -118,3 +144,19 @@ def prepare_mixed_vrrp_inputs(envelope: p4.Envelope, budgets: Budgets) -> MixedV
     _need(len(set(subjects)) == len(subjects), "population")
     return MixedVRRPInputs(envelope=envelope, budgets=budgets, compiled=compiled,
         targets=selected, domains=domains, requests=requests, vrrp=inputs, declarations=declarations, subjects=subjects)
+
+
+def prepare_mixed_vrrp_inputs(envelope: p4.Envelope, budgets: Budgets) -> MixedVRRPInputs:
+    compiled = context.validate_mixed_context(envelope, budgets)
+    parts = _mixed_vrrp_candidates(envelope, budgets)
+    declarations = validate_mixed_vrrp_correspondence(envelope, budgets, parts[3])
+    _need(compiled == context.validate_mixed_context(envelope, budgets), "registration")
+    return _finish_mixed_vrrp_inputs(envelope, budgets, compiled, parts, declarations)
+
+
+def prepare_root_mixed_vrrp_inputs(envelope: p4.Envelope, budgets: Budgets) -> MixedVRRPInputs:
+    compiled = context.validate_root_mixed_context(envelope, budgets)
+    parts = _mixed_vrrp_candidates(envelope, budgets)
+    declarations = validate_root_mixed_vrrp_correspondence(envelope, budgets, parts[3])
+    _need(compiled == context.validate_root_mixed_context(envelope, budgets), "registration")
+    return _finish_mixed_vrrp_inputs(envelope, budgets, compiled, parts, declarations)

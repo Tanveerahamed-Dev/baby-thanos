@@ -21,7 +21,12 @@ from atlas_brain.evidence.synthetic import Node, SyntheticGroup
 from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
 from atlas_brain.model.pack_registration import CompiledPackSet, PackDeclaration
-from atlas_brain.packs.l3.fhrp import build, mixed_profile, peer_profile
+from atlas_brain.packs.l3.fhrp import (
+    build,
+    mixed_profile,
+    peer_profile,
+    root_mixed_profile,
+)
 from atlas_brain.packs.l3.fhrp import parse_hsrp_all as all_hsrp
 from atlas_brain.packs.l3.fhrp import parse_hsrp_brief as hsrp
 from atlas_brain.packs.l3.fhrp import version_profile as profile
@@ -459,7 +464,7 @@ def _mixed_identifier(value: str) -> bool:
     return type(value) is str and re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value, re.ASCII) is not None
 
 
-def validate_mixed_context(envelope: p4.Envelope, budgets: Budgets) -> CompiledPackSet:
+def _mixed_context_preflight(envelope: p4.Envelope, budgets: Budgets) -> None:
     """Recheck current fixed mixed registry correspondence; never admission or execution origin."""
     _state_version_budgets(budgets)
     _mixed_need(type(envelope) is p4.Envelope and type(envelope.raw) is bytes
@@ -476,7 +481,10 @@ def validate_mixed_context(envelope: p4.Envelope, budgets: Budgets) -> CompiledP
             or sum(map(len, raws)) > budgets.bundle_bytes):
         raise BudgetExceeded("fhrp_mixed_context_raw_budget")
     _state_version_graph(envelope, budgets)
-    compiled = mixed_profile.compile_mixed_profile()
+
+
+def _mixed_context(envelope: p4.Envelope, budgets: Budgets, compiled: CompiledPackSet) -> None:
+    base = envelope.base
     _mixed_need(type(compiled) is CompiledPackSet and envelope.registration_sha256 == compiled.registration_sha256, "registration")
     _mixed_need(_mixed_identifier(base.id) and _mixed_identifier(envelope.context)
                 and 1 <= len(base.nodes) <= 32 and 1 <= len(base.captures) <= 64
@@ -544,7 +552,22 @@ def validate_mixed_context(envelope: p4.Envelope, budgets: Budgets) -> CompiledP
     _mixed_need(len({(target.node.key, target.operation, target.params) for target in envelope.targets})
                 == len(envelope.targets), "target")
     _scope(envelope, budgets)
+
+
+def validate_mixed_context(envelope: p4.Envelope, budgets: Budgets) -> CompiledPackSet:
+    _mixed_context_preflight(envelope, budgets)
+    compiled = mixed_profile.compile_mixed_profile()
+    _mixed_context(envelope, budgets, compiled)
     _mixed_need(compiled == mixed_profile.compile_mixed_profile()
+                and envelope.registration_sha256 == compiled.registration_sha256, "registration")
+    return compiled
+
+
+def validate_root_mixed_context(envelope: p4.Envelope, budgets: Budgets) -> CompiledPackSet:
+    _mixed_context_preflight(envelope, budgets)
+    compiled = root_mixed_profile.compile_root_mixed_profile()
+    _mixed_context(envelope, budgets, compiled)
+    _mixed_need(compiled == root_mixed_profile.compile_root_mixed_profile()
                 and envelope.registration_sha256 == compiled.registration_sha256, "registration")
     return compiled
 
@@ -570,11 +593,10 @@ def _mixed_hsrp_targets(
     return declared
 
 
-def validate_mixed_hsrp_correspondence(
+def _mixed_hsrp_correspondence(
     envelope: p4.Envelope, budgets: Budgets, inputs: VersionInputs,
 ) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
     """Bind only current HSRP models inside the fixed mixed context; never admission or origin."""
-    compiled = validate_mixed_context(envelope, budgets)
     _mixed_hsrp_need(type(inputs) is VersionInputs and type(inputs.indexed) is dict and type(inputs.expected) is dict
                      and all(type(key) is tuple and len(key) == 2 and all(type(value) is str for value in key)
                          for key in inputs.indexed) and all(type(key) is str for key in inputs.expected), "input")
@@ -602,14 +624,33 @@ def validate_mixed_hsrp_correspondence(
             evidence += declared[domain.node.key].declaration.evidence
         _mixed_hsrp_need(all(type(ref) is k.RegistryRef for ref in evidence), "declaration")
         result[domain.context, domain.node.key] = cast(tuple[k.RegistryRef, ...], evidence)
+    return result
+
+
+def validate_mixed_hsrp_correspondence(
+    envelope: p4.Envelope, budgets: Budgets, inputs: VersionInputs,
+) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
+    compiled = validate_mixed_context(envelope, budgets)
+    result = _mixed_hsrp_correspondence(envelope, budgets, inputs)
     _mixed_hsrp_need(compiled == validate_mixed_context(envelope, budgets), "registration")
     validate_version_inputs(inputs)
     return result
 
 
-def prepare_mixed_hsrp_inputs(envelope: p4.Envelope, budgets: Budgets) -> StateVersionInputs:
-    """Prepare only original BRIEF/ALL inputs; VRRP and the complete mixed run remain outside."""
-    compiled = validate_mixed_context(envelope, budgets)
+def validate_root_mixed_hsrp_correspondence(
+    envelope: p4.Envelope, budgets: Budgets, inputs: VersionInputs,
+) -> dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]]:
+    compiled = validate_root_mixed_context(envelope, budgets)
+    result = _mixed_hsrp_correspondence(envelope, budgets, inputs)
+    _mixed_hsrp_need(compiled == validate_root_mixed_context(envelope, budgets), "registration")
+    validate_version_inputs(inputs)
+    return result
+
+
+type _MixedHsrpParts = tuple[tuple[p4.Target, ...], tuple[p4.Target, ...], tuple[build.Target, ...], tuple[CaptureRequest, ...], VersionInputs]
+
+
+def _mixed_hsrp_candidates(envelope: p4.Envelope, budgets: Budgets) -> _MixedHsrpParts:
     targets, domains, requests = _scope(envelope, budgets)
     _mixed_hsrp_targets(envelope, budgets, domains)
     for request in requests:
@@ -618,8 +659,14 @@ def prepare_mixed_hsrp_inputs(envelope: p4.Envelope, budgets: Budgets) -> StateV
     all_requests = tuple(prepare_version_request(capture_id=member.id, source=member.target.node.key,
         context=envelope.context, raw=member.raw) for member in envelope.captures if member.target.operation == all_hsrp.OP)
     inputs = retain_version_inputs(domains, all_requests)
-    declarations = validate_mixed_hsrp_correspondence(envelope, budgets, inputs)
-    _mixed_hsrp_need(compiled == validate_mixed_context(envelope, budgets), "registration")
+    return targets, selected, domains, requests, inputs
+
+
+def _finish_mixed_hsrp_inputs(
+    envelope: p4.Envelope, budgets: Budgets, compiled: CompiledPackSet, parts: _MixedHsrpParts,
+    declarations: dict[tuple[str, k.EntityKey], tuple[k.RegistryRef, ...]],
+) -> StateVersionInputs:
+    targets, selected, domains, requests, inputs = parts
     for request in requests:
         validate_brief_request(request)
     brief_members: dict[str, p4.CaptureMember] = {member.id: member for member in envelope.captures if member.target.operation == hsrp.OP}
@@ -634,3 +681,19 @@ def prepare_mixed_hsrp_inputs(envelope: p4.Envelope, budgets: Budgets) -> StateV
     validate_version_inputs(inputs)
     return StateVersionInputs(envelope=envelope, budgets=budgets, compiled=compiled,
         targets=targets + selected, domains=domains, requests=requests, version=inputs, declarations=declarations)
+
+
+def prepare_mixed_hsrp_inputs(envelope: p4.Envelope, budgets: Budgets) -> StateVersionInputs:
+    compiled = validate_mixed_context(envelope, budgets)
+    parts = _mixed_hsrp_candidates(envelope, budgets)
+    declarations = validate_mixed_hsrp_correspondence(envelope, budgets, parts[4])
+    _mixed_hsrp_need(compiled == validate_mixed_context(envelope, budgets), "registration")
+    return _finish_mixed_hsrp_inputs(envelope, budgets, compiled, parts, declarations)
+
+
+def prepare_root_mixed_hsrp_inputs(envelope: p4.Envelope, budgets: Budgets) -> StateVersionInputs:
+    compiled = validate_root_mixed_context(envelope, budgets)
+    parts = _mixed_hsrp_candidates(envelope, budgets)
+    declarations = validate_root_mixed_hsrp_correspondence(envelope, budgets, parts[4])
+    _mixed_hsrp_need(compiled == validate_root_mixed_context(envelope, budgets), "registration")
+    return _finish_mixed_hsrp_inputs(envelope, budgets, compiled, parts, declarations)
