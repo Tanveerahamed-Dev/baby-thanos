@@ -1,0 +1,194 @@
+"""Thirty-two-shard receipt integrity; synthetic cohorts are not hosted-run attestations."""
+import json
+import sys
+from copy import deepcopy
+from enum import StrEnum
+from hashlib import sha256
+from types import SimpleNamespace
+
+import pytest
+import test_ci_pytest_cli
+from test_ci_pytest import (
+    ATTEMPT,
+    FIFO,
+    FIFO_REASON,
+    HEAD,
+    MUTATIONS,
+    RUN_ID,
+    _receipts,
+)
+from test_ci_pytest_cli import _cli, _commit
+from test_ci_pytest_linux import LINUX, skipped
+
+from tools import ci_pytest as driver
+from tools import ci_pytest_receipts as receipts
+
+isolated_repo = test_ci_pytest_cli.isolated_repo
+NODES = tuple(f"tests/test_probe.py::test_{index:03d}" for index in range(512))
+
+
+def cohort(platform="win32", count=32, nodes=NODES, head=HEAD):
+    values = _receipts(count=count, nodes=nodes, head=head)
+    for value in values:
+        value["platform"] = platform
+    return values
+
+
+def verify(values, *, platform="win32", count=32, head=HEAD):
+    return receipts.verify_receipts(values, head=head, run_id=RUN_ID,
+        run_attempt=ATTEMPT, count=count, platform=platform)
+
+
+def artifacts(root):
+    values, paths = cohort(), []
+    for index, value in enumerate(values, 1):
+        folder = root / f"windows-pytest-{index}-{HEAD}-{RUN_ID}-{ATTEMPT}"
+        folder.mkdir()
+        path = folder / f"shard-{index}.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        paths.append(path)
+    return SimpleNamespace(directory=root, head=HEAD, run_id=RUN_ID, attempt=ATTEMPT, count=32), paths
+
+
+def test_thirty_two_complete_disjoint_receipts_keep_full_sha_digest_and_split_every_old_sixteen_bucket():
+    values = cohort()
+    original = deepcopy(values)
+    summary = verify(values)
+    assert all(value["selected"] for value in values) and values == original
+    selected = [node for value in values for node in value["selected"]]
+    assert len(selected) == len(set(selected)) == len(NODES) and set(selected) == set(NODES)
+    encoded = json.dumps(list(NODES), ensure_ascii=True, separators=(",", ":")).encode()
+    assert summary == {"head": HEAD, "run_id": RUN_ID, "run_attempt": ATTEMPT,
+        "shards": 32, "tests": len(NODES), "universe_sha256": sha256(encoded).hexdigest()}
+    for index, value in enumerate(values, 1):
+        assert value["selected"] == [node for node in NODES if int.from_bytes(sha256(node.encode("utf-8")).digest(), "big") % 32 + 1 == index]
+    assert verify(list(reversed(values))) == summary
+    assert receipts.verify_receipts(values, head=HEAD, run_id=RUN_ID,
+        run_attempt=ATTEMPT, count=32) == summary
+    for index in range(1, 17):
+        old = {node for node in NODES if int.from_bytes(sha256(node.encode("utf-8")).digest(), "big") % 16 + 1 == index}
+        first, second = set(values[index - 1]["selected"]), set(values[index + 15]["selected"])
+        assert old == first | second and not first & second
+    assert verify(cohort("linux", 16), platform="linux", count=16)["universe_sha256"] == summary["universe_sha256"]
+
+
+@pytest.mark.parametrize("plant", tuple(MUTATIONS))
+def test_all_existing_partition_and_completion_mutations_still_refuse_at_thirty_two(plant):
+    values = cohort()
+    assert verify(values)["shards"] == 32
+    MUTATIONS[plant](values)
+    with pytest.raises(receipts.ReceiptError):
+        verify(values)
+
+
+@pytest.mark.parametrize("field,value", [("schema", "other"), ("head", "b" * 40), ("run_id", "124"),
+    ("run_attempt", "2"), ("platform", "linux"), ("platform", StrEnum("Alias", {"VALUE": "win32"}).VALUE),
+    ("shard_count", 16), ("shard_count", True), ("shard_index", True), ("pytest_exit", False),
+    ("session_exit", 1)])
+def test_thirty_two_receipts_cannot_mix_context_platform_count_or_exit_types(field, value):
+    values = cohort()
+    assert verify(values)["tests"] == len(NODES)
+    values[0][field] = value
+    with pytest.raises(receipts.ReceiptError):
+        verify(values)
+
+
+@pytest.mark.parametrize("plant", ["sixteen_expected", "sixteen_receipt", "missing_thirty_second", "duplicate_thirty_second"])
+def test_sixteen_and_thirty_two_cohorts_never_substitute_for_each_other(plant):
+    values = cohort()
+    assert verify(values)["shards"] == 32
+    if plant == "sixteen_receipt":
+        values[31] = cohort(count=16)[0]
+    elif plant == "missing_thirty_second":
+        values.pop()
+    elif plant == "duplicate_thirty_second":
+        values[31] = deepcopy(values[0])
+    with pytest.raises(receipts.ReceiptError):
+        verify(values, count=16 if plant == "sixteen_expected" else 32)
+
+
+@pytest.mark.parametrize("platform,count", [("win32", 32), ("linux", 16)])
+def test_exact_windows_one_and_linux_sixteen_skip_allowances_remain_closed(platform, count):
+    assert receipts.SKIPS == {FIFO: FIFO_REASON} and receipts.LINUX_SKIPS == LINUX and len(LINUX) == 16
+    policy = {FIFO: FIFO_REASON} if platform == "win32" else LINUX
+    nodes = (*NODES, FIFO, *LINUX)
+    values = cohort(platform, count, nodes)
+    for value in values:
+        for node in value["selected"]:
+            if node in policy:
+                value["reports"][node] = skipped(policy[node])
+    assert verify(values, platform=platform, count=count)["tests"] == len(nodes)
+    node = next(iter(policy))
+    receipt = next(value for value in values if node in value["selected"])
+    receipt["reports"][node] = skipped(policy[node] + " changed")
+    with pytest.raises(receipts.ReceiptError, match="^unapproved_skip$"):
+        verify(values, platform=platform, count=count)
+
+
+@pytest.mark.parametrize("plant", ["missing", "extra", "head", "run", "attempt", "os", "file_missing",
+    "file_extra", "file_name", "swap", "context", "duplicate_json", "nonfinite"])
+def test_all_thirty_two_artifact_directories_names_files_and_receipt_indices_are_exact(tmp_path, plant):
+    args, paths = artifacts(tmp_path)
+    assert verify(driver._read_directory(args))["shards"] == 32
+    path = paths[-1]
+    folder = path.parent
+    if plant == "missing":
+        path.unlink()
+        folder.rmdir()
+    elif plant == "extra":
+        (tmp_path / "unexpected").mkdir()
+    elif plant in ("head", "run", "attempt", "os"):
+        head, run, attempt = ("b" * 40 if plant == "head" else HEAD), ("124" if plant == "run" else RUN_ID), ("2" if plant == "attempt" else ATTEMPT)
+        prefix = "linux" if plant == "os" else "windows"
+        folder.rename(folder.with_name(f"{prefix}-pytest-32-{head}-{run}-{attempt}"))
+    elif plant == "file_missing":
+        path.unlink()
+    elif plant == "file_extra":
+        (folder / "other.json").write_text("{}", encoding="utf-8")
+    elif plant == "file_name":
+        path.rename(folder / "other.json")
+    elif plant == "swap":
+        first, last = paths[0].read_text(encoding="utf-8"), path.read_text(encoding="utf-8")
+        paths[0].write_text(last, encoding="utf-8")
+        path.write_text(first, encoding="utf-8")
+    else:
+        text = path.read_text(encoding="utf-8")
+        if plant == "context":
+            value = json.loads(text)
+            value["run_attempt"] = "2"
+            text = json.dumps(value)
+        elif plant == "duplicate_json":
+            text = text.replace('"schema":', '"schema":"other","schema":', 1)
+        else:
+            text = text[:-1] + ', "extra": NaN}'
+        path.write_text(text, encoding="utf-8")
+    code = "artifact_file_population_mismatch" if plant.startswith("file_") else "artifact_shard_index_mismatch" if plant == "swap" else (
+        "receipt_context_mismatch" if plant == "context" else "duplicate_json_key" if plant == "duplicate_json" else
+        "nonfinite_json_value" if plant == "nonfinite" else "artifact_directory_population_mismatch")
+    with pytest.raises(receipts.ReceiptError, match="^" + code + "$"):
+        verify(driver._read_directory(args))
+
+
+@pytest.mark.parametrize("index", range(1, 33))
+def test_actual_native_driver_runs_each_thirty_second_partition_with_full_collection_and_real_reports(isolated_repo, index):
+    root = isolated_repo
+    (root / "tests" / "test_probe.py").write_text("".join(
+        f"def test_{number:03d}():\n    assert True\n\n" for number in range(512)), encoding="utf-8")
+    head = _commit(root)
+    path = root / "receipts" / f"shard-{index}.json"
+    result = _cli(root, "run", "--index", str(index), "--count", "32", "--head", head,
+        "--run-id", RUN_ID, "--attempt", ATTEMPT, "--receipt", str(path))
+    assert result.returncode == 0 and path.is_file(), result.stdout + result.stderr
+    value = json.loads(path.read_text(encoding="utf-8"))
+    expected = [node for node in NODES if int.from_bytes(sha256(node.encode("utf-8")).digest(), "big") % 32 + 1 == index]
+    assert expected and value["universe"] == list(NODES) and value["selected"] == value["finished"] == expected
+    assert value["head"] == head and value["platform"] == sys.platform and value["shard_count"] == 32 and value["shard_index"] == index
+    assert value["run_id"] == RUN_ID and value["run_attempt"] == ATTEMPT and value["pytest_exit"] == value["session_exit"] == 0
+    assert value["failed_reports"] == value["collection_errors"] == []
+    assert value["schema"] == "atlas-brain.ci-pytest/1"
+    assert set(value) == {"schema", "head", "run_id", "run_attempt", "platform", "shard_index", "shard_count",
+        "universe", "selected", "finished", "reports", "failed_reports", "collection_errors", "pytest_exit", "session_exit"}
+    assert set(value["reports"]) == set(expected) and all(
+        [(row["when"], row["outcome"], row["reason"]) for row in value["reports"][node]] ==
+        [("setup", "passed", ""), ("call", "passed", ""), ("teardown", "passed", "")] for node in expected)
+    # Independent per-position probes do not pretend to be a shared native thirty-two-receipt cohort.
