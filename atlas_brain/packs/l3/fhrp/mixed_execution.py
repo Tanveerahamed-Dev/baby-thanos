@@ -5,6 +5,7 @@ from typing import cast
 
 from atlas_brain.evidence import p4_admission as p4
 from atlas_brain.evidence.admission import Budgets
+from atlas_brain.evidence.capture import Scope
 from atlas_brain.kernel import states as k
 from atlas_brain.model.pack_registration import CompiledPackSet, PackDeclaration
 from atlas_brain.packs.l2.etherchannel import build as ec
@@ -116,6 +117,8 @@ def _validate_parts(
     requests = plan.requests + channel.owner.plan.requests + hsrp.requests + hsrp.version.requests + local.requests
     for request in requests:
         validate_fhrp_request_graph(request)
+        k.require(request.capture.scope == Scope(node=request.capture.source, plane="exec", vrf=None, context=None,
+            instance=None, vdc=None, tenant=None, afi=None), "fhrp_mixed_execution_scope")
     caches = ((tree.produced, plan.requests), (channel.owner.produced, channel.owner.plan.requests), (state.produced, hsrp.requests))
     k.require(all(type(cache) is dict and all(type(key) is str for key in cache)
                   and set(cache) == {request.capture.id for request in requests} for cache, requests in caches),

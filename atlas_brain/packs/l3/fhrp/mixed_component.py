@@ -18,6 +18,9 @@ type Cell = k.Known[bool] | k.Known[str] | k.Unknown
 type Cells = tuple[tuple[k.FactId, k.EntityKey, Cell], ...]
 type OwnedResult = stp.Result | ec.Result | build.Result | VersionResult | VRRPResult
 type Held = tuple[FactStore, tuple[object, ...], Cells]
+type Results = tuple[stp.Result, ec.Result, build.Result, VersionResult, VRRPResult]
+type Subjects = tuple[tuple[k.EntityKey, ...], tuple[k.EntityKey, ...], tuple[k.EntityKey, ...], tuple[k.EntityKey, ...]]
+type HeldResults = tuple[Held, Held, Held, Held, Held]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -28,6 +31,13 @@ class MixedComponent:
     state: build.Result
     version: VersionResult
     vrrp: VRRPResult
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Retained:
+    component: MixedComponent
+    subjects: Subjects
+    held: HeldResults
 
 
 def _need(condition: bool, code: str) -> None:
@@ -63,6 +73,30 @@ def _reader(result: OwnedResult, step: StepSpec, subjects: tuple[k.EntityKey, ..
     return reader
 
 
+def _close(source: execution.MixedExecution, results: Results, subjects: Subjects, held: HeldResults, budgets: Budgets) -> None:
+    execution.validate_mixed_execution(source, budgets)
+    tree, channel, state_result, version_result, vrrp_result = results
+    tree_subjects, channel_subjects, hsrp_subjects, vrrp_subjects = subjects
+    tree_held, channel_held, state_held, version_held, vrrp_held = held
+    state, version, owner = source.fhrp.state, source.fhrp.version, source.fhrp.vrrp_owner
+    if state is None or version is None or owner is None:
+        raise ValueError("fhrp_mixed_component_source")
+    outputs = source.execution.executed
+    stores = (tree.store, channel.store, state_result.store, version_result.store, vrrp_result.store)
+    _need(all(first is not second for index, first in enumerate(stores) for second in stores[index + 1:]), "store")
+    source.tree.validate_root_guard_values(tree, _reader(tree, stp.STEP, tree_subjects, tree_held,
+        _cells(stp.fact_rows(tree))), outputs)
+    source.channel.owner.validate_reported_protocol_values(channel, _reader(channel, ec.STEP, channel_subjects, channel_held,
+        _cells(ec.fact_rows(channel))), outputs)
+    state.validate_gateway_source_values(state_result, _reader(state_result, build.STEP, hsrp_subjects, state_held,
+        _cells(build.fact_rows(state_result))), outputs)
+    version.validate_values(version_result, _reader(version_result, version_profile.STEP, hsrp_subjects, version_held,
+        tuple((version_profile.REPORTED_PROTOCOL_VERSION, row.subject, row.value) for row in version_result.rows)))
+    owner.validate_values(vrrp_result, _reader(vrrp_result, vrrp_profile.STEP, vrrp_subjects, vrrp_held,
+        tuple((vrrp_profile.REPORTED_VRRP_STATE, row.subject, row.value) for row in vrrp_result.rows)))
+    execution.validate_mixed_execution(source, budgets)
+
+
 class MixedComponentRun:
     """Consume one fresh invocation; failed later finishing retains prior returned results.
 
@@ -78,11 +112,12 @@ class MixedComponentRun:
         self.version: VersionResult | None = None
         self.vrrp: VRRPResult | None = None
         self.result: MixedComponent | None = None
+        self.retained: _Retained | None = None
 
     def build(self) -> MixedComponent:
         _need(type(self) is MixedComponentRun and self.attempted is False and self.source is None
             and self.tree is None and self.channel is None and self.state is None
-            and self.version is None and self.vrrp is None and self.result is None, "once")
+            and self.version is None and self.vrrp is None and self.result is None and self.retained is None, "once")
         self.attempted = True
         budgets = self.budgets
         source = execution.execute_mixed_inputs(self.root, budgets)
@@ -117,26 +152,43 @@ class MixedComponentRun:
         version_held = version_result.store, version_result.rows, tuple((version_profile.REPORTED_PROTOCOL_VERSION, row.subject, row.value) for row in version_result.rows)
         self.vrrp = vrrp_result = owner.finish()
         vrrp_held = vrrp_result.store, vrrp_result.rows, tuple((vrrp_profile.REPORTED_VRRP_STATE, row.subject, row.value) for row in vrrp_result.rows)
-        execution.validate_mixed_execution(source, budgets)
-        stores = (tree.store, channel.store, state_result.store, version_result.store, vrrp_result.store)
-        _need(all(first is not second for index, first in enumerate(stores) for second in stores[index + 1:]), "store")
-        source.tree.validate_root_guard_values(tree, _reader(tree, stp.STEP, tree_subjects, tree_held,
-            _cells(stp.fact_rows(tree))), outputs)
-        source.channel.owner.validate_reported_protocol_values(channel, _reader(channel, ec.STEP, channel_subjects, channel_held,
-            _cells(ec.fact_rows(channel))), outputs)
-        state.validate_gateway_source_values(state_result, _reader(state_result, build.STEP, hsrp_subjects, state_held,
-            _cells(build.fact_rows(state_result))), outputs)
-        version.validate_values(version_result, _reader(version_result, version_profile.STEP, hsrp_subjects, version_held,
-            tuple((version_profile.REPORTED_PROTOCOL_VERSION, row.subject, row.value) for row in version_result.rows)))
-        owner.validate_values(vrrp_result, _reader(vrrp_result, vrrp_profile.STEP, vrrp_subjects, vrrp_held,
-            tuple((vrrp_profile.REPORTED_VRRP_STATE, row.subject, row.value) for row in vrrp_result.rows)))
-        execution.validate_mixed_execution(source, budgets)
+        results = tree, channel, state_result, version_result, vrrp_result
+        subjects = tree_subjects, channel_subjects, hsrp_subjects, vrrp_subjects
+        held = tree_held, channel_held, state_held, version_held, vrrp_held
+        _close(source, results, subjects, held, budgets)
         _need(self.attempted is True and self.source is source and self.tree is tree and self.channel is channel
             and self.state is state_result and self.version is version_result and self.vrrp is vrrp_result and self.result is None, "source")
         result = MixedComponent(source=source, tree=tree, channel=channel, state=state_result, version=version_result, vrrp=vrrp_result)
+        self.retained = _Retained(component=result, subjects=subjects, held=held)
         self.result = result
+        return result
+
+    def current_component(self) -> MixedComponent:
+        """Reclose current original cells on demand; returned records are not sealed."""
+        _need(type(self) is MixedComponentRun and self.attempted is True and type(self.retained) is _Retained, "source")
+        retained = self.retained
+        if retained is None:
+            raise ValueError("fhrp_mixed_component_source")
+        _need(type(retained.component) is MixedComponent and type(retained.subjects) is tuple and len(retained.subjects) == 4
+            and all(type(subjects) is tuple and all(type(subject) is str for subject in subjects) for subjects in retained.subjects)
+            and type(retained.held) is tuple and len(retained.held) == 5 and all(type(held) is tuple and len(held) == 3
+                and type(held[0]) is FactStore and type(held[1]) is tuple and type(held[2]) is tuple
+                and all(type(cell) is tuple and len(cell) == 3 and type(cell[0]) is str and type(cell[1]) is str
+                    and type(cell[2]) in (k.Known, k.Unknown) for cell in held[2]) for held in retained.held), "source")
+        result = retained.component
+        _need(self.result is result and self.source is result.source and self.tree is result.tree and self.channel is result.channel
+            and self.state is result.state and self.version is result.version and self.vrrp is result.vrrp, "source")
+        _close(result.source, (result.tree, result.channel, result.state, result.version, result.vrrp),
+            retained.subjects, retained.held, self.budgets)
         return result
 
 
 def build_mixed_component(root: Path, budgets: Budgets) -> MixedComponent:
     return MixedComponentRun(root, budgets).build()
+
+
+def build_mixed_source(root: Path, budgets: Budgets) -> MixedComponentRun:
+    """Own one fresh root/budget invocation and retain its current-value comparison source."""
+    source = MixedComponentRun(root, budgets)
+    source.build()
+    return source
