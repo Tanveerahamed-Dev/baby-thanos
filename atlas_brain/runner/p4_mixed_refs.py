@@ -13,7 +13,9 @@ from atlas_brain.packs.l2.etherchannel import build as ec
 from atlas_brain.packs.l2.stp import build as stp
 from atlas_brain.packs.l3.fhrp import build, version_profile, vrrp_profile
 from atlas_brain.packs.l3.fhrp import mixed_component as owning
+from atlas_brain.packs.l3.fhrp.mixed_execution import Value
 from atlas_brain.runner.pack_receipts import ParseReceipt
+from atlas_brain.runner.pack_runtime import Executed
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -91,6 +93,62 @@ def _registries(envelope: Envelope, budgets: Budgets) -> dict[k.RegistryRef, tup
     return result
 
 
+def _registry_parts(state: owning.Cell, node: Node, envelope: Envelope,
+    records: dict[k.RegistryRef, tuple[bytes, bytes]],
+) -> tuple[tuple[RegistryLeaf, ...], set[str]]:
+    _need(type(state.evidence) is tuple and all(type(ref) in (k.RegistryRef, k.EvidenceRef) for ref in state.evidence), "evidence")
+    registry: list[RegistryLeaf] = []
+    targets: set[str] = set()
+    registry_refs = tuple(ref for ref in state.evidence if isinstance(ref, k.RegistryRef))
+    for ref in registry_refs:
+        _need(all(type(value) is str for value in (ref.table, ref.row_id, ref.table_digest, ref.citation)), "registry")
+        _need(ref in records, "registry")
+        registry.append(RegistryLeaf(reference=ref, registry_raw=records[ref][0], canonical_value=records[ref][1]))
+        if ref.table == "synthetic_p4.targets":
+            targets.add(ref.row_id)
+    _need(tuple(ref for ref in registry_refs if ref.table == "synthetic_p2.nodes") == node.declaration.evidence
+        and tuple(ref for ref in registry_refs if ref.table == "synthetic_p4.context") == envelope.declaration.evidence and bool(targets), "registry")
+    return tuple(registry), targets
+
+
+def _capture_parts(state: owning.Cell, node: Node, operation: str, envelope: Envelope, targets: set[str],
+    members: dict[str, CaptureMember], outputs: dict[str, Executed[Value]],
+) -> tuple[tuple[CaptureLeaf, ...], tuple[k.EvidenceNeed, ...]]:
+    captures: list[CaptureLeaf] = []
+    positive = type(state) is k.Known
+    for ref in state.evidence:
+        if not isinstance(ref, k.EvidenceRef):
+            continue
+        _need(type(ref.capture) is str and type(ref.excerpt_sha256) is str and type(ref.role) is k.EvidenceRole
+            and ref.capture in members and ref.capture in outputs, "capture")
+        member, receipt = members[ref.capture], outputs[ref.capture].receipt
+        capture = receipt.capture
+        _need(member.target.node is node and member.target.id in targets and member.target.operation == operation
+            and capture.source == node.key and capture.operation == operation and capture.raw is member.raw
+            and receipt.owner == member.target.owner and receipt.context == envelope.context
+            and receipt.registration_sha256 == envelope.registration_sha256, "scope")
+        _need(capture.scope == Scope(node=node.key, plane="exec", vrf=None, context=None, instance=None,
+            vdc=None, tenant=None, afi=None), "scope")
+        _need(not positive or capture.integrity is k.IntegrityState.COMPLETE and capture.error is None
+            and receipt.parse.quality == "complete", "capture")
+        _need(ref.role is (k.EvidenceRole.SUBJECT if positive else k.EvidenceRole.WITNESS), "role")
+        point = ref.locator
+        if type(point) is k.ByteSpan:
+            _need(type(point.start) is int and type(point.end) is int and 0 <= point.start < point.end <= len(capture.raw), "span")
+            raw = capture.raw[point.start:point.end]
+        elif type(point) is k.WholeCapture:
+            _need(not positive, "role")
+            raw = capture.raw
+        else:
+            raise ValueError("p4_mixed_proofs_locator")
+        whole = sha256(capture.raw).hexdigest()
+        _need(whole == member.sha256 and sha256(raw).hexdigest() == ref.excerpt_sha256, "hash")
+        captures.append(CaptureLeaf(member=member, capture=capture, receipt=receipt, reference=ref, raw=raw, capture_sha256=whole))
+    _need(not positive or bool(captures), "evidence")
+    needs = state.next_evidence if isinstance(state, k.Unknown) else ()
+    return tuple(captures), needs
+
+
 class MixedProofIndex:
     """One fresh owning source; every lookup revalidates current values and source data."""
 
@@ -107,51 +165,9 @@ class MixedProofIndex:
         state, node, operation = _cell(result, reference)
         envelope, budgets = result.source.execution.envelope, self.source.budgets
         records = _registries(envelope, budgets)
-        _need(type(state.evidence) is tuple and all(type(ref) in (k.RegistryRef, k.EvidenceRef) for ref in state.evidence), "evidence")
-        registry: list[RegistryLeaf] = []
-        captures: list[CaptureLeaf] = []
-        targets: set[str] = set()
-        registry_refs = tuple(ref for ref in state.evidence if isinstance(ref, k.RegistryRef))
-        for ref in registry_refs:
-            _need(all(type(value) is str for value in (ref.table, ref.row_id, ref.table_digest, ref.citation)), "registry")
-            _need(ref in records, "registry")
-            registry.append(RegistryLeaf(reference=ref, registry_raw=records[ref][0], canonical_value=records[ref][1]))
-            if ref.table == "synthetic_p4.targets":
-                targets.add(ref.row_id)
-        _need(tuple(ref for ref in registry_refs if ref.table == "synthetic_p2.nodes") == node.declaration.evidence
-            and tuple(ref for ref in registry_refs if ref.table == "synthetic_p4.context") == envelope.declaration.evidence and bool(targets), "registry")
-        members = {member.id: member for member in envelope.captures}
-        outputs = {output.receipt.capture.id: output for output in result.source.execution.executed}
-        positive = type(state) is k.Known
-        for ref in state.evidence:
-            if not isinstance(ref, k.EvidenceRef):
-                continue
-            _need(type(ref.capture) is str and type(ref.excerpt_sha256) is str and type(ref.role) is k.EvidenceRole
-                and ref.capture in members and ref.capture in outputs, "capture")
-            member, receipt = members[ref.capture], outputs[ref.capture].receipt
-            capture = receipt.capture
-            _need(member.target.node is node and member.target.id in targets and member.target.operation == operation
-                and capture.source == node.key and capture.operation == operation and capture.raw is member.raw
-                and receipt.owner == member.target.owner and receipt.context == envelope.context
-                and receipt.registration_sha256 == envelope.registration_sha256, "scope")
-            _need(capture.scope == Scope(node=node.key, plane="exec", vrf=None, context=None, instance=None,
-                vdc=None, tenant=None, afi=None), "scope")
-            _need(not positive or capture.integrity is k.IntegrityState.COMPLETE and capture.error is None
-                and receipt.parse.quality == "complete", "capture")
-            _need(ref.role is (k.EvidenceRole.SUBJECT if positive else k.EvidenceRole.WITNESS), "role")
-            point = ref.locator
-            if type(point) is k.ByteSpan:
-                _need(type(point.start) is int and type(point.end) is int and 0 <= point.start < point.end <= len(capture.raw), "span")
-                raw = capture.raw[point.start:point.end]
-            elif type(point) is k.WholeCapture:
-                _need(not positive, "role")
-                raw = capture.raw
-            else:
-                raise ValueError("p4_mixed_proofs_locator")
-            whole = sha256(capture.raw).hexdigest()
-            _need(whole == member.sha256 and sha256(raw).hexdigest() == ref.excerpt_sha256, "hash")
-            captures.append(CaptureLeaf(member=member, capture=capture, receipt=receipt, reference=ref, raw=raw, capture_sha256=whole))
-        _need(not positive or bool(captures), "evidence")
-        needs = state.next_evidence if isinstance(state, k.Unknown) else ()
-        return MixedFactProof(reference=reference, state=state, registry_leaves=tuple(registry),
-            capture_leaves=tuple(captures), next_evidence=needs)
+        registry, targets = _registry_parts(state, node, envelope, records)
+        members: dict[str, CaptureMember] = {member.id: member for member in envelope.captures}
+        outputs: dict[str, Executed[Value]] = {output.receipt.capture.id: output for output in result.source.execution.executed}
+        captures, needs = _capture_parts(state, node, operation, envelope, targets, members, outputs)
+        return MixedFactProof(reference=reference, state=state, registry_leaves=registry,
+            capture_leaves=captures, next_evidence=needs)
