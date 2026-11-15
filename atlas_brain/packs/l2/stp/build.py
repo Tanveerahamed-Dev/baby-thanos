@@ -604,7 +604,7 @@ class _GlobalSTP[Peer](p4_pipeline.Pack[stp.Result | Peer]):
         return p4_pipeline.Prepared[stp.Result | Peer](targets=tuple(t for t in envelope.targets if t.operation == stp.OP),
                                                        handlers=(handler,), requests=plan.requests)
 
-    def finish(self, execution: p4_pipeline.Result[stp.Result | Peer]) -> Result:
+    def own_execution(self, execution: p4_pipeline.Result[stp.Result | Peer]) -> tuple[Executed[stp.Result], ...]:
         envelope, plan = self.envelope, self.plan
         if (envelope is None or plan is None or type(execution) is not p4_pipeline.Result
                 or execution.envelope is not envelope or envelope.registration_sha256 != self.registration):
@@ -634,7 +634,14 @@ class _GlobalSTP[Peer](p4_pipeline.Pack[stp.Result | Peer]):
                 value = self.produced[identity]
                 k.require(output.value is value and receipt.parse is value.parse, "stp_global_value")
                 owned.append(Executed(receipt=receipt, value=value))
-        return _materialize(plan, tuple(owned), self.producer)
+        return tuple(owned)
+
+    def finish(self, execution: p4_pipeline.Result[stp.Result | Peer]) -> Result:
+        owned = _GlobalSTP.own_execution(self, execution)
+        plan = self.plan
+        if plan is None:
+            raise ValueError("stp_global_run")
+        return _materialize(plan, owned, self.producer)
 
 
 def _root_guard_source_state(state: k.Known[bool] | k.Known[str] | k.Unknown,
@@ -1110,3 +1117,25 @@ def root_requires_all(fact: k.FactId) -> bool:
     if type(fact) is not str:
         raise ValueError("stp_projection_fact")
     return True if fact in (REPORTED_ROOT_PRIORITY, REPORTED_ROOT_MAC) else requires_all(fact)
+
+
+def root_declaration() -> PackDeclaration:
+    """Current fixed Root4 metadata, including owning literal-policy checks."""
+    return _root_producer().declaration
+
+
+class RootObservationPack[Peer](_GlobalSTP[Peer]):
+    def __init__(self, budgets: Budgets) -> None:
+        super().__init__(budgets, roots=True)
+
+    def validate_root_values(self, result: Result, reader: FactReader,
+        execution: p4_pipeline.Result[stp.Result | Peer],
+    ) -> None:
+        k.require(type(self) is RootObservationPack and self.producer.declaration is root_declaration()
+            and self.producer.step is ROOT_STEP and self.producer.binding is BINDING
+            and self.producer.roots is True, "stp_root_observation_source")
+        owned = _GlobalSTP.own_execution(self, execution)
+        k.require(type(result) is Result and type(result.executed) is tuple and len(result.executed) == len(owned)
+            and all(a.receipt is b.receipt and a.value is b.value
+                for a, b in zip(result.executed, owned, strict=True)), "stp_root_observation_source")
+        validate_root_observation_values(GlobalFacts(execution=execution, result=result), self.budgets, reader)
