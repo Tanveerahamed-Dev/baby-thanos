@@ -114,7 +114,7 @@ def test_every_original_root9_operation_recloses_cache_capture_bytes_and_flat_sc
     source, code = case, "fhrp_mixed_execution_output"
     if plant == "scope":
         capture = output.receipt.capture
-        capture.metadata = replace(capture.resolved_metadata, scope=replace(capture.scope, vrf="blue"))
+        object.__setattr__(capture, "metadata", replace(capture.resolved_metadata, scope=replace(capture.scope, vrf="blue")))
         code = "fhrp_mixed_execution_scope"
     elif plant == "raw":
         object.__setattr__(output.receipt.capture, "raw", bytes(bytearray(output.receipt.capture.raw)))
