@@ -122,40 +122,8 @@ class MixedComponentRun:
         budgets = self.budgets
         source = execution.execute_mixed_inputs(self.root, budgets)
         self.source = source
-        execution.validate_mixed_execution(source, budgets)
-        hsrp, local, state, version, owner = source.fhrp.hsrp, source.fhrp.vrrp_inputs, source.fhrp.state, source.fhrp.version, source.fhrp.vrrp_owner
-        if hsrp is None or local is None or state is None or version is None or owner is None:
-            raise ValueError("fhrp_mixed_component_source")
-        tree_targets = stp.declared_root_guard_targets(source.execution.envelope, budgets)
-        fresh = SummaryPack[execution.Value](budgets)
-        fresh.prepare(source.execution.envelope)
-        actual, wanted = source.channel.owner.plan.indexed, fresh.owner.plan.indexed
-        _need(type(actual) is dict and all(type(key) is tuple and len(key) == 2
-            and all(type(value) is str for value in key) for key in actual) and set(actual) == set(wanted)
-            and all(actual[key].node is target.node and actual[key] == target for key, target in wanted.items())
-            and source.channel.owner.plan.proofs == fresh.owner.plan.proofs, "population")
-        tree_subjects = tuple(stp.subject(row.target, vlan) for row in tree_targets for vlan in row.target.vlans)
-        channel_subjects = tuple(ec.subject(target, group) for target in wanted.values() for group in target.groups)
-        hsrp_subjects = tuple(build.subject(target, interface, group) for target in hsrp.version.targets for interface, group in target.groups)
-        vrrp_subjects = tuple(vrrp_inputs.subject(target, interface, group) for target in local.vrrp.targets for interface, group in target.groups)
-        _need(all(all(type(subject) is str for subject in subjects) and len(set(subjects)) == len(subjects)
-            for subjects in (tree_subjects, channel_subjects, hsrp_subjects, vrrp_subjects)), "population")
-        execution.validate_mixed_execution(source, budgets)
-        outputs = source.execution.executed
-        self.tree = tree = source.tree.finish(source.execution)
-        tree_held = tree.store, tree.rows, _cells(stp.fact_rows(tree))
-        self.channel = channel = source.channel.finish(source.execution)
-        channel_held = channel.store, channel.rows, _cells(ec.fact_rows(channel))
-        self.state = state_result = state.finish(tuple(state.own(output) for output in outputs if output.receipt.capture.operation == build.hsrp.OP))
-        state_held = state_result.store, state_result.rows, _cells(build.fact_rows(state_result))
-        self.version = version_result = version.finish(tuple(output for output in outputs if output.receipt.capture.operation == version_profile.parser.OP))
-        version_held = version_result.store, version_result.rows, tuple((version_profile.REPORTED_PROTOCOL_VERSION, row.subject, row.value) for row in version_result.rows)
-        self.vrrp = vrrp_result = owner.finish()
-        vrrp_held = vrrp_result.store, vrrp_result.rows, tuple((vrrp_profile.REPORTED_VRRP_STATE, row.subject, row.value) for row in vrrp_result.rows)
-        results = tree, channel, state_result, version_result, vrrp_result
-        subjects = tree_subjects, channel_subjects, hsrp_subjects, vrrp_subjects
-        held = tree_held, channel_held, state_held, version_held, vrrp_held
-        _close(source, results, subjects, held, budgets)
+        results, subjects, held = _produce(self, source, budgets)
+        tree, channel, state_result, version_result, vrrp_result = results
         _need(self.attempted is True and self.source is source and self.tree is tree and self.channel is channel
             and self.state is state_result and self.version is version_result and self.vrrp is vrrp_result and self.result is None, "source")
         result = MixedComponent(source=source, tree=tree, channel=channel, state=state_result, version=version_result, vrrp=vrrp_result)
@@ -181,6 +149,45 @@ class MixedComponentRun:
         _close(result.source, (result.tree, result.channel, result.state, result.version, result.vrrp),
             retained.subjects, retained.held, self.budgets)
         return result
+
+
+def _produce(run: MixedComponentRun, source: execution.MixedExecution, budgets: Budgets) -> tuple[Results, Subjects, HeldResults]:
+    self = run
+    execution.validate_mixed_execution(source, budgets)
+    hsrp, local, state, version, owner = source.fhrp.hsrp, source.fhrp.vrrp_inputs, source.fhrp.state, source.fhrp.version, source.fhrp.vrrp_owner
+    if hsrp is None or local is None or state is None or version is None or owner is None:
+        raise ValueError("fhrp_mixed_component_source")
+    tree_targets = stp.declared_root_guard_targets(source.execution.envelope, budgets)
+    fresh = SummaryPack[execution.Value](budgets)
+    fresh.prepare(source.execution.envelope)
+    actual, wanted = source.channel.owner.plan.indexed, fresh.owner.plan.indexed
+    _need(type(actual) is dict and all(type(key) is tuple and len(key) == 2
+        and all(type(value) is str for value in key) for key in actual) and set(actual) == set(wanted)
+        and all(actual[key].node is target.node and actual[key] == target for key, target in wanted.items())
+        and source.channel.owner.plan.proofs == fresh.owner.plan.proofs, "population")
+    tree_subjects = tuple(stp.subject(row.target, vlan) for row in tree_targets for vlan in row.target.vlans)
+    channel_subjects = tuple(ec.subject(target, group) for target in wanted.values() for group in target.groups)
+    hsrp_subjects = tuple(build.subject(target, interface, group) for target in hsrp.version.targets for interface, group in target.groups)
+    vrrp_subjects = tuple(vrrp_inputs.subject(target, interface, group) for target in local.vrrp.targets for interface, group in target.groups)
+    _need(all(all(type(subject) is str for subject in subjects) and len(set(subjects)) == len(subjects)
+        for subjects in (tree_subjects, channel_subjects, hsrp_subjects, vrrp_subjects)), "population")
+    execution.validate_mixed_execution(source, budgets)
+    outputs = source.execution.executed
+    self.tree = tree = source.tree.finish(source.execution)
+    tree_held = tree.store, tree.rows, _cells(stp.fact_rows(tree))
+    self.channel = channel = source.channel.finish(source.execution)
+    channel_held = channel.store, channel.rows, _cells(ec.fact_rows(channel))
+    self.state = state_result = state.finish(tuple(state.own(output) for output in outputs if output.receipt.capture.operation == build.hsrp.OP))
+    state_held = state_result.store, state_result.rows, _cells(build.fact_rows(state_result))
+    self.version = version_result = version.finish(tuple(output for output in outputs if output.receipt.capture.operation == version_profile.parser.OP))
+    version_held = version_result.store, version_result.rows, tuple((version_profile.REPORTED_PROTOCOL_VERSION, row.subject, row.value) for row in version_result.rows)
+    self.vrrp = vrrp_result = owner.finish()
+    vrrp_held = vrrp_result.store, vrrp_result.rows, tuple((vrrp_profile.REPORTED_VRRP_STATE, row.subject, row.value) for row in vrrp_result.rows)
+    results = tree, channel, state_result, version_result, vrrp_result
+    subjects = tree_subjects, channel_subjects, hsrp_subjects, vrrp_subjects
+    held = tree_held, channel_held, state_held, version_held, vrrp_held
+    _close(source, results, subjects, held, budgets)
+    return results, subjects, held
 
 
 def build_mixed_component(root: Path, budgets: Budgets) -> MixedComponent:
