@@ -1,6 +1,7 @@
 """Current seven-fact leaf snapshots; no recursive facts, caller grants or origin seal."""
 from dataclasses import dataclass
 from hashlib import sha256
+from typing import cast
 
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence.admission import Budgets, record, strict_json, string
@@ -66,7 +67,7 @@ def _cell(result: owning.MixedComponent, reference: k.FactRef) -> tuple[owning.C
 def _list(value: object) -> list[object]:
     if not isinstance(value, list):
         raise TypeError("p4_mixed_proofs_registry")
-    return value
+    return cast(list[object], value)
 
 
 def _registries(envelope: Envelope, budgets: Budgets) -> dict[k.RegistryRef, tuple[bytes, bytes]]:
