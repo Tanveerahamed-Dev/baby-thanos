@@ -637,7 +637,7 @@ class _GlobalSTP[Peer](p4_pipeline.Pack[stp.Result | Peer]):
         return tuple(owned)
 
     def finish(self, execution: p4_pipeline.Result[stp.Result | Peer]) -> Result:
-        owned = _GlobalSTP.own_execution(self, execution)
+        owned = _GlobalSTP[Peer].own_execution(self, execution)
         plan = self.plan
         if plan is None:
             raise ValueError("stp_global_run")
@@ -1134,7 +1134,7 @@ class RootObservationPack[Peer](_GlobalSTP[Peer]):
         k.require(type(self) is RootObservationPack and self.producer.declaration is root_declaration()
             and self.producer.step is ROOT_STEP and self.producer.binding is BINDING
             and self.producer.roots is True, "stp_root_observation_source")
-        owned = _GlobalSTP.own_execution(self, execution)
+        owned = _GlobalSTP[Peer].own_execution(self, execution)
         k.require(type(result) is Result and type(result.executed) is tuple and len(result.executed) == len(owned)
             and all(a.receipt is b.receipt and a.value is b.value
                 for a, b in zip(result.executed, owned, strict=True)), "stp_root_observation_source")
