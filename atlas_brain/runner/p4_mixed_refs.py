@@ -65,7 +65,7 @@ def _cell(result: owning.MixedComponent, reference: k.FactRef) -> tuple[owning.C
 
 def _list(value: object) -> list[object]:
     if not isinstance(value, list):
-        raise ValueError("p4_mixed_proofs_registry")
+        raise TypeError("p4_mixed_proofs_registry")
     return value
 
 
