@@ -44,8 +44,25 @@ class MixedFactProof:
     next_evidence: tuple[k.EvidenceNeed, ...]
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RootMixedFactProof:
+    reference: k.FactRef
+    state: owning.RootCell
+    registry_leaves: tuple[RegistryLeaf, ...]
+    capture_leaves: tuple[CaptureLeaf, ...]
+    next_evidence: tuple[k.EvidenceNeed, ...]
+
+
 def _need(condition: bool, code: str) -> None:
     k.require(condition, "p4_mixed_proofs_" + code)
+
+
+def _tree_cells(items: tuple[tuple[k.FactId, stp.Row, owning.RootCell], ...],
+    cells: dict[k.FactRef, tuple[owning.RootCell, Node, str]],
+) -> None:
+    _need(all(type(row) is stp.Row for _, row, _ in items), "evidence")
+    for fact, row, state in items:
+        cells[k.FactRef(fact=fact, subject=row.subject)] = state, row.target.node, stp.stp.OP
 
 
 def _cell(result: owning.MixedComponent, reference: k.FactRef) -> tuple[owning.Cell, Node, str]:
@@ -66,6 +83,21 @@ def _cell(result: owning.MixedComponent, reference: k.FactRef) -> tuple[owning.C
     return cells[reference]
 
 
+def _cell_map(result: owning.RootMixedComponent) -> dict[k.FactRef, tuple[owning.RootCell, Node, str]]:
+    cells: dict[k.FactRef, tuple[owning.RootCell, Node, str]] = {}
+    _tree_cells(stp.root_fact_rows(result.tree), cells)
+    for channel_row in result.channel.rows:
+        cells[k.FactRef(fact=ec.REPORTED_PROTOCOL, subject=channel_row.subject)] = channel_row.value, channel_row.target.node, ec.parse_summary.OP
+        cells[k.FactRef(fact=ec.REPORTED_MEMBER_TOKENS, subject=channel_row.subject)] = channel_row.member_tokens, channel_row.target.node, ec.parse_summary.OP
+    for state_row in result.state.rows:
+        cells[k.FactRef(fact=build.REPORTED_STATE, subject=state_row.subject)] = state_row.value, state_row.target.node, build.hsrp.OP
+    for version_row in result.version.rows:
+        cells[k.FactRef(fact=version_profile.REPORTED_PROTOCOL_VERSION, subject=version_row.subject)] = version_row.value, version_row.target.node, version_profile.parser.OP
+    for vrrp_row in result.vrrp.rows:
+        cells[k.FactRef(fact=vrrp_profile.REPORTED_VRRP_STATE, subject=vrrp_row.subject)] = vrrp_row.value, vrrp_row.target.node, vrrp_profile.parser.OP
+    return cells
+
+
 def _list(value: object) -> list[object]:
     if not isinstance(value, list):
         raise TypeError("p4_mixed_proofs_registry")
@@ -78,22 +110,41 @@ def _registries(envelope: Envelope, budgets: Budgets) -> dict[k.RegistryRef, tup
     side = record(strict_json(envelope.raw, budgets.nesting_depth, budgets.numeric_digits),
         ("schema", "semantic_group", "context", "base_sha256", "targets", "captures"))
     result: dict[k.RegistryRef, tuple[bytes, bytes]] = {}
-    for name, table, raw, values, fields in (
-        ("nodes", "synthetic_p2.nodes", envelope.base.raw, base["nodes"], ("id", "discovery_id", "ports")),
-        ("targets", "synthetic_p4.targets", envelope.raw, side["targets"], ("id", "node", "operation", "params")),
+    base_digest, side_digest = (sha256(raw).hexdigest() for raw in (envelope.base.raw, envelope.raw))
+    for name, table, raw, digest, values, fields in (
+        ("nodes", "synthetic_p2.nodes", envelope.base.raw, base_digest, base["nodes"], ("id", "discovery_id", "ports")),
+        ("targets", "synthetic_p4.targets", envelope.raw, side_digest, side["targets"], ("id", "node", "operation", "params")),
     ):
         for index, value in enumerate(_list(values)):
             row = record(value, fields)
-            ref = k.RegistryRef(table=table, row_id=string(row, "id"), table_digest=sha256(raw).hexdigest(), citation=f"/{name}/{index}")
+            ref = k.RegistryRef(table=table, row_id=string(row, "id"), table_digest=digest, citation=f"/{name}/{index}")
             _need(ref not in result, "registry")
             result[ref] = raw, canonical(row)
     ref = k.RegistryRef(table="synthetic_p4.context", row_id=envelope.context,
-        table_digest=sha256(envelope.raw).hexdigest(), citation="/context")
+        table_digest=side_digest, citation="/context")
     result[ref] = envelope.raw, canonical(side["context"])
     return result
 
 
-def _registry_parts(state: owning.Cell, node: Node, envelope: Envelope,
+def _maps(result: owning.MixedComponent | owning.RootMixedComponent, budgets: Budgets) -> tuple[
+    dict[k.RegistryRef, tuple[bytes, bytes]], dict[str, CaptureMember], dict[str, Executed[Value]], dict[str, tuple[bytes, str]],
+]:
+    records = _registries(result.source.execution.envelope, budgets)
+    members: dict[str, CaptureMember] = {member.id: member for member in result.source.execution.envelope.captures}
+    outputs: dict[str, Executed[Value]] = {output.receipt.capture.id: output for output in result.source.execution.executed}
+    hashes: dict[str, tuple[bytes, str]] = {}
+    return records, members, outputs, hashes
+
+
+def _digest(capture: Capture, hashes: dict[str, tuple[bytes, str]]) -> str:
+    held = hashes.get(capture.id)
+    if held is None or held[0] is not capture.raw:
+        held = capture.raw, sha256(capture.raw).hexdigest()
+        hashes[capture.id] = held
+    return held[1]
+
+
+def _registry_parts(state: owning.RootCell, node: Node, envelope: Envelope,
     records: dict[k.RegistryRef, tuple[bytes, bytes]],
 ) -> tuple[tuple[RegistryLeaf, ...], set[str]]:
     _need(type(state.evidence) is tuple and all(type(ref) in (k.RegistryRef, k.EvidenceRef) for ref in state.evidence), "evidence")
@@ -111,8 +162,8 @@ def _registry_parts(state: owning.Cell, node: Node, envelope: Envelope,
     return tuple(registry), targets
 
 
-def _capture_parts(state: owning.Cell, node: Node, operation: str, envelope: Envelope, targets: set[str],
-    members: dict[str, CaptureMember], outputs: dict[str, Executed[Value]],
+def _capture_parts(state: owning.RootCell, node: Node, operation: str, envelope: Envelope, targets: set[str],
+    members: dict[str, CaptureMember], outputs: dict[str, Executed[Value]], hashes: dict[str, tuple[bytes, str]],
 ) -> tuple[tuple[CaptureLeaf, ...], tuple[k.EvidenceNeed, ...]]:
     captures: list[CaptureLeaf] = []
     positive = type(state) is k.Known
@@ -141,8 +192,9 @@ def _capture_parts(state: owning.Cell, node: Node, operation: str, envelope: Env
             raw = capture.raw
         else:
             raise ValueError("p4_mixed_proofs_locator")
-        whole = sha256(capture.raw).hexdigest()
-        _need(whole == member.sha256 and sha256(raw).hexdigest() == ref.excerpt_sha256, "hash")
+        whole = _digest(capture, hashes)
+        excerpt = whole if type(point) is k.WholeCapture else sha256(raw).hexdigest()
+        _need(whole == member.sha256 and excerpt == ref.excerpt_sha256, "hash")
         captures.append(CaptureLeaf(member=member, capture=capture, receipt=receipt, reference=ref, raw=raw, capture_sha256=whole))
     _need(not positive or bool(captures), "evidence")
     needs = state.next_evidence if isinstance(state, k.Unknown) else ()
@@ -168,6 +220,64 @@ class MixedProofIndex:
         registry, targets = _registry_parts(state, node, envelope, records)
         members: dict[str, CaptureMember] = {member.id: member for member in envelope.captures}
         outputs: dict[str, Executed[Value]] = {output.receipt.capture.id: output for output in result.source.execution.executed}
-        captures, needs = _capture_parts(state, node, operation, envelope, targets, members, outputs)
+        hashes: dict[str, tuple[bytes, str]] = {}
+        captures, needs = _capture_parts(state, node, operation, envelope, targets, members, outputs, hashes)
         return MixedFactProof(reference=reference, state=state, registry_leaves=registry,
             capture_leaves=captures, next_evidence=needs)
+
+def _leaves(state: owning.RootCell, node: Node, operation: str, envelope: Envelope,
+    records: dict[k.RegistryRef, tuple[bytes, bytes]], members: dict[str, CaptureMember],
+    outputs: dict[str, Executed[Value]], hashes: dict[str, tuple[bytes, str]],
+) -> tuple[tuple[RegistryLeaf, ...], tuple[CaptureLeaf, ...], tuple[k.EvidenceNeed, ...]]:
+    registry, targets = _registry_parts(state, node, envelope, records)
+    captures, needs = _capture_parts(state, node, operation, envelope, targets, members, outputs, hashes)
+    return registry, captures, needs
+
+
+class RootMixedProofIndex:
+    """Current Root9 leaves; bulk validates before/after and builds ephemeral maps once."""
+
+    def __init__(self, source: owning.RootMixedComponentRun) -> None:
+        _need(type(self) is RootMixedProofIndex and type(source) is owning.RootMixedComponentRun, "source")
+        self.source = source
+        owning.RootMixedComponentRun.current_component(source)
+
+    def resolve(self, reference: k.FactRef) -> RootMixedFactProof:
+        source, result = _root_current(self)
+        _need(type(reference) is k.FactRef and all(type(value) is str and bool(value)
+            for value in (reference.fact, reference.subject)), "reference")
+        cells = _cell_map(result)
+        _need(reference in cells, "reference")
+        state, node, operation = cells[reference]
+        records, members, outputs, hashes = _maps(result, source.budgets)
+        registry, captures, needs = _leaves(state, node, operation, result.source.execution.envelope,
+            records, members, outputs, hashes)
+        proof = RootMixedFactProof(reference=reference, state=state, registry_leaves=registry,
+            capture_leaves=captures, next_evidence=needs)
+        _root_finish(self, source, result)
+        return proof
+
+    def resolve_all(self) -> tuple[RootMixedFactProof, ...]:
+        source, result = _root_current(self)
+        cells = _cell_map(result)
+        records, members, outputs, hashes = _maps(result, source.budgets)
+        proofs: list[RootMixedFactProof] = []
+        for reference in sorted(cells, key=lambda ref: (ref.fact, ref.subject)):
+            state, node, operation = cells[reference]
+            registry, captures, needs = _leaves(state, node, operation, result.source.execution.envelope,
+                records, members, outputs, hashes)
+            proofs.append(RootMixedFactProof(reference=reference, state=state, registry_leaves=registry,
+                capture_leaves=captures, next_evidence=needs))
+        _root_finish(self, source, result)
+        return tuple(proofs)
+
+
+def _root_current(index: RootMixedProofIndex) -> tuple[owning.RootMixedComponentRun, owning.RootMixedComponent]:
+    _need(type(index) is RootMixedProofIndex and type(index.source) is owning.RootMixedComponentRun, "source")
+    source = index.source
+    return source, owning.RootMixedComponentRun.current_component(source)
+
+
+def _root_finish(index: RootMixedProofIndex, source: owning.RootMixedComponentRun, result: owning.RootMixedComponent) -> None:
+    _need(type(index) is RootMixedProofIndex and index.source is source
+        and owning.RootMixedComponentRun.current_component(source) is result, "source")
