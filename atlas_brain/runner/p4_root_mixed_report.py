@@ -99,7 +99,7 @@ def analyse_root_mixed_folder(root: Path, budgets: Budgets) -> dict[str, bytes]:
         registry = [records.registry_record_id(leaf.reference, leaf.registry_raw, leaf.canonical_value,
             blobs, registry_ids, tables["registry_records"], budget) for leaf in proof.registry_leaves]
         state = records.state_record(value, scalar_types[spec.value_type])
-        row = {"fact": reference.fact, "subject": reference.subject, "local": labels[reference], "value": state,
+        row: dict[str, object] = {"fact": reference.fact, "subject": reference.subject, "local": labels[reference], "value": state,
             "registry": registry, "evidence": [records.evidence_record(leaf.reference, "p4") for leaf in proof.capture_leaves]}
         budget.add(f"facts/{spec.subject}.jsonl", len(canonical(row)) + 1)
         facts[spec.subject][reference.subject, reference.fact] = row
