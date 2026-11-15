@@ -119,6 +119,8 @@ def _close(run: object, source: execution.MixedExecution | execution.RootMixedEx
     stores = (tree.store, channel.store, state_result.store, version_result.store, vrrp_result.store)
     _need(all(first is not second for index, first in enumerate(stores) for second in stores[index + 1:]), "store")
     if isinstance(source, execution.RootMixedExecution):
+        if not isinstance(version, RootMixedGlobalVersionOwner) or not isinstance(owner, RootMixedVRRPOwner):
+            raise ValueError("fhrp_mixed_component_source")
         stp.RootObservationPack[ec.parse_summary.Result | execution.FhrpValue].validate_root_values(source.tree, tree,
             _reader(tree, stp.ROOT_STEP, tree_subjects, tree_held, _root_cells(stp.root_fact_rows(tree))), source.execution)
         ec.ProtocolOwner.validate_reported_protocol_values(source.channel.owner, channel,
