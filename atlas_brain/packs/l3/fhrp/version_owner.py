@@ -174,7 +174,7 @@ class VersionOwner(Parser[parser.Result]):
         state.owned.clear()
         outcomes: dict[_Key, tuple[Executed[parser.Result], _Claims]] = {}
         for output in outputs:
-            out = _BASE_VERSION_OWNER.own(self, output) if type(self) is _MIXED_VERSION_OWNER else self.own(output)
+            out = _BASE_VERSION_OWNER.own(self, output) if type(self) is _MIXED_VERSION_OWNER or type(self) is _ROOT_MIXED_VERSION_OWNER else self.own(output)
             key = (out.receipt.context or "", out.receipt.capture.source)
             target = state.source.indexed[key]
             _need(out.value.reason is not None or all((row.interface.raw, row.group.raw) in target.groups for row in out.value.rows), "population")
@@ -356,18 +356,48 @@ class MixedGlobalVersionOwner(VersionOwner):
         return global_inputs.validate_mixed_hsrp_correspondence(self.envelope, self.budgets, _state(self.inputs).source)
 
 
+class RootMixedGlobalVersionOwner(VersionOwner):
+    """Own only VERSION inside the fixed Root9 mixed run; never source admission or origin."""
+
+    def __init__(self, envelope: p4.Envelope, budgets: Budgets, targets: tuple[build.Target, ...],
+                 requests: tuple[CaptureRequest, ...]) -> None:
+        _need(type(self) is _ROOT_MIXED_VERSION_OWNER, "mixed_receiver")
+        global_inputs.validate_root_mixed_context(envelope, budgets)
+        source = retain_version_inputs(targets, requests)
+        global_inputs.validate_root_mixed_hsrp_correspondence(envelope, budgets, source)
+        k.digest(envelope.registration_sha256)
+        self.envelope, self.budgets = envelope, budgets
+        self.inputs = _Invocation(source=source, registration_sha256=envelope.registration_sha256,
+            produced={}, produced_values={}, claims={}, owned={})
+
+    def validate_registration(self) -> None:
+        _need(type(self) is _ROOT_MIXED_VERSION_OWNER, "mixed_receiver")
+        state = _state(self.inputs)
+        global_inputs.validate_root_mixed_hsrp_correspondence(self.envelope, self.budgets, state.source)
+        _need(type(state.registration_sha256) is str and type(self.envelope.registration_sha256) is str
+              and self.envelope.registration_sha256 == state.registration_sha256, "mixed_registration")
+
+    def declaration_evidence(self) -> dict[_Key, tuple[k.RegistryRef, ...]]:
+        _need(type(self) is _ROOT_MIXED_VERSION_OWNER, "mixed_receiver")
+        return global_inputs.validate_root_mixed_hsrp_correspondence(self.envelope, self.budgets, _state(self.inputs).source)
+
+
 _BASE_VERSION_OWNER = VersionOwner
 _MIXED_VERSION_OWNER = MixedGlobalVersionOwner
+_ROOT_MIXED_VERSION_OWNER = RootMixedGlobalVersionOwner
 
 
 def _mixed_receiver(owner: VersionOwner) -> None:
-    _need(not isinstance(owner, _MIXED_VERSION_OWNER) or type(owner) is _MIXED_VERSION_OWNER, "mixed_receiver")
+    _need(not isinstance(owner, (_MIXED_VERSION_OWNER, _ROOT_MIXED_VERSION_OWNER))
+          or type(owner) is _MIXED_VERSION_OWNER or type(owner) is _ROOT_MIXED_VERSION_OWNER, "mixed_receiver")
 
 
 def _registration_context(owner: VersionOwner) -> None:
     _mixed_receiver(owner)
     if type(owner) is _MIXED_VERSION_OWNER:
         _MIXED_VERSION_OWNER.validate_registration(owner)
+    elif type(owner) is _ROOT_MIXED_VERSION_OWNER:
+        _ROOT_MIXED_VERSION_OWNER.validate_registration(owner)
     else:
         owner.validate_registration()
 
@@ -376,9 +406,11 @@ def _declaration_context(owner: VersionOwner) -> dict[_Key, tuple[k.RegistryRef,
     _mixed_receiver(owner)
     if type(owner) is _MIXED_VERSION_OWNER:
         return _MIXED_VERSION_OWNER.declaration_evidence(owner)
+    if type(owner) is _ROOT_MIXED_VERSION_OWNER:
+        return _ROOT_MIXED_VERSION_OWNER.declaration_evidence(owner)
     return owner.declaration_evidence()
 
 
 def _canonical_context[T](owner: VersionOwner, outputs: tuple[Executed[T], ...]) -> tuple[build.Row, ...]:
     _mixed_receiver(owner)
-    return _BASE_VERSION_OWNER.canonical_rows(owner, outputs) if type(owner) is _MIXED_VERSION_OWNER else owner.canonical_rows(outputs)
+    return _BASE_VERSION_OWNER.canonical_rows(owner, outputs) if type(owner) is _MIXED_VERSION_OWNER or type(owner) is _ROOT_MIXED_VERSION_OWNER else owner.canonical_rows(outputs)
