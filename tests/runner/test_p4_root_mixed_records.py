@@ -148,7 +148,7 @@ def test_predicted_large_hex_payload_is_refused_before_encoding_or_table_mutatio
     header = {"table": []}
     expected = len(canonical({"table": [{"data": ""}]})) + 2 * len(raw)
     manifest = sum(67 + len(name) for name in records.NAMES if name != "MANIFEST.sha256")
-    limits = list((len(raw) + expected + manifest, expected, 6, *LIMITS[3:]))
+    limits = [len(raw) + expected + manifest, expected, 6, *LIMITS[3:]]
     ample = records.RecordBudget((raw,), (limits[0] * 2, limits[1] * 2, *limits[2:]), header)
     with pytest.raises(AssertionError, match="^hex encoding reached$"):
         records.append_record(header["table"], {}, ample, ("data", raw))
