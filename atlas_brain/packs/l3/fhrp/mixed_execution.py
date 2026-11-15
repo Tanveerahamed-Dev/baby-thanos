@@ -240,7 +240,7 @@ def _canonical(source: pipeline.Result[Value],
     k.require(owner.executed is batch, "fhrp_mixed_execution_output")
     VRRPOwner.canonical_rows(owner)
     outputs = tuple(output for output in source.executed if output.receipt.capture.operation == all_hsrp.OP)
-    if type(version) is RootMixedGlobalVersionOwner:
+    if isinstance(version, RootMixedGlobalVersionOwner):
         RootMixedGlobalVersionOwner.canonical_rows(version, outputs)
     else:
         MixedGlobalVersionOwner.canonical_rows(version, outputs)
