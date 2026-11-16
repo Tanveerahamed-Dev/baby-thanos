@@ -35,6 +35,47 @@ VALIDATORS = {"all": ast.dump(ast.parse("all(isinstance(key, str) for key in ent
               "range": ast.dump(ast.parse("range(-9007199254740991, 9007199254740992)", mode="eval").body)}
 
 
+# Exact reviewed module 640c5ccbce24e4e962960313f1acefe36b51e836; never read candidate files at runtime.
+# Only formatting/comments may vary. Any AST change revokes the comparison capability.
+WIRE_CODEC = ast.dump(ast.parse(r'''"""RFC 8785 bytes for the contract's integer-only I-JSON subset."""
+import json
+import re
+from typing import cast
+
+SAFE = re.compile(r"[\x20-\x21\x23-\x5b\x5d-\x7e]*")
+
+
+def canonical(value: object) -> bytes:
+    return _encode(value).encode("utf-8")
+
+
+def _encode(value: object) -> str:
+    kind = type(value)
+    if kind is str:
+        if SAFE.fullmatch(cast(str, value)):
+            return f'"{value}"'
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if value is None or kind is bool:
+        return json.dumps(value)
+    if kind is int:
+        if not -9007199254740991 <= cast(int, value) <= 9007199254740991:
+            raise ValueError("integer_out_of_range")
+        return str(value)
+    if kind is list or kind is tuple:
+        items = cast("list[object] | tuple[object, ...]", value)
+        return f"[{','.join(map(_encode, items))}]"
+    if kind is not dict:
+        raise TypeError("non_json_type")
+    entries = cast(dict[object, object], value)
+    if not all(isinstance(key, str) for key in entries):
+        raise TypeError("non_string_key")
+    obj = cast(dict[str, object], value)
+    keys = sorted(obj, key=lambda key: key.encode("utf-16be"))
+    members = (f"{_encode(key)}:{_encode(obj[key])}" for key in keys)
+    return f"{{{','.join(members)}}}"
+'''))
+
+
 def own_module(name):
     return name == "atlas_brain.contract" or name.startswith("atlas_brain.contract.")
 
@@ -56,6 +97,8 @@ def admitted_module(name):
 
 def violations(source: str) -> list[int]:
     tree = ast.parse(source)
+    wire_compares = ({node for node in ast.walk(tree) if isinstance(node, ast.Compare)}
+        if ast.dump(tree) == WIRE_CODEC else set())
     annotations, aliases, bindings, trusted = set(), {}, {}, set()
     local = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
     for node in ast.walk(tree):
@@ -140,7 +183,7 @@ def violations(source: str) -> list[int]:
         arithmetic = isinstance(node, (ast.BinOp, ast.AugAssign))
         unary = isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd, ast.Invert))
         literal = unary and isinstance(node.op, (ast.USub, ast.UAdd)) and isinstance(node.operand, ast.Constant) and type(node.operand.value) is int
-        compare = isinstance(node, ast.Compare) and ast.dump(node) not in STRUCTURAL
+        compare = isinstance(node, ast.Compare) and node not in wire_compares and ast.dump(node) not in STRUCTURAL
         name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else ""
         imported = isinstance(node, ast.Import) and any(not admitted_module(a.name) for a in node.names)
         imported_from = isinstance(node, ast.ImportFrom) and (node.level or not admitted_module(node.module or "") or any(a.name == "*" for a in node.names))
@@ -163,9 +206,9 @@ def violations(source: str) -> list[int]:
         if isinstance(node, ast.ExceptHandler):
             shadow = node.name in protected
         if isinstance(node, (ast.MatchAs, ast.MatchStar)):
-            shadow = node.name in EXCEPTIONS | TYPE_NAMES
+            shadow = node.name in protected
         if isinstance(node, ast.MatchMapping):
-            shadow = node.rest in EXCEPTIONS | TYPE_NAMES
+            shadow = node.rest in protected
         protocol_binding = node in members and (members[node].startswith("__") or members[node] in METHOD_CALLS)
         class_hook = isinstance(node, ast.ClassDef) and (bool(node.keywords) or any(not isinstance(base, ast.Name) or base.id != "object" for base in node.bases))
         if arithmetic or (unary and not literal) or compare or name in DENIED or imported or imported_from or private_or_write or call or shadow or class_hook or protocol_binding:
