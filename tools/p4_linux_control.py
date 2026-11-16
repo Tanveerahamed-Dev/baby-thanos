@@ -6,8 +6,8 @@ A separate public adapter must invoke this controller itself before any bounded 
 from __future__ import annotations
 
 import os
-import select
 import secrets
+import select
 import signal
 import subprocess
 import sys
