@@ -11,10 +11,12 @@ import stat
 import sys
 import tempfile
 import time
+from hashlib import sha256
 from pathlib import Path
 
 from tools import p4_linux_process as linux
 from tools import p4_process_state as metadata
+from tools import p4_root_mixed_cases as factory
 from tools import p4_windows_job as windows
 
 REPO = Path(__file__).resolve().parents[1]
@@ -39,6 +41,30 @@ except (OSError,ValueError,subprocess.SubprocessError):
     sys.stderr.write("P4_CONTEXT_REFUSED\n")
     raise SystemExit(2)
 """
+FINAL_NAMES = ("MANIFEST.sha256", "facts/etherchannel_group.jsonl", "facts/fhrp_local.jsonl", "facts/stp_port_vlan.jsonl", "result.json")
+FINAL_FILE_LIMIT, FINAL_TREE_LIMIT, FINAL_FRAME_LIMIT = 4*1024*1024, 16*1024*1024, 4*1024*1024
+PAYLOAD_FIELDS = {"context", "case_order", "measured_cases", "api_runs", "api_processes", "cli_runs", "hash_seeds", "worker_counts", "creation_orders", "api_batches", "cases"}
+
+
+def plain_json(value):
+    if type(value) is dict:
+        return all(type(key) is str and plain_json(item) for key,item in value.items())
+    if type(value) is list:
+        return all(plain_json(item) for item in value)
+    return value is None or type(value) in (str,bool,int) or type(value) is float and math.isfinite(value)
+
+
+def final_paths():
+    paths = {f"api{batch}.{stream}.txt" for batch in (0,1) for stream in ("stdout","stderr")}
+    for case in factory.CASES:
+        paths.update(f"{case}/oracle/{name}" for name in FINAL_NAMES)
+        for batch in (0,1):
+            paths.update(f"{case}/inputs{batch}/{name}" for name in factory.members(case))
+            paths.update(f"{case}/{kind}{batch}/{name}" for kind in ("api","cli") for name in FINAL_NAMES)
+            paths.update(f"{case}/cli{batch}.{stream}.txt" for stream in ("stdout","stderr"))
+    if len(paths)!=383 or set(factory.CASES)!=CASES:
+        raise CaptureError("final_profile",True)
+    return paths
 
 class CaptureError(metadata.ProcessError):
     def __init__(self, reason, quiescent, cleanup=()):
@@ -217,3 +243,122 @@ class MixedCapture:
             self._unknown |= not verified
             if pair is not None and self._captures and self._captures[-1][0]==pair:
                 self._captures[-1]=pair,"quiet" if verified else "unknown"
+
+    def finalize(self, payload):
+        """Emit an inventory-complete synthetic candidate, not semantic/origin/health or demo acceptance.
+
+        Profile-local bounds are 4 MiB/file, 16 MiB/tree and 4 MiB/frame; these are not input Budgets.
+        Deadlines are checked after regular-file I/O, not an OS-level interruptible-I/O guarantee.
+        """
+        if not self.retention_ready:
+            raise CaptureError("parent_or_unknown",False)
+        self._active=True
+        created,closed,complete,identity,known_failure=False,False,False,None,False
+        try:
+            if type(payload) is not dict or not plain_json(payload) or set(payload)!=PAYLOAD_FIELDS:
+                raise CaptureError("final_payload",True)
+            data=payload
+            if any(type(data[key]) is not int or data[key]!=count for key,count in (("measured_cases",9),("api_runs",18),("api_processes",2),("cli_runs",18))):
+                raise CaptureError("final_counts",True)
+            if data["case_order"]!=list(factory.CASES) or data["hash_seeds"]!=["1","83"] or any(type(value) is not int for value in data["worker_counts"]) or data["worker_counts"]!=[1,4] or data["creation_orders"]!=["sorted","reversed"] or type(data["cases"]) is not dict or set(data["cases"])!=CASES or type(data["api_batches"]) is not list or len(data["api_batches"])!=2:
+                raise CaptureError("final_profile",True)
+            context=data["context"]
+            native={"linux":("Linux","ubuntu-latest"),"win32":("Windows","windows-latest")}
+            if type(context) is not dict or set(context)!={"reviewed_head","run_id","run_attempt","platform","runner_os","matrix_os"} or any(type(value) is not str for value in context.values()):
+                raise CaptureError("final_context",True)
+            if re.fullmatch("[0-9a-f]{40}",context["reviewed_head"]) is None or any(re.fullmatch("[1-9][0-9]*",context[key]) is None for key in ("run_id","run_attempt")) or sys.platform not in native or (context["platform"],context["runner_os"],context["matrix_os"])!=(sys.platform,*native[sys.platform]):
+                raise CaptureError("final_context",True)
+            target=self.root/"DIGESTS.json"
+            if target.exists() or target.is_symlink():
+                raise CaptureError("receipt_exists",True)
+            paths=final_paths()
+            def check():
+                if self._unknown or not self._parent() or not self._owned():
+                    self._unknown=True
+                    raise CaptureError("final_ownership",False)
+                if time.monotonic()>=self.deadline:
+                    raise CaptureError("deadline",True)
+            def inventory(expected):
+                directories={parent.as_posix() for name in expected for parent in Path(name).parents if parent.as_posix()!="."}
+                actual=set()
+                for path in self.root.rglob("*"):
+                    check()
+                    name=path.relative_to(self.root).as_posix()
+                    info=path.lstat()
+                    if stat.S_ISDIR(info.st_mode):
+                        if name not in directories:raise CaptureError("final_population",True)
+                    elif stat.S_ISREG(info.st_mode) and name in expected:actual.add(name)
+                    else:raise CaptureError("final_population",True)
+                    if len(actual)>len(expected):raise CaptureError("final_population",True)
+                if actual!=expected:raise CaptureError("final_population",True)
+                result,total={},0
+                for name in sorted(expected):
+                    check()
+                    size,digest=0,sha256()
+                    with (self.root/name).open("rb") as stream:
+                        while True:
+                            check()
+                            block=stream.read(min(65536,FINAL_FILE_LIMIT-size+1,FINAL_TREE_LIMIT-total+1))
+                            size+=len(block);total+=len(block)
+                            if size>FINAL_FILE_LIMIT or total>FINAL_TREE_LIMIT:raise CaptureError("final_budget",True)
+                            if not block:break
+                            digest.update(block)
+                    result[name]={"bytes":size,"sha256":digest.hexdigest()}
+                return result
+            before=inventory(paths)
+            receipt={**data,"schema":"atlas-brain.p4-root-mixed-hosted-receipt/1","qualification":"synthetic_root_mixed_observations_only",
+                "scope":"observations_only","source_required":"original_pinned_evidence_folders","inventory":before,
+                "inventory_excludes":["DIGESTS.json"],"retained_files":384,
+                "witness_scope":"runner_witness_only_parent_counts_forwarded_not_cryptographic_process_origin"}
+            raw=json.dumps(receipt,sort_keys=True,ensure_ascii=False,separators=(",",":"),allow_nan=False).encode("utf-8")+b"\n"
+            frame=b"P4_ROOT_MIXED_RECEIPT "+raw
+            if len(raw)>FINAL_FRAME_LIMIT or len(frame)>FINAL_FRAME_LIMIT:raise CaptureError("final_frame_budget",True)
+            check()
+            stream=target.open("xb")
+            created=True
+            try:
+                info=os.fstat(stream.fileno());identity=info.st_dev,info.st_ino
+                try:
+                    if stream.write(raw)!=len(raw):raise CaptureError("receipt_short_write",True)
+                    stream.flush()
+                except OSError as error:
+                    raise CaptureError("receipt_io",True) from error
+            finally:
+                try:
+                    stream.close()
+                    closed=True
+                finally:
+                    if not closed:self._unknown=True
+            after=inventory(paths|{"DIGESTS.json"})
+            if {name:value for name,value in after.items() if name!="DIGESTS.json"}!=before:
+                raise CaptureError("final_readback",True)
+            with target.open("rb") as saved:
+                if saved.read(FINAL_FRAME_LIMIT+1)!=raw:raise CaptureError("final_readback",True)
+            check()
+            try:
+                if sys.stdout.buffer.write(frame)!=len(frame):raise CaptureError("final_stdout_short_write",True)
+                sys.stdout.buffer.flush()
+            except OSError as error:
+                raise CaptureError("stdout_io",True) from error
+            check()  # A late/partial stdout write cannot be retracted; it is not completion authority.
+            complete=True
+        except CaptureError as error:
+            known_failure=type(error) is CaptureError and error.quiescent is True and error.reason in {
+                "final_payload","final_counts","final_profile","final_context","receipt_exists","final_population","final_budget",
+                "final_readback","final_frame_budget","receipt_short_write","receipt_io","final_stdout_short_write","stdout_io","deadline"}
+            raise
+        finally:
+            if not complete and not known_failure:self._unknown=True
+            self._active=False
+            rollback_finished=False
+            try:
+                if created and not complete:
+                    if not closed or identity is None:self._unknown=True
+                    if self.retention_ready:
+                        current=target.lstat()
+                        if stat.S_ISREG(current.st_mode) and (current.st_dev,current.st_ino)==identity:
+                            target.unlink()
+                        else:self._unknown=True
+                rollback_finished=True
+            finally:
+                if not rollback_finished:self._unknown=True
