@@ -11,21 +11,22 @@ def canonical(value: object) -> bytes:
 
 
 def _encode(value: object) -> str:
-    if type(value) not in (type(None), bool, int, str, list, tuple, dict):
-        raise TypeError("non_json_type")
-    if isinstance(value, str):
-        if SAFE.fullmatch(value):
+    kind = type(value)
+    if kind is str:
+        if SAFE.fullmatch(cast(str, value)):
             return f'"{value}"'
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    if isinstance(value, (type(None), bool)):
+    if value is None or kind is bool:
         return json.dumps(value)
-    if isinstance(value, int):
-        if value not in range(-9007199254740991, 9007199254740992):
+    if kind is int:
+        if not -9007199254740991 <= cast(int, value) <= 9007199254740991:
             raise ValueError("integer_out_of_range")
         return str(value)
-    if isinstance(value, (list, tuple)):
+    if kind is list or kind is tuple:
         items = cast("list[object] | tuple[object, ...]", value)
         return f"[{','.join(map(_encode, items))}]"
+    if kind is not dict:
+        raise TypeError("non_json_type")
     entries = cast(dict[object, object], value)
     if not all(isinstance(key, str) for key in entries):
         raise TypeError("non_string_key")
