@@ -1,9 +1,12 @@
 """Controlled orchestration faults; the dedicated workflow supplies genuine eighteen-parent-CLI evidence."""
+import cProfile
 import io
 import json
 import os
+import pstats
 import stat
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -437,3 +440,50 @@ def test_inherited_optin_cannot_emit_from_api_batch_role(monkeypatch,capfd):
     demo.diagnostic("not-a-stage",object(),object())
     emitted=capfd.readouterr()
     assert emitted.out==emitted.err==""
+
+
+def project_profile_path(filename):
+    """Accept only project Python code, excluding checkout-local dependencies and other roots."""
+    path=demo.Path(filename)
+    if not path.is_relative_to(control.REPO):return None
+    relative=path.relative_to(control.REPO)
+    return path if len(relative.parts)>1 and relative.parts[0] in ("atlas_brain","tools") and ".." not in relative.parts and path.suffix==".py" else None
+
+
+@pytest.mark.parametrize("case",demo.CASES)
+def test_profile_real_root9_analysis_keeps_all_five_independent_oracle_bytes(tmp_path,capsys,case):
+    """Hosted diagnostic only: measured cost is neither a timing threshold nor demo qualification."""
+    for relative in ("atlas_brain/runner/p4_root_mixed_report.py","tools/p4_root_mixed_demo.py"):
+        path=control.REPO/relative
+        assert project_profile_path(str(path))==path
+    for path in (control.REPO/".venv/Lib/site-packages/atlas_brain/report.py",control.REPO/".venv/lib/python3.13/site-packages/example.py",control.REPO/"tests/test_p4_root_mixed_demo.py",control.REPO/"atlas_brain_extra/report.py",control.REPO/"atlas_brain/report.pyc",control.REPO/"atlas_brain/../outside.py",control.REPO.parent/"outside.py"):
+        assert project_profile_path(str(path)) is None
+    raw=control.factory.members(case)
+    expected=expected_bundle(case,raw,compile_packs(DECLARATIONS).registration_sha256)
+    root=tmp_path/"original"
+    demo.write_files(root,raw)
+    profiler=cProfile.Profile()
+    started=time.perf_counter()
+    actual=profiler.runcall(p4_root_mixed_report.analyse_root_mixed_folder,root,p4_root_mixed_report.Budgets(16*1024*1024,4*1024*1024,128))
+    elapsed_ms=(time.perf_counter()-started)*1000
+    assert set(actual)==set(demo.NAMES) and actual==expected
+    assert read(root)==raw
+    assert 0<=elapsed_ms<float("inf")
+    rows=[]
+    for key,stats in pstats.Stats(profiler).stats.items():
+        filename,line,function=key
+        path=project_profile_path(filename)
+        if path is None:continue
+        primitive,calls,total,cumulative,_callers=stats
+        assert type(primitive) is int and type(calls) is int and 0<=primitive<=calls
+        assert all(0<=number<float("inf") for number in (total,cumulative))
+        assert type(line) is int and line>=0 and function.isascii() and len(function)<=100
+        assert function.replace("_","").isalnum() or function in ("<module>","<genexpr>","<listcomp>","<dictcomp>","<setcomp>","<lambda>")
+        rows.append({"file":path.name,"function":function,"line":line,"primitive_calls":primitive,"calls":calls,
+            "total_ms":round(total*1000,3),"cumulative_ms":round(cumulative*1000,3)})
+    assert rows
+    rows.sort(key=lambda row:(-row["cumulative_ms"],row["file"],row["line"],row["function"]))
+    record={"case":case,"elapsed_ms":round(elapsed_ms,3),"project_calls":sum(row["calls"] for row in rows),"top":rows[:12]}
+    assert len(record["top"])<=12 and type(record["project_calls"]) is int
+    with capsys.disabled():
+        print("P4_ROOT_MIXED_PROFILE "+json.dumps(record,sort_keys=True,separators=(",",":"),allow_nan=False))
