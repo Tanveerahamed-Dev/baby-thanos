@@ -101,6 +101,46 @@ def unchanged(originals, owner):
     need(all(snapshot(ROOT / case / f"inputs{batch}", owner) == raw for case, raw in originals.items() for batch in (0, 1)), "input_changed")
 
 
+class _RetentionOutput:
+    """Fixed parent-only runner output; trusted path configuration, not origin authentication."""
+    def __init__(self, owner):
+        need(type(owner) is MixedCapture and owner.retention_ready and not owner._captures and not any(owner.root.iterdir()), "output_owner")
+        self.owner,self._pid=owner,os.getpid()
+        self.path=Path(os.environ.get("GITHUB_OUTPUT",""))
+        need(self.path.is_absolute(), "output_path")
+        info=self.path.lstat()
+        need(stat.S_ISREG(info.st_mode) and not self.path.resolve(strict=True).is_relative_to(owner.root), "output_path")
+        self.identity=info.st_dev,info.st_ino
+        self._append(b"retention_ready=false\n")
+
+    def _check(self):
+        need(os.getpid()==self._pid and self.owner.retention_ready, "output_owner")
+        need(time.monotonic()<self.owner.deadline, "deadline")
+        info=self.path.lstat()
+        need(stat.S_ISREG(info.st_mode) and (info.st_dev,info.st_ino)==self.identity and not self.path.resolve(strict=True).is_relative_to(self.owner.root), "output_identity")
+
+    def _append(self, raw):
+        self._check()
+        flags=os.O_WRONLY|os.O_APPEND
+        for name in ("O_BINARY","O_NONBLOCK","O_CLOEXEC","O_NOFOLLOW"):flags|=getattr(os,name,0)
+        fd=os.open(self.path,flags)
+        try:
+            info=os.fstat(fd)
+            need(stat.S_ISREG(info.st_mode) and (info.st_dev,info.st_ino)==self.identity and not os.get_inheritable(fd), "output_identity")
+            stream=os.fdopen(fd,"ab",closefd=False)
+            try:
+                need(stream.write(raw)==len(raw), "output_short_write")
+                stream.flush()
+            finally:
+                stream.close()
+        finally:
+            os.close(fd)
+        self._check()
+
+    def publish(self):
+        self._append(b"retention_ready=true\n")
+
+
 def main():
     deadline = time.monotonic() + 420
     current = context()
@@ -110,6 +150,7 @@ def main():
         api_batch(current, int(arguments[1]))
         return
     owner=MixedCapture(ROOT,deadline=deadline)
+    output=_RetentionOutput(owner)
     owner.check_context(current["reviewed_head"])
     from atlas_brain.model.pack_registration import compile_packs
     from atlas_brain.packs.l3.fhrp.root_mixed_profile import DECLARATIONS
@@ -152,6 +193,7 @@ def main():
     payload={"context":current,"case_order":list(CASES),"measured_cases":9,"api_runs":18,"api_processes":2,"cli_runs":18,
         "hash_seeds":list(SEEDS),"worker_counts":list(WORKERS),"creation_orders":["sorted","reversed"],"api_batches":batches,"cases":cases}
     owner.finalize(payload)
+    output.publish()
 
 if __name__ == "__main__":
     try:
