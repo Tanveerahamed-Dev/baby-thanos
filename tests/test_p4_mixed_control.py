@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from test_ci_pytest_cli import _commit, _git
 
 from tools import p4_linux_process_api as linux_api
 from tools import p4_mixed_control as mixed
@@ -244,3 +245,137 @@ def test_real_quiet_native_error_cannot_bless_changed_ownership_even_after_resto
     with pytest.raises(mixed.CaptureError,match="^p4_mixed_capture_parent_or_unknown$"):
         value.run_saved(command("pass"),dict(os.environ),value.root,"api1")
     assert calls==[] and not value.retention_ready
+
+
+@pytest.fixture
+def context_repository(tmp_path,monkeypatch):
+    repo=tmp_path/"checkout";repo.mkdir()
+    (repo/"tracked").write_bytes(b"canonical\n")
+    (repo/".gitattributes").write_text("* text=auto eol=lf\n",encoding="utf-8")
+    _git(repo,"init","-q")
+    head=_commit(repo)
+    temp=tmp_path/"runner-temp";temp.mkdir()
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(mixed,"REPO",repo)
+    monkeypatch.setenv("RUNNER_TEMP",str(temp))
+    value=mixed.MixedCapture(tmp_path/"retained",deadline=time.monotonic()+30)
+    return repo,head,temp,value
+
+
+@pytest.mark.parametrize("fault",["clean","wrong_head","dirty","environment"])
+def test_actual_native_git_observation_is_not_an_environment_sha_claim(context_repository,monkeypatch,fault):
+    if not NATIVE:return
+    repo,head,temp,value=context_repository
+    before=snapshot()
+    module=native_module()
+    attribute="run_linux" if sys.platform=="linux" else "run_windows"
+    real=getattr(module,attribute)
+    frames=[]
+    def captured_native(*args,**kwargs):
+        result=real(*args,**kwargs)
+        frames.append(result.stdout)
+        return result
+    monkeypatch.setattr(module,attribute,captured_native)
+    if fault=="dirty":(repo/"tracked").write_bytes(b"changed\n")
+    if fault=="environment":
+        monkeypatch.setenv("GIT_DIR",str(repo/"not-a-git-directory"))
+        monkeypatch.setenv("gIt_CoNfIg_CoUnT","999")
+        monkeypatch.setenv("GITHUB_OUTPUT","must-not-be-inherited")
+    if fault in ("clean","environment"):
+        observed=value.check_context(head)
+        assert observed=={"schema":"atlas-brain.p4-git-context/1","observed_head":head,"tracked_clean":True}
+        exact=(json.dumps(observed,sort_keys=True,separators=(",",":"))+"\n").encode("ascii")
+        assert frames==[exact] and b"\r" not in frames[0]
+        assert list(temp.iterdir())==[]
+    else:
+        with pytest.raises(mixed.CaptureError,match="^p4_mixed_capture_context_refused$") as error:
+            value.check_context("b"*40 if fault=="wrong_head" else head)
+        assert error.value.quiescent is True
+        scratch=next(temp.iterdir())
+        assert {path.name for path in scratch.iterdir()}=={"stdout.bin","stderr.bin"}
+    assert value.retention_ready and len(value._captures)==1 and value._captures[-1][1]=="quiet"
+    assert list(value.root.iterdir())==[] and snapshot()==before
+
+
+@pytest.mark.parametrize("fault",["opaque","unknown_error","bad_result","frame","root","role","scratch","extra","nonregular","unlink_ack","rmdir_ack"])
+def test_context_unknown_is_shared_absorbing_state_and_never_cleans_after_uncertainty(context_repository,tmp_path,monkeypatch,fault):
+    if not NATIVE:return
+    repo,head,temp,value=context_repository
+    module=native_module()
+    attribute="run_linux" if sys.platform=="linux" else "run_windows"
+    real=getattr(module,attribute)
+    calls,unlinked,removed=[],[],[]
+    real_unlink,real_rmdir=Path.unlink,Path.rmdir
+    preserved=tmp_path/"preserved"
+    protected=tmp_path/"protected";protected.write_bytes(b"private-prior")
+    def observed(*args,**kwargs):
+        assert value._active and not value.retention_ready and value._captures[-1][1]=="pending"
+        assert kwargs["deadline"]==value.deadline and kwargs["timeout"]==90
+        assert not any(key.casefold() in mixed.CHANNELS for key in kwargs["env"])
+        assert not any(key.casefold().startswith("git_") and key not in ("GIT_CONFIG_GLOBAL","GIT_CONFIG_SYSTEM","GIT_TERMINAL_PROMPT") for key in kwargs["env"])
+        calls.append(kwargs)
+        result=real(*args,**kwargs)
+        scratch=Path(kwargs["stdout_path"]).parent
+        assert scratch.parent==temp and not scratch.is_relative_to(value.root)
+        if fault=="opaque":raise TypeError("opaque acknowledgement")
+        if fault=="unknown_error":raise module.ProcessError("fixture",False)
+        if fault=="bad_result":return SimpleNamespace(returncode=0,stdout=result.stdout,stderr=b"",quiescent=True)
+        if fault=="frame":return module.Result(0,result.stdout.rstrip()+b" ",b"",True)
+        if fault=="root":value.root.rename(preserved);value.root.mkdir()
+        elif fault=="role":monkeypatch.setattr(sys,"argv",["demo","--api-batch","0"])
+        elif fault=="scratch":scratch.rename(preserved);scratch.mkdir()
+        elif fault=="extra":(scratch/"unexpected").write_bytes(b"preserved")
+        elif fault=="nonregular":
+            real_unlink(Path(kwargs["stdout_path"]))
+            Path(kwargs["stdout_path"]).mkdir()
+        return result
+    def unlink(path,*args,**kwargs):
+        unlinked.append(path.name)
+        real_unlink(path,*args,**kwargs)
+        if fault=="unlink_ack":raise OSError("planted lost unlink acknowledgement")
+    def rmdir(path):
+        removed.append(path)
+        real_rmdir(path)
+        if fault=="rmdir_ack":raise OSError("planted lost directory acknowledgement")
+    monkeypatch.setattr(module,attribute,observed)
+    monkeypatch.setattr(Path,"unlink",unlink)
+    monkeypatch.setattr(Path,"rmdir",rmdir)
+    with pytest.raises((mixed.CaptureError,TypeError,OSError)):
+        value.check_context(head)
+    assert len(calls)==1 and not value.retention_ready and value._captures[-1][1]=="unknown"
+    if fault=="unlink_ack":assert unlinked==["stdout.bin"] and removed==[] and (next(temp.iterdir())/"stderr.bin").exists()
+    elif fault=="rmdir_ack":assert unlinked==["stdout.bin","stderr.bin"] and removed==[Path(calls[0]["stdout_path"]).parent] and list(temp.iterdir())==[]
+    else:
+        assert unlinked==[] and removed==[] and list(temp.iterdir())
+    assert protected.read_bytes()==b"private-prior"
+    later=[]
+    def forbidden(*args,**kwargs):later.append(args);raise AssertionError("Unknown cannot start another helper")
+    monkeypatch.setattr(module,attribute,forbidden)
+    with pytest.raises(mixed.CaptureError,match="^p4_mixed_capture_parent_or_unknown$"):
+        value.check_context(head)
+    with pytest.raises(mixed.CaptureError,match="^p4_mixed_capture_parent_or_unknown$"):
+        value.run_saved(command("pass"),dict(os.environ),value.root,"api0")
+    assert later==[] and not value.retention_ready
+
+
+@pytest.mark.parametrize("fault",["head","relative_temp","missing_temp","root_temp","subdir_temp","deadline","batch"])
+def test_context_preflight_has_no_child_or_scratch_creation(context_repository,tmp_path,monkeypatch,fault):
+    repo,head,temp,value=context_repository
+    module=native_module() if NATIVE else mixed.linux
+    attribute="run_linux" if sys.platform=="linux" else "run_windows"
+    calls=[]
+    def forbidden(*args,**kwargs):calls.append(args);raise AssertionError("preflight must not spawn")
+    monkeypatch.setattr(module,attribute,forbidden)
+    if fault=="relative_temp":monkeypatch.setenv("RUNNER_TEMP","relative")
+    elif fault=="missing_temp":monkeypatch.setenv("RUNNER_TEMP",str(tmp_path/"missing"))
+    elif fault in ("root_temp","subdir_temp"):
+        (value.root/"prior").write_bytes(b"preserved")
+        nested=value.root if fault=="root_temp" else value.root/"subdir"
+        if fault=="subdir_temp":nested.mkdir()
+        monkeypatch.setenv("RUNNER_TEMP",str(nested))
+    elif fault=="deadline":monkeypatch.setattr(mixed,"time",SimpleNamespace(monotonic=lambda:value.deadline-1))
+    elif fault=="batch":monkeypatch.setattr(sys,"argv",["demo","--api-batch","0"])
+    with pytest.raises(mixed.CaptureError):
+        value.check_context("bad" if fault=="head" else head)
+    assert calls==[] and list(temp.iterdir())==[] and value._captures==[]
+    if fault in ("root_temp","subdir_temp"):assert (value.root/"prior").read_bytes()==b"preserved"
