@@ -28,8 +28,42 @@ jobs:
       - run: uv run --no-sync pytest -q -rs --durations=20 tests/runner
       - id: context
         run: uv run --no-sync python tools/p0_ci_context.py record --platform linux
+  p0_regression_windows_parts:
+    name: P0 runner regression partition (windows-latest, ${{ matrix.shard }}/4)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.13.1'
+          enable-cache: false
+      - run: uv sync --locked
+      - run: uv run --no-sync python tools/p0_ci_context.py check --platform win32
+      - name: Run complete P0 collection partition
+        run: >-
+          uv run --no-sync python tools/ci_pytest.py run --scope p0 --count 4
+          --index ${{ matrix.shard }} --head ${{ github.event.pull_request.head.sha || github.sha }}
+          --run-id ${{ github.run_id }} --attempt ${{ github.run_attempt }}
+          --receipt .ci-evidence/p0-windows-shards/shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: p0-windows-pytest-${{ matrix.shard }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .ci-evidence/p0-windows-shards/shard-${{ matrix.shard }}.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
   p0_regression_windows:
     name: P0 runner regression (windows-latest)
+    needs: [p0_regression_windows_parts]
+    if: always()
     runs-on: windows-latest
     timeout-minutes: 10
     outputs:
@@ -44,8 +78,19 @@ jobs:
           enable-cache: false
       - run: uv sync --locked
       - run: uv run --no-sync python tools/p0_ci_context.py check --platform win32
-      - run: uv run --no-sync pytest -q -rs --durations=20 tests/runner
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: p0-windows-pytest-*-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .ci-evidence/p0-windows-receipts
+          merge-multiple: false
+      - name: Require complete native Windows P0 regression
+        run: >-
+          uv run --no-sync python tools/ci_pytest.py verify --scope p0 --platform win32
+          --directory .ci-evidence/p0-windows-receipts --count 4
+          --head ${{ github.event.pull_request.head.sha || github.sha }} --run-id ${{ github.run_id }}
+          --attempt ${{ github.run_attempt }} --jobs-result "${{ needs.p0_regression_windows_parts.result }}"
       - id: context
+        if: success()
         run: uv run --no-sync python tools/p0_ci_context.py record --platform win32
   p0-runner:
     needs: [p0_regression_linux, p0_regression_windows]
