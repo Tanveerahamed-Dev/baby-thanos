@@ -1,4 +1,5 @@
 """Parent capture custody/state regressions; helper completion is not complete-demo qualification."""
+import io
 import json
 import os
 import signal
@@ -10,8 +11,11 @@ from types import SimpleNamespace
 import pytest
 from test_ci_pytest_cli import _commit, _git
 
+from atlas_brain.model.pack_registration import compile_packs
+from atlas_brain.packs.l3.fhrp.root_mixed_profile import DECLARATIONS
 from tools import p4_linux_process_api as linux_api
 from tools import p4_mixed_control as mixed
+from tools.p4_root_mixed_expected import expected_bundle
 
 NATIVE = sys.platform in ("linux", "win32")
 
@@ -379,3 +383,187 @@ def test_context_preflight_has_no_child_or_scratch_creation(context_repository,t
         value.check_context("bad" if fault=="head" else head)
     assert calls==[] and list(temp.iterdir())==[] and value._captures==[]
     if fault in ("root_temp","subdir_temp"):assert (value.root/"prior").read_bytes()==b"preserved"
+
+
+@pytest.fixture
+def final_tree(tmp_path):
+    value=session(tmp_path)
+    registration=compile_packs(DECLARATIONS).registration_sha256
+    for case in mixed.factory.CASES:
+        raw=mixed.factory.members(case)
+        outputs=expected_bundle(case,raw,registration)
+        for batch in (0,1):
+            for name,data in raw.items():
+                path=value.root/case/f"inputs{batch}"/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
+            for kind in ("api","cli"):
+                for name,data in outputs.items():
+                    path=value.root/case/f"{kind}{batch}"/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
+            for stream in ("stdout","stderr"):(value.root/case/f"cli{batch}.{stream}.txt").write_bytes(b"")
+        for name,data in outputs.items():
+            path=value.root/case/"oracle"/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
+    for batch in (0,1):
+        for stream in ("stdout","stderr"):(value.root/f"api{batch}.{stream}.txt").write_bytes(b"")
+    native=("Linux","ubuntu-latest") if sys.platform=="linux" else ("Windows","windows-latest")
+    payload={"context":{"reviewed_head":"a"*40,"run_id":"123","run_attempt":"1","platform":sys.platform,"runner_os":native[0],"matrix_os":native[1]},
+        "case_order":list(mixed.factory.CASES),"measured_cases":9,"api_runs":18,"api_processes":2,"cli_runs":18,
+        "hash_seeds":["1","83"],"worker_counts":[1,4],"creation_orders":["sorted","reversed"],"api_batches":[{},{}],
+        "cases":{case:{"batches":[{},{}]} for case in mixed.factory.CASES}}
+    original={path.relative_to(value.root).as_posix():path.read_bytes() for path in value.root.rglob("*") if path.is_file()}
+    assert len(original)==383 and sum(map(len,original.values()))<mixed.FINAL_TREE_LIMIT
+    return value,payload,original
+
+
+def test_full_original_namespace_and_oracle_bytes_emit_exact_native_candidate(final_tree,capfd):
+    value,payload,original=final_tree
+    value.finalize(payload)
+    raw=(value.root/"DIGESTS.json").read_bytes()
+    receipt=json.loads(raw)
+    assert capfd.readouterr().out.encode()==b"P4_ROOT_MIXED_RECEIPT "+raw
+    assert len([path for path in value.root.rglob("*") if path.is_file()])==384
+    assert receipt["inventory"]=={name:{"bytes":len(data),"sha256":mixed.sha256(data).hexdigest()} for name,data in original.items()}
+    assert receipt["inventory_excludes"]==["DIGESTS.json"] and receipt["retained_files"]==384
+    assert receipt["qualification"]=="synthetic_root_mixed_observations_only" and value.retention_ready
+
+
+@pytest.mark.parametrize("fault",["late_encode","partial_write","write_io","flush_io","close_ack","readback","readback_data","late_readback","stdout_partial","stdout_io","stdout_flush","late_stdout","root","identity","opaque_inventory","opaque_write","opaque_readback","readback_close","opaque_clock","rollback_lstat","rollback_ready","rollback_unlink"])
+def test_finalizer_ownership_rollback_and_unknown_fences(final_tree,tmp_path,monkeypatch,capfd,fault):
+    value,payload,original=final_tree
+    target=value.root/"DIGESTS.json"
+    real_open,real_unlink,real_lstat,real_dumps=Path.open,Path.unlink,Path.lstat,mixed.json.dumps
+    prior_root=tmp_path/"preserved"
+    primary=OSError("planted actual-I/O acknowledgement")
+    opaque=MemoryError("planted opaque finalization")
+    deleted=[];opened=[];closed_count=[]
+    def advance():monkeypatch.setattr(mixed,"time",SimpleNamespace(monotonic=lambda:value.deadline+1))
+    def unknown():raise opaque
+    def dumps(*args,**kwargs):
+        data=real_dumps(*args,**kwargs)
+        if fault=="late_encode":advance()
+        return data
+    class File:
+        def __init__(self,stream,mode):self.stream,self.mode=stream,mode
+        def fileno(self):return self.stream.fileno()
+        def __enter__(self):return self
+        def __exit__(self,*args):self.close()
+        def write(self,data):
+            count=self.stream.write(data[:9] if fault in ("partial_write","write_io") else data)
+            if fault=="write_io":raise primary
+            if fault=="opaque_write":raise opaque
+            return count
+        def flush(self):
+            self.stream.flush()
+            if fault=="flush_io":raise primary
+        def read(self,count=-1):
+            assert count!=-1 or not value._active  # Unbounded read is observation-only AFTER the finalizer, never production I/O.
+            data=self.stream.read(count)
+            if fault=="opaque_readback":raise opaque
+            if fault=="late_readback" and count==mixed.FINAL_FRAME_LIMIT+1:advance()
+            return data
+        def close(self):
+            self.stream.close();closed_count.append(self.mode)
+            if self.mode=="rb" and fault=="readback_close":raise primary
+            if self.mode=="xb":
+                if fault=="close_ack":raise primary
+                if fault=="readback":
+                    with real_open(target,"ab") as stream:stream.write(b"changed")
+                if fault=="readback_data":
+                    with real_open(value.root/"normal/api0/result.json","ab") as stream:stream.write(b"changed")
+                if fault=="root":value.root.rename(prior_root);value.root.mkdir()
+                if fault=="identity":
+                    target.rename(value.root/"owned-moved")
+                    target.write_bytes(b"unowned-prior")
+                if fault=="opaque_clock":monkeypatch.setattr(mixed,"time",SimpleNamespace(monotonic=unknown))
+    def opening(path,*args,**kwargs):
+        mode=args[0] if args else kwargs.get("mode","r")
+        stream=real_open(path,*args,**kwargs)
+        if path==target:
+            opened.append(mode)
+            return File(stream,mode)
+        return stream
+    def lstat(path,*args,**kwargs):
+        if path==target:raise opaque
+        return real_lstat(path,*args,**kwargs)
+    def unlink(path,*args,**kwargs):
+        deleted.append(path)
+        if fault=="rollback_unlink":raise opaque
+        return real_unlink(path,*args,**kwargs)
+    sink=io.BytesIO()
+    class Output:
+        def write(self,data):
+            count=sink.write(data[:7] if fault in ("stdout_partial","stdout_io") else data)
+            if fault=="rollback_lstat":monkeypatch.setattr(Path,"lstat",lstat)
+            elif fault=="rollback_ready":monkeypatch.setattr(value,"_owned",unknown)
+            if fault in ("stdout_io","rollback_lstat","rollback_ready","rollback_unlink"):raise primary
+            if fault=="late_stdout":advance()
+            return count
+        def flush(self):
+            sink.flush()
+            if fault=="stdout_flush":raise primary
+    if fault=="opaque_inventory":monkeypatch.setattr(mixed,"sha256",lambda:unknown())
+    monkeypatch.setattr(Path,"open",opening);monkeypatch.setattr(Path,"unlink",unlink)
+    monkeypatch.setattr(mixed.json,"dumps",dumps)
+    with monkeypatch.context() as output:
+        output.setattr(mixed.sys,"stdout",SimpleNamespace(buffer=Output()))
+        with pytest.raises((mixed.CaptureError,OSError,MemoryError)) as error:value.finalize(payload)
+    if fault=="root":
+        value.root.rmdir();prior_root.rename(value.root)
+    opaque_faults={"close_ack","root","identity","opaque_inventory","opaque_write","opaque_readback","readback_close","opaque_clock","rollback_lstat","rollback_ready","rollback_unlink"}
+    if fault in opaque_faults:
+        assert not value.retention_ready
+        assert deleted==([] if fault!="rollback_unlink" else [target])
+        if "xb" in opened:assert target.exists()
+    elif fault=="late_encode":assert not target.exists() and deleted==[]
+    else:
+        assert not target.exists() and deleted==[target] and value.retention_ready
+    if fault in ("write_io","flush_io","stdout_io","stdout_flush"):
+        assert error.value.__cause__ is primary
+    if fault in ("rollback_lstat","rollback_ready","rollback_unlink"):
+        assert error.value is opaque and isinstance(opaque.__context__,mixed.CaptureError) and opaque.__context__.__cause__ is primary
+    assert all(path==target for path in deleted)
+    if "xb" in opened:assert "xb" in closed_count  # The real underlying writer close ran before any planted acknowledgement failure.
+    for name,data in original.items():
+        if fault=="readback_data" and name=="normal/api0/result.json":data+=b"changed"
+        with real_open(value.root/name,"rb") as stream:assert stream.read()==data
+    if fault=="identity":assert target.read_bytes()==b"unowned-prior"
+    if fault not in ("stdout_partial","stdout_io","stdout_flush","late_stdout","rollback_lstat","rollback_ready","rollback_unlink"):
+        assert sink.getvalue()==b""
+
+
+@pytest.mark.parametrize("fault",["prior","unknown","bool_worker","tuple","extra","extra_file","budget","tree_budget","frame_budget"])
+def test_finalizer_refuses_unowned_receipt_unknown_and_nonplain_payload(final_tree,tmp_path,monkeypatch,capfd,fault):
+    value,payload,_original=final_tree
+    target=value.root/"DIGESTS.json"
+    real_open,real_unlink=Path.open,Path.unlink
+    xb,deleted=[],[]
+    def opening(path,*args,**kwargs):
+        if path==target and (args[0] if args else kwargs.get("mode","r"))=="xb":xb.append(path)
+        return real_open(path,*args,**kwargs)
+    def unlink(path,*args,**kwargs):
+        if path==target:deleted.append(path)
+        return real_unlink(path,*args,**kwargs)
+    monkeypatch.setattr(Path,"open",opening)
+    monkeypatch.setattr(Path,"unlink",unlink)
+    if fault=="prior":target.write_bytes(b"unowned-prior")
+    elif fault=="unknown":
+        value.root.rename(tmp_path/"old");value.root.mkdir()
+        assert not value.retention_ready
+        value.root.rmdir();(tmp_path/"old").rename(value.root)
+    elif fault=="bool_worker":payload["worker_counts"]=[True,4]
+    elif fault=="tuple":payload["cases"]["normal"]["descriptive"]=(1,2)
+    elif fault=="extra":payload["inventory"]={}
+    elif fault=="extra_file":(value.root/"unexpected").write_bytes(b"preserved")
+    elif fault=="budget":
+        with (value.root/"api0.stdout.txt").open("wb") as stream:stream.write(b"x"*(mixed.FINAL_FILE_LIMIT+1))
+    elif fault=="tree_budget":
+        for name in ("api0.stdout.txt","api0.stderr.txt","api1.stdout.txt","api1.stderr.txt"):
+            with (value.root/name).open("wb") as stream:stream.write(b"x"*mixed.FINAL_FILE_LIMIT)
+    elif fault=="frame_budget":payload["cases"]["normal"]["descriptive"]= "x"*(mixed.FINAL_FRAME_LIMIT+1)
+    with pytest.raises(mixed.CaptureError) as refused:value.finalize(payload)
+    if fault=="tuple":
+        assert refused.value.reason=="final_payload" and xb==[] and deleted==[]
+    if fault in ("budget","tree_budget","frame_budget"):
+        assert refused.value.reason==("final_frame_budget" if fault=="frame_budget" else "final_budget")
+        assert xb==[] and deleted==[]
+    assert capfd.readouterr().out==""
+    assert target.read_bytes()==b"unowned-prior" if fault=="prior" else not target.exists()
+    assert len([path for path in value.root.rglob("*") if path.is_file()])==383+(fault in ("prior","extra_file"))
