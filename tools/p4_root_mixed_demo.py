@@ -141,6 +141,18 @@ class _RetentionOutput:
         self._append(b"retention_ready=true\n")
 
 
+def diagnostic(stage, ordinal, deadline):
+    """Opt-in parent progress only; no result, process-origin or completion authority."""
+    if os.environ.get("P4_ROOT_MIXED_DIAGNOSTICS")!="1" or "--api-batch" in sys.argv[1:]:return
+    stages={name:count for prefix,count in (("context",2),("api",2),("cli",18)) for name in (prefix+"_before",prefix+"_after")}
+    need(type(stage) is str and stage in stages and type(ordinal) is int and 0<=ordinal<stages[stage], "diagnostic")
+    elapsed=time.monotonic()-(deadline-420)
+    need(0<=elapsed<420, "deadline")
+    raw=b"P4_ROOT_MIXED_STAGE "+encoded({"stage":stage,"ordinal":ordinal,"elapsed_ms":int(elapsed*1000)})+b"\n"
+    need(os.write(2,raw)==len(raw), "diagnostic_write")
+    need(time.monotonic()<deadline, "deadline")
+
+
 def main():
     deadline = time.monotonic() + 420
     current = context()
@@ -151,7 +163,9 @@ def main():
         return
     owner=MixedCapture(ROOT,deadline=deadline)
     output=_RetentionOutput(owner)
+    diagnostic("context_before",0,deadline)
     owner.check_context(current["reviewed_head"])
+    diagnostic("context_after",0,deadline)
     from atlas_brain.model.pack_registration import compile_packs
     from atlas_brain.packs.l3.fhrp.root_mixed_profile import DECLARATIONS
     from tools.p4_root_mixed_cases import CASES as factory_cases
@@ -175,21 +189,27 @@ def main():
     batches = []
     for batch, (seed, workers) in enumerate(zip(SEEDS, WORKERS, strict=True)):
         env = {**os.environ, "PYTHONHASHSEED": seed, "PYTHONDONTWRITEBYTECODE": "1"}
+        diagnostic("api_before",batch,deadline)
         result = owner.run_saved([sys.executable, "-B", "-m", "tools.p4_root_mixed_demo", "--api-batch", str(batch)], env, ROOT, f"api{batch}")
+        diagnostic("api_after",batch,deadline)
         unchanged(originals, owner)
         receipt = batch_receipt(current, batch)
         need(result.stdout == b"P4_ROOT_MIXED_API_BATCH " + encoded(receipt) + b"\n", "api_receipt")
         batches.append(receipt)
-        for case in CASES:
+        for ordinal,case in enumerate(CASES):
             folder = ROOT / case
+            diagnostic("cli_before",batch*len(CASES)+ordinal,deadline)
             result = owner.run_saved([sys.executable, "-B", "-m", "atlas_brain.runner", "--format", "p4-root-mixed-observations", "--evidence", str(folder / f"inputs{batch}"), "--out", str(folder / f"cli{batch}"), "--workers", str(workers)], env, folder, f"cli{batch}")
+            diagnostic("cli_after",batch*len(CASES)+ordinal,deadline)
             unchanged(originals, owner)
             api, cli = snapshot(folder / f"api{batch}", owner), snapshot(folder / f"cli{batch}", owner)
             need(api == cli == expected[case], "oracle_" + case + "_b" + str(batch))
             witness = cli_receipt(result.stdout, cli)
             cases[case]["batches"].append({"batch": batch, "seed": seed, "workers": workers, "creation_order": "reversed" if batch else "sorted", "api_files": signatures(api), "cli_files": signatures(cli), "cli_witness": witness})
     need(context() == current, "context_changed")
+    diagnostic("context_before",1,deadline)
     owner.check_context(current["reviewed_head"])
+    diagnostic("context_after",1,deadline)
     payload={"context":current,"case_order":list(CASES),"measured_cases":9,"api_runs":18,"api_processes":2,"cli_runs":18,
         "hash_seeds":list(SEEDS),"worker_counts":list(WORKERS),"creation_orders":["sorted","reversed"],"api_batches":batches,"cases":cases}
     owner.finalize(payload)

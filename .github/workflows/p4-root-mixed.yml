@@ -30,6 +30,7 @@ jobs:
           P4_ROOT_MIXED_REVIEWED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           P4_ROOT_MIXED_MATRIX_OS: ${{ matrix.os }}
           PYTHONDONTWRITEBYTECODE: '1'
+          P4_ROOT_MIXED_DIAGNOSTICS: '1'
         run: uv run --no-sync python -B -m tools.p4_root_mixed_demo
       - name: Retain complete verified synthetic evidence
         if: ${{ always() && steps.demo.outcome == 'success' && steps.demo.outputs.retention_ready == 'true' }}

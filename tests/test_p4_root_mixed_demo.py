@@ -19,6 +19,11 @@ NATIVE=("Linux","ubuntu-latest") if sys.platform=="linux" else ("Windows","windo
 CURRENT = {"reviewed_head": "a" * 40, "run_id": "123", "run_attempt": "1", "platform": sys.platform, "runner_os": NATIVE[0], "matrix_os": NATIVE[1]}
 
 
+@pytest.fixture(autouse=True)
+def diagnostics_default_off(monkeypatch):
+    monkeypatch.delenv("P4_ROOT_MIXED_DIAGNOSTICS",raising=False)
+
+
 def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
 
@@ -357,8 +362,78 @@ def test_actual_protected_entry_never_renders_exception_or_failed_diagnostic_can
 def test_workflow_requires_success_and_explicit_true_and_preserves_native_budget_pins():
     text=(control.REPO/".github/workflows/p4-root-mixed.yml").read_text(encoding="utf-8")
     assert "id: demo\n" in text and "continue-on-error" not in text
+    assert "P4_ROOT_MIXED_DIAGNOSTICS: '1'" in text
+    assert all("P4_ROOT_MIXED_DIAGNOSTICS" not in path.read_text(encoding="utf-8") for path in (control.REPO/".github/workflows").glob("*.yml") if path.name!="p4-root-mixed.yml")
     assert "if: \u0024{{ always() && steps.demo.outcome == 'success' && steps.demo.outputs.retention_ready == 'true' }}" in text
     assert "os: [ubuntu-latest, windows-latest]" in text and "timeout-minutes: 10" in text and "fail-fast: false" in text
     assert "permissions:\n  contents: read\n" in text and "path: .ci-evidence/p4-root-mixed" in text
     for pin in ("checkout@11d5960a326750d5838078e36cf38b85af677262","setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884","upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"):assert pin in text
     for token in ("github.event.pull_request.head.sha || github.sha","github.run_id","github.run_attempt","include-hidden-files: true","if-no-files-found: error","uv sync --locked","uv run --no-sync python -B -m tools.p4_root_mixed_demo"):assert token in text
+
+
+def test_optin_parent_diagnostics_bracket_exact_same_calls_with_closed_finite_fields(controlled,monkeypatch,capfd):
+    monkeypatch.setenv("P4_ROOT_MIXED_DIAGNOSTICS","1")
+    monkeypatch.setenv("P4_DIAGNOSTIC_CANARY","must-never-be-logged")
+    demo.main()
+    emitted=capfd.readouterr()
+    lines=emitted.err.splitlines()
+    records=[json.loads(line.removeprefix("P4_ROOT_MIXED_STAGE ")) for line in lines]
+    calls=[("context",0)]
+    for batch in (0,1):
+        calls.append(("api",batch));calls.extend(("cli",batch*9+index) for index in range(9))
+    calls.append(("context",1))
+    assert [(row["stage"],row["ordinal"]) for row in records]==[(stage+"_"+edge,ordinal) for stage,ordinal in calls for edge in ("before","after")]
+    assert all(set(row)=={"stage","ordinal","elapsed_ms"} and type(row["ordinal"]) is int and type(row["elapsed_ms"]) is int and 0<=row["elapsed_ms"]<420000 for row in records)
+    assert lines==["P4_ROOT_MIXED_STAGE "+encoded(row).decode("ascii") for row in records]
+    assert [row["elapsed_ms"] for row in records]==sorted(row["elapsed_ms"] for row in records)
+    assert len(records)==44 and len(controlled.calls)==20 and controlled.checks==[0,20]
+    assert "must-never-be-logged" not in emitted.err and str(controlled.root) not in emitted.err
+    assert emitted.out.encode()==b"P4_ROOT_MIXED_RECEIPT "+(controlled.root/"DIGESTS.json").read_bytes()
+    assert controlled.output.read_bytes()==b"retention_ready=false\nretention_ready=true\n"
+
+
+@pytest.mark.parametrize("fault",("exit","timeout","stderr","deadline","opaque","unknown"))
+def test_optin_failed_helper_has_no_after_marker_or_subsequent_reads(controlled,monkeypatch,capfd,fault):
+    monkeypatch.setenv("P4_ROOT_MIXED_DIAGNOSTICS","1")
+    controlled.fault=fault
+    reads,finals=[],[]
+    def read(*args,**kwargs):reads.append(args);raise AssertionError("failed helper cannot read")
+    def finish(*args,**kwargs):finals.append(args);raise AssertionError("failed helper cannot finalize")
+    monkeypatch.setattr(demo,"snapshot",read);monkeypatch.setattr(demo.MixedCapture,"finalize",finish)
+    with pytest.raises(TypeError if fault=="opaque" else control.CaptureError):demo.main()
+    emitted=capfd.readouterr()
+    rows=[json.loads(line.removeprefix("P4_ROOT_MIXED_STAGE ")) for line in emitted.err.splitlines()]
+    assert [(row["stage"],row["ordinal"]) for row in rows]==[("context_before",0),("context_after",0),("api_before",0)]
+    assert reads==[] and finals==[] and emitted.out=="" and "partial-error" not in emitted.err
+    assert controlled.output.read_bytes()==b"retention_ready=false\n"
+
+
+@pytest.mark.parametrize("fault",("ack","short","late"))
+def test_actual_diagnostic_write_ack_short_or_late_is_fatal_before_first_child(controlled,monkeypatch,capfd,fault):
+    monkeypatch.setenv("P4_ROOT_MIXED_DIAGNOSTICS","1")
+    primary=OSError("DIAGNOSTIC_ACK_CANARY")
+    actual,written=demo.os.write,[]
+    clock=SimpleNamespace(monotonic=lambda:100.0)
+    if fault=="late":monkeypatch.setattr(demo,"time",clock);monkeypatch.setattr(control,"time",clock)
+    def write(fd,raw):
+        written.append(raw)
+        count=actual(fd,raw[:5] if fault=="short" else raw)
+        if fault=="ack":raise primary
+        if fault=="late":clock.monotonic=lambda:521.0
+        return count
+    monkeypatch.setattr(demo.os,"write",write)
+    with pytest.raises(OSError if fault=="ack" else ValueError) as refused:demo.main()
+    if fault=="ack":assert refused.value is primary
+    else:assert str(refused.value)=="p4_root_mixed_demo_"+("diagnostic_write" if fault=="short" else "deadline")
+    emitted=capfd.readouterr()
+    assert len(written)==1 and written[0].startswith(b"P4_ROOT_MIXED_STAGE ")
+    assert emitted.out=="" and "CANARY" not in emitted.err and controlled.calls==[] and controlled.checks==[]
+    assert controlled.output.read_bytes()==b"retention_ready=false\n" and list(controlled.root.iterdir())==[]
+
+
+def test_inherited_optin_cannot_emit_from_api_batch_role(monkeypatch,capfd):
+    monkeypatch.setenv("P4_ROOT_MIXED_DIAGNOSTICS","1")
+    monkeypatch.setattr(demo.sys,"argv",["demo","--api-batch","0"])
+    demo.diagnostic("not-a-stage",object(),object())
+    emitted=capfd.readouterr()
+    assert emitted.out==emitted.err==""
