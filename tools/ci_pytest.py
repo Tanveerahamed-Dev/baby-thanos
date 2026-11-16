@@ -11,23 +11,27 @@ import pytest
 
 if __package__:
     from .ci_pytest_receipts import (
-        SCHEMA,
+        SCHEMA as SCHEMA,
         ReceiptError,
         _ids,
         _metadata,
         _positive,
+        _profile,
         _reports,
+        _scope_nodes,
         shard_for,
         verify_receipts,
     )
 else:
     from ci_pytest_receipts import (
-        SCHEMA,
+        SCHEMA as SCHEMA,
         ReceiptError,
         _ids,
         _metadata,
         _positive,
+        _profile,
         _reports,
+        _scope_nodes,
         shard_for,
         verify_receipts,
     )
@@ -36,7 +40,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class _Collector:
-    def __init__(self, index, count):
+    def __init__(self, index, count, *, scope="full"):
+        self.scope = scope
+        _, self.root, _ = _profile(scope, count)
         self.index, self.count = index, count
         self.raw, self.universe, self.selected, self.finished = [], [], [], []
         self.reports, self.failed_reports, self.collection_errors = {}, [], []
@@ -52,14 +58,14 @@ class _Collector:
             "stepwise_skip", "collectonly", "deselect", "ignore",
             "ignore_glob", "pyargs", "noconftest", "override_ini",
         )
-        if (config.getini("addopts") or list(config.args) != ["tests"]
+        if (config.getini("addopts") or list(config.args) != [self.root]
                 or any(getattr(config.option, key, None) for key in selectors)):
             self._fail("selection_configuration_refused")
 
     @pytest.hookimpl(hookwrapper=True, tryfirst=True)
     def pytest_ignore_collect(self, collection_path, config):
         result = yield
-        if result.get_result() and collection_path.is_relative_to(ROOT / "tests"):
+        if result.get_result() and collection_path.is_relative_to(ROOT / self.root):
             paths = collection_path.rglob("*.py") if collection_path.is_dir() else (collection_path,)
             if any(any(path.match(pattern) for pattern in config.getini("python_files")) for path in paths):
                 self.collection_errors.append("test_path_ignored:" + collection_path.name)
@@ -82,6 +88,7 @@ class _Collector:
         self.universe = list(self.raw)
         try:
             _ids(self.universe, "universe")
+            _scope_nodes(self.universe, self.scope)
         except ReceiptError as error:
             self._fail(str(error))
         self.selected = [
@@ -165,19 +172,20 @@ def _atomic_json(path, value):
         Path(temporary).unlink(missing_ok=True)
 
 
-def _run(args):
+def _run(args, *, scope="full"):
     if sys.platform not in ("win32", "linux"):
         raise ReceiptError("unsupported_native_platform")
+    schema, root, _ = _profile(scope, args.count)
     _positive(args.index, "shard_index")
     if args.index > args.count:
         raise ReceiptError("invalid_shard_index")
     receipt_path = Path(args.receipt).absolute()
-    collector = _Collector(args.index, args.count)
+    collector = _Collector(args.index, args.count, scope=scope)
     code = 2
     try:
         if os.environ.get("PYTEST_ADDOPTS") or os.environ.get("PYTEST_PLUGINS"):
             collector._fail("pytest_environment_options_refused")
-        code = int(pytest.main(["-q", "--durations=20", "tests"], plugins=[collector]))
+        code = int(pytest.main(["-q", "--durations=20", root], plugins=[collector]))
     except (pytest.UsageError, KeyboardInterrupt, SystemExit) as error:
         collector.collection_errors.append("pytest_raised:" + type(error).__name__)
     try:
@@ -193,7 +201,7 @@ def _run(args):
     except ReceiptError as error:
         collector.collection_errors.append(str(error))
     receipt = {
-        "schema": SCHEMA, "head": args.head, "run_id": args.run_id,
+        "schema": schema, "head": args.head, "run_id": args.run_id,
         "run_attempt": args.attempt, "platform": sys.platform,
         "shard_index": args.index, "shard_count": args.count,
         "universe": collector.universe, "selected": collector.selected,
@@ -226,10 +234,11 @@ def _linked(path):
     return path.is_symlink() or path.is_junction()
 
 
-def _read_directory(args, *, platform="win32"):
+def _read_directory(args, *, platform="win32", scope="full"):
     if type(platform) is not str or platform not in ("win32", "linux"):
         raise ReceiptError("invalid_platform")
-    prefix = "windows" if platform == "win32" else "linux"
+    _, _, marker = _profile(scope, args.count)
+    prefix = marker + ("windows" if platform == "win32" else "linux")
     root = Path(args.directory)
     expected = {
         f"{prefix}-pytest-{index}-{args.head}-{args.run_id}-{args.attempt}": index
@@ -264,6 +273,7 @@ def main(argv=None):
         for name in ("head", "run-id", "attempt"):
             sub.add_argument("--" + name, required=True)
         sub.add_argument("--count", required=True, type=int)
+        sub.add_argument("--scope", choices=("full", "p0"), default="full")
         if command == "run":
             sub.add_argument("--index", required=True, type=int)
             sub.add_argument("--receipt", required=True)
@@ -275,12 +285,12 @@ def main(argv=None):
     try:
         _context(args)
         if args.command == "run":
-            return _run(args)
+            return _run(args, scope=args.scope)
         if args.jobs_result != "success":
             raise ReceiptError("shard_jobs_not_successful")
         summary = verify_receipts(
-            _read_directory(args, platform=args.platform), head=args.head, run_id=args.run_id,
-            run_attempt=args.attempt, count=args.count, platform=args.platform,
+            _read_directory(args, platform=args.platform, scope=args.scope), head=args.head, run_id=args.run_id,
+            run_attempt=args.attempt, count=args.count, platform=args.platform, scope=args.scope,
         )
         print(json.dumps(summary, sort_keys=True))
         return 0
