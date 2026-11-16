@@ -419,7 +419,7 @@ def test_full_original_namespace_and_oracle_bytes_emit_exact_native_candidate(fi
     raw=(value.root/"DIGESTS.json").read_bytes()
     receipt=json.loads(raw)
     assert capfd.readouterr().out.encode()==b"P4_ROOT_MIXED_RECEIPT "+raw
-    assert len(list(path for path in value.root.rglob("*") if path.is_file()))==384
+    assert len([path for path in value.root.rglob("*") if path.is_file()])==384
     assert receipt["inventory"]=={name:{"bytes":len(data),"sha256":mixed.sha256(data).hexdigest()} for name,data in original.items()}
     assert receipt["inventory_excludes"]==["DIGESTS.json"] and receipt["retained_files"]==384
     assert receipt["qualification"]=="synthetic_root_mixed_observations_only" and value.retention_ready
