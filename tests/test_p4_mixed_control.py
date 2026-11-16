@@ -300,7 +300,7 @@ def test_actual_native_git_observation_is_not_an_environment_sha_claim(context_r
 @pytest.mark.parametrize("fault",["opaque","unknown_error","bad_result","frame","root","role","scratch","extra","nonregular","unlink_ack","rmdir_ack"])
 def test_context_unknown_is_shared_absorbing_state_and_never_cleans_after_uncertainty(context_repository,tmp_path,monkeypatch,fault):
     if not NATIVE:return
-    repo,head,temp,value=context_repository
+    _repo,head,temp,value=context_repository
     module=native_module()
     attribute="run_linux" if sys.platform=="linux" else "run_windows"
     real=getattr(module,attribute)
@@ -360,7 +360,7 @@ def test_context_unknown_is_shared_absorbing_state_and_never_cleans_after_uncert
 
 @pytest.mark.parametrize("fault",["head","relative_temp","missing_temp","root_temp","subdir_temp","deadline","batch"])
 def test_context_preflight_has_no_child_or_scratch_creation(context_repository,tmp_path,monkeypatch,fault):
-    repo,head,temp,value=context_repository
+    _repo,head,temp,value=context_repository
     module=native_module() if NATIVE else mixed.linux
     attribute="run_linux" if sys.platform=="linux" else "run_windows"
     calls=[]
