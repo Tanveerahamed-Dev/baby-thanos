@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from tools import p4_linux_entry as entry
 from tools import p4_linux_process_api as api
 from tools import p4_linux_worker as worker
 
@@ -490,3 +491,252 @@ def test_backend_import_is_inert_and_parent_role_is_refused(tmp_path, monkeypatc
     assert calls == [] and list(tmp_path.iterdir()) == []
     if before is not None:
         assert snapshot() == before
+
+
+def entry_request(root):
+    return {"schema": entry.REQUEST_SCHEMA, "nonce": "a"*32, "command": [sys.executable, "-c", "pass"],
+            "cwd": str(root), "stdout": str(root/"command.out"), "stderr": str(root/"command.err"), "stop_by": time.monotonic()+20}
+
+
+@pytest.mark.parametrize("plant", ["extra_env", "schema", "duplicate", "space", "nonce", "command", "nul", "path", "deadline_bool", "nonfinite", "missing", "oversize"])
+def test_entry_request_is_closed_canonical_and_never_echoes_environment(tmp_path, plant):
+    value = entry_request(tmp_path)
+    assert entry.request(entry.encode(value)) == value
+    if plant == "extra_env":
+        value["env"] = "fixture_environment_private"
+    elif plant == "schema":
+        value["schema"] = "other"
+    elif plant == "nonce":
+        value["nonce"] = "A"*32
+    elif plant == "command":
+        value["command"] = []
+    elif plant == "nul":
+        value["command"].append("\0")
+    elif plant == "path":
+        value["stdout"] = "relative"
+    elif plant == "deadline_bool":
+        value["stop_by"] = True
+    elif plant == "missing":
+        value.pop("cwd")
+    raw = entry.encode(value)
+    if plant == "duplicate":
+        raw = raw.replace(b'"schema":', b'"schema":"duplicate","schema":', 1)
+    elif plant == "space":
+        raw += b" "
+    elif plant == "nonfinite":
+        raw = raw.replace(str(value["stop_by"]).encode(), b"NaN", 1)
+    elif plant == "oversize":
+        raw = b"x"*(entry.REQUEST_LIMIT+1)
+    with pytest.raises(ValueError) as error:
+        entry.request(raw)
+    assert "fixture_environment_private" not in str(error.value)
+
+
+@pytest.mark.parametrize("plant", ["schema", "nonce", "hash", "pid", "bool_pid", "unknown", "bool_code", "reason", "extra", "false_quiet", "newline", "oversize", "duplicate", "noncanonical"])
+def test_entry_terminal_requires_exact_request_worker_fields_and_frame(tmp_path, plant):
+    request = entry.encode(entry_request(tmp_path))
+    raw = entry.terminal(request, 1234, worker.Outcome(0, True))
+    assert entry.read_terminal(raw, request, 1234)["status"] == "ok"
+    value = json.loads(raw)
+    if plant == "schema":
+        value["schema"] = "other"
+    elif plant == "nonce":
+        value["nonce"] = "b"*32
+    elif plant == "hash":
+        value["request_sha256"] = "b"*64
+    elif plant == "pid":
+        value["worker_pid"] = 1235
+    elif plant == "bool_pid":
+        value["worker_pid"] = True
+    elif plant == "unknown":
+        value["status"] = "unknown"
+    elif plant == "bool_code":
+        value["returncode"] = False
+    elif plant == "reason":
+        value["reason"] = "unexpected"
+    elif plant == "extra":
+        value["env"] = "fixture_environment_private"
+    elif plant == "false_quiet":
+        value["quiescent"] = False
+    raw = entry.encode(value)+b"\n"
+    if plant == "newline":
+        raw = raw[:-1]
+    elif plant == "oversize":
+        raw = b"x"*(entry.RECEIPT_LIMIT+1)
+    elif plant == "duplicate":
+        raw = raw.replace(b'"status":', b'"status":"ok","status":', 1)
+    elif plant == "noncanonical":
+        raw = b" "+raw
+    with pytest.raises(ValueError):
+        entry.read_terminal(raw, request, 1234)
+
+
+ENTRY_CASES = ("ok", "known_error", "timeout", "unknown", "short_write", "close_failure", "bad_writer", "bad_request")
+ENTRY_CHILD = r"""
+import errno, io, json, os, sys, time
+from contextlib import redirect_stderr
+from pathlib import Path
+from types import SimpleNamespace
+sys.path.insert(0,sys.argv[1])
+from tools import p4_linux_entry as entry,p4_linux_worker as worker,p4_linux_process_api as api
+case,root=sys.argv[2],Path(os.environ["P4_ENTRY_CASE_ROOT"])
+read_fd,write_fd=os.pipe2(os.O_NONBLOCK|os.O_CLOEXEC)
+os.set_inheritable(write_fd,True)  # Model the descriptor made inheritable by Popen pass_fds.
+identity=os.fstat(write_fd)
+sentinel="entry_environment_"+str(os.getpid())
+argument="entry_argument_"+str(os.getpid())
+os.environ["P4_ENTRY_SENTINEL"]=sentinel
+probe=("import errno,os,sys\ntry: s=os.fstat(int(sys.argv[1]))\n"
+       "except OSError as e: assert e.errno==errno.EBADF\n"
+       "else: assert (s.st_dev,s.st_ino)!=(int(sys.argv[2]),int(sys.argv[3]))\n"
+       "os.write(1,os.environ['P4_ENTRY_SENTINEL'].encode())\n")
+if case=="timeout": probe="import time;time.sleep(60)"
+if case in ("known_error","short_write","close_failure"):
+    probe=("import os,sys,time\nfrom pathlib import Path\np=os.fork()\n"
+           "if p==0:\n Path(sys.argv[4]).write_bytes(b'ready')\n while True: time.sleep(.01)\n"
+           "end=time.monotonic()+2\nwhile not Path(sys.argv[4]).exists() and time.monotonic()<end: time.sleep(.005)\n"
+           "assert Path(sys.argv[4]).exists()\nos._exit(0)\n")
+value={"schema":entry.REQUEST_SCHEMA,"nonce":"a"*32,"command":[sys.executable,"-c",probe,str(write_fd),str(identity.st_dev),str(identity.st_ino),str(root/"ready"),argument],
+       "cwd":str(root),"stdout":str(root/"command.out"),"stderr":str(root/"command.err"),"stop_by":time.monotonic()+(8 if case=="timeout" else 20)}
+if case=="bad_request": value["env"]=sentinel
+raw=entry.encode(value)
+assert sentinel.encode() not in raw or case=="bad_request"
+request_read,request_write=os.pipe()
+assert os.write(request_write,raw)==len(raw)
+os.close(request_write)
+real_stdin,real_write,real_close,real_open,real_read=sys.stdin,os.write,os.close,Path.open,Path.read_bytes
+actual_errors,causes,terminals,reads,writes=[],[],[],[],[]
+real_run,real_terminal=worker.run_backend,entry.terminal
+def observed(*args,**kwargs):
+    assert os.get_inheritable(write_fd) is False  # Entry must seal the passed writer BEFORE calling A.
+    try: return real_run(*args,**kwargs)
+    except worker.LinuxError as error:
+        actual_errors.append(error)
+        causes.append(error.__cause__)
+        raise
+def terminal(*args):
+    terminals.append(args[2]);return real_terminal(*args)
+def forbidden(path):
+    reads.append(path);raise AssertionError("entry must never read command files")
+def write(fd,data):
+    if fd==write_fd:
+        writes.append(data)
+        return real_write(fd,data[:-1] if case=="short_write" else data)
+    return real_write(fd,data)
+def close(fd):
+    real_close(fd)
+    if fd==write_fd and case=="close_failure":
+        try: raise KeyError("existing channel context")
+        except KeyError: raise TypeError("planted close acknowledgement")
+class Output:
+    def __init__(self,stream): self.stream=stream
+    def fileno(self): return self.stream.fileno()
+    def close(self):
+        self.stream.close()
+        raise OSError(errno.EIO,"planted lost stream acknowledgement")
+def opening(path,*args,**kwargs):
+    stream=real_open(path,*args,**kwargs)
+    return Output(stream) if case=="unknown" and args and args[0]=="xb" else stream
+worker.run_backend,entry.terminal,Path.read_bytes,Path.open=observed,terminal,forbidden,opening
+os.write,os.close=write,close
+log=io.StringIO()
+raised=None
+with os.fdopen(request_read,"rb") as request_stream:
+    sys.stdin=SimpleNamespace(buffer=request_stream)
+    try:
+        with redirect_stderr(log): entry.main(read_fd if case=="bad_writer" else write_fd)
+    except (entry.ProtocolError,worker.LinuxError,TypeError) as error: raised=error
+    finally: sys.stdin=real_stdin
+os.write,os.close=real_write,real_close
+if case=="bad_writer":
+    assert isinstance(raised,entry.ProtocolError) and not (root/"command.out").exists()
+    real_close(write_fd)
+    try: os.fstat(read_fd)
+    except OSError as error: assert error.errno==errno.EBADF
+    else: raise AssertionError("rejected owned read descriptor not closed")
+else:
+    payload=os.read(read_fd,entry.RECEIPT_LIMIT+1)
+    real_close(read_fd)
+    if case in ("ok","known_error","timeout"):
+        assert raised is None and len(writes)==1
+        result=entry.read_terminal(payload,raw,os.getpid())
+        assert sentinel.encode() not in payload and sentinel not in log.getvalue()
+        assert argument.encode() not in payload and argument not in log.getvalue()
+        if case=="ok":
+            assert result["status"]=="ok" and real_read(root/"command.out")==sentinel.encode()
+        else:
+            reason="timeout" if case=="timeout" else "descendants"
+            assert result["status"]=="error" and result["reason"]==reason
+            assert actual_errors[0] is terminals[0] and actual_errors[0].__traceback__ is not None
+            assert '"reason":"'+reason+'"' in log.getvalue()
+            if case=="timeout":
+                import subprocess
+                assert isinstance(actual_errors[0].__cause__,subprocess.TimeoutExpired)
+                assert argument in actual_errors[0].__cause__.cmd
+    elif case=="close_failure":
+        assert isinstance(raised,TypeError) and isinstance(raised.__context__,KeyError)
+        assert raised.owned_process_primary is actual_errors[0] and terminals[0] is actual_errors[0]
+        assert actual_errors[0].__cause__ is causes[0]
+        assert entry.read_terminal(payload,raw,os.getpid())["status"]=="error"  # Payload alone cannot establish worker-exit success.
+    elif case=="short_write":
+        assert isinstance(raised,entry.ProtocolError) and len(writes)==1 and not payload.endswith(b"\n")
+        assert raised.owned_process_primary is actual_errors[0] is terminals[0] and actual_errors[0].__cause__ is causes[0]
+    elif case=="unknown":
+        assert raised is actual_errors[0] and raised.quiescent is False and payload==b"" and terminals==[]
+    else:
+        assert case=="bad_request" and isinstance(raised,entry.ProtocolError) and payload==b""
+        assert sentinel not in str(raised) and not (root/"command.out").exists()
+    try: os.fstat(write_fd)
+    except OSError as error: assert error.errno==errno.EBADF
+    else: raise AssertionError("private writer not closed")
+assert reads==[]
+try: api.reap_any()
+except ChildProcessError as error: assert error.errno==errno.ECHILD
+else: raise AssertionError("entry fixture left owned children")
+print(json.dumps({"case":case,"status":"entry-only"},sort_keys=True))
+"""
+
+
+@pytest.mark.parametrize("case", ENTRY_CASES)
+def test_entry_actual_anonymous_pipes_in_fresh_worker_preserve_parent_state(tmp_path, monkeypatch, case):
+    if sys.platform != "linux":
+        with pytest.raises(worker.LinuxError, match="^p4_linux_worker_linux_only$"):
+            entry.main(3)
+        return
+    with monkeypatch.context() as guard:
+        guard.setitem(globals(),"CHILD",ENTRY_CHILD)
+        guard.setenv("P4_ENTRY_CASE_ROOT",str(tmp_path))
+        run_case(tmp_path,case,expected_status="entry-only")
+
+
+def test_entry_import_and_refused_parent_role_do_not_mutate_native_state(monkeypatch):
+    before = snapshot() if sys.platform == "linux" else None
+    calls = []
+    def forbidden(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("parent role cannot mutate native state or descriptor ownership")
+    with monkeypatch.context() as guard:
+        guard.setattr(api.c,"CDLL",forbidden)
+        importlib.reload(entry)
+        guard.setattr(os,"set_inheritable",forbidden)
+        guard.setattr(os,"close",forbidden)
+        guard.setattr(api,"reset_sigchld",forbidden)
+        guard.setattr(api,"set_subreaper",forbidden)
+        with pytest.raises(worker.LinuxError,match="^p4_linux_worker_(worker_context|linux_only)$"):
+            entry.main(3)
+    assert calls==[]
+    if before is not None:
+        assert snapshot()==before
+
+
+@pytest.mark.parametrize("kind,args", [("outcome",(0,False)), ("outcome",(False,True)),
+    ("error",("timeout",False)), ("error",("timeout",True,("lost acknowledgement",))),
+    ("error",("request_argument_canary",True))])
+def test_entry_never_promotes_unknown_or_unclosed_reason_labels_to_terminal(tmp_path,kind,args):
+    raw=entry.encode(entry_request(tmp_path))
+    constructor=worker.Outcome if kind=="outcome" else worker.LinuxError
+    valid=constructor(0,True) if kind=="outcome" else constructor("timeout",True)
+    assert entry.read_terminal(entry.terminal(raw,1234,valid),raw,1234)["quiescent"] is True
+    result=constructor(*args)
+    with pytest.raises(entry.ProtocolError):
+        entry.terminal(raw,1234,result)
