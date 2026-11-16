@@ -70,8 +70,9 @@ def test_actual_primary_identity_and_existing_context_survive_each_annotation_pa
     issues = [("query", "lost acknowledgement")]
     original = issues.copy()
     events, statuses, contexts = [], [], []
-    with pytest.raises(TypeError, match="^unexpected cleanup$") as error:
+    with pytest.raises(TypeError, match="^unexpected cleanup") as error:
         unwind([(saved, issues)], mode, events, statuses, contexts)
+    assert error.value.args == ("unexpected cleanup",)
     pending = error.value
     assert pending.__cause__ is contexts[0][0] is None and pending.__context__ is contexts[0][1]
     assert isinstance(pending.__context__, KeyError) and issues == original
@@ -90,8 +91,9 @@ def test_actual_primary_identity_and_existing_context_survive_each_annotation_pa
 def test_constructor_to_runner_reentry_keeps_prior_identity_and_distinct_primary_reports_conflict():
     first, second = primary("os"), primary("timeout")
     events, statuses, contexts = [], [], []
-    with pytest.raises(TypeError, match="^unexpected cleanup$") as error:
+    with pytest.raises(TypeError, match="^unexpected cleanup") as error:
         unwind([(first, []), (None, []), (first, []), (second, [])], "normal", events, statuses, contexts)
+    assert error.value.args == ("unexpected cleanup",)
     assert statuses == [True, True, True, False]
     assert error.value.owned_process_primary is first and error.value.owned_process_primary is not second
     assert events.count("set_primary") == 1 and events.count("add_note") == 3
