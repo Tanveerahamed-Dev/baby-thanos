@@ -20,7 +20,10 @@ from tools import p4_root_mixed_cases as factory
 from tools import p4_windows_job as windows
 
 REPO = Path(__file__).resolve().parents[1]
-CASES = frozenset(("normal", "none", "cold_vrrp", "only_vrrp", "empty", "partial", "no_all_capture", "no_all_target", "zero_vrrp"))
+CASE_ORDER = ("normal", "none", "cold_vrrp", "only_vrrp", "empty", "partial", "no_all_capture", "no_all_target", "zero_vrrp")
+CASES = frozenset(CASE_ORDER)
+LEGACY_PROFILE, CHUNK_PROFILE = "root9-v1", "root9-three-case-v2"
+API_CHUNK_PREFIX = b"P4_ROOT_MIXED_API_CHUNK "
 CHANNELS = frozenset(("github_output", "github_env", "github_path", "github_state", "github_step_summary"))
 
 CONTEXT_SCHEMA = "atlas-brain.p4-git-context/1"
@@ -54,15 +57,29 @@ def plain_json(value):
     return value is None or type(value) in (str,bool,int) or type(value) is float and math.isfinite(value)
 
 
-def final_paths():
-    paths = {f"api{batch}.{stream}.txt" for batch in (0,1) for stream in ("stdout","stderr")}
+def api_labels(profile):
+    if type(profile) is not str or profile not in (LEGACY_PROFILE, CHUNK_PROFILE):
+        raise CaptureError("profile",True)
+    return ("api0","api1") if profile==LEGACY_PROFILE else tuple(f"api{batch}-{chunk}" for batch in (0,1) for chunk in (0,1,2))
+
+
+def chunk_receipt(context, batch, chunk):
+    if type(batch) is not int or batch not in (0,1) or type(chunk) is not int or chunk not in (0,1,2):
+        raise CaptureError("chunk",True)
+    return {"schema":"atlas-brain.p4-root-mixed-api-chunk/2","execution_profile":CHUNK_PROFILE,
+        "context":context,"batch":batch,"chunk":chunk,"seed":("1","83")[batch],"api_runs":3,
+        "case_order":list(CASE_ORDER[chunk*3:chunk*3+3]),"api_process_denied":4,"additional_denials":0}
+
+
+def final_paths(profile=LEGACY_PROFILE):
+    paths = {f"{label}.{stream}.txt" for label in api_labels(profile) for stream in ("stdout","stderr")}
     for case in factory.CASES:
         paths.update(f"{case}/oracle/{name}" for name in FINAL_NAMES)
         for batch in (0,1):
             paths.update(f"{case}/inputs{batch}/{name}" for name in factory.members(case))
             paths.update(f"{case}/{kind}{batch}/{name}" for kind in ("api","cli") for name in FINAL_NAMES)
             paths.update(f"{case}/cli{batch}.{stream}.txt" for stream in ("stdout","stderr"))
-    if len(paths)!=383 or set(factory.CASES)!=CASES:
+    if len(paths)!=(383 if profile==LEGACY_PROFILE else 391) or set(factory.CASES)!=CASES or (profile==CHUNK_PROFILE and factory.CASES!=CASE_ORDER):
         raise CaptureError("final_profile",True)
     return paths
 
@@ -73,9 +90,10 @@ class CaptureError(metadata.ProcessError):
 
 
 class MixedCapture:
-    def __init__(self, root, *, deadline):
-        if "--api-batch" in sys.argv[1:]:
+    def __init__(self, root, *, deadline, profile=LEGACY_PROFILE):
+        if any(flag in sys.argv[1:] for flag in ("--api-batch","--api-chunk")):
             raise CaptureError("parent_role", False)
+        api_labels(profile)
         now = time.monotonic()
         if type(deadline) not in (int, float) or not math.isfinite(deadline) or not now < deadline <= now + 420:
             raise CaptureError("deadline", True)
@@ -84,22 +102,27 @@ class MixedCapture:
         root.mkdir(parents=True, exist_ok=False)
         self.root = root.resolve(strict=True)
         info = self.root.lstat()
-        self._identity = info.st_dev, info.st_ino
+        self._profile = profile
+        self._identity = info.st_dev, info.st_ino, profile
         self._unknown, self._active, self._captures = False, False, []
+
+    @property
+    def profile(self):
+        return self._profile
 
     @property
     def deadline(self):
         return self._deadline
 
     def _parent(self):
-        return os.getpid() == self._pid and "--api-batch" not in sys.argv[1:]
+        return os.getpid() == self._pid and not any(flag in sys.argv[1:] for flag in ("--api-batch","--api-chunk"))
 
     def _owned(self):
         try:
             info = self.root.lstat()
         except OSError:
             return False
-        return stat.S_ISDIR(info.st_mode) and (info.st_dev, info.st_ino) == self._identity
+        return stat.S_ISDIR(info.st_mode) and type(self._profile) is str and (info.st_dev, info.st_ino, self._profile) == self._identity
 
     @property
     def retention_ready(self):
@@ -125,7 +148,7 @@ class MixedCapture:
             raise CaptureError("repository_cwd", True)
         folder = Path(folder).resolve(strict=True)
         relative = folder.relative_to(self.root).parts
-        if type(label) is not str or not ((label in ("api0", "api1") and not relative) or (label in ("cli0", "cli1") and len(relative) == 1 and relative[0] in CASES)):
+        if type(label) is not str or not ((label in api_labels(self.profile) and not relative) or (label in ("cli0", "cli1") and len(relative) == 1 and relative[0] in CASES)):
             raise CaptureError("capture_path", True)
         pair = folder / (label + ".stdout.txt"), folder / (label + ".stderr.txt")
         if any(path.exists() or path.is_symlink() for path in pair) or any(old == pair for old, state in self._captures):
@@ -252,15 +275,16 @@ class MixedCapture:
         """
         if not self.retention_ready:
             raise CaptureError("parent_or_unknown",False)
+        chunked=self.profile==CHUNK_PROFILE
         self._active=True
         created,closed,complete,identity,known_failure=False,False,False,None,False
         try:
             if type(payload) is not dict or not plain_json(payload) or set(payload)!=PAYLOAD_FIELDS:
                 raise CaptureError("final_payload",True)
             data=payload
-            if any(type(data[key]) is not int or data[key]!=count for key,count in (("measured_cases",9),("api_runs",18),("api_processes",2),("cli_runs",18))):
+            if any(type(data[key]) is not int or data[key]!=count for key,count in (("measured_cases",9),("api_runs",18),("api_processes",6 if chunked else 2),("cli_runs",18))):
                 raise CaptureError("final_counts",True)
-            if data["case_order"]!=list(factory.CASES) or data["hash_seeds"]!=["1","83"] or any(type(value) is not int for value in data["worker_counts"]) or data["worker_counts"]!=[1,4] or data["creation_orders"]!=["sorted","reversed"] or type(data["cases"]) is not dict or set(data["cases"])!=CASES or type(data["api_batches"]) is not list or len(data["api_batches"])!=2:
+            if data["case_order"]!=list(factory.CASES) or data["hash_seeds"]!=["1","83"] or any(type(value) is not int for value in data["worker_counts"]) or data["worker_counts"]!=[1,4] or data["creation_orders"]!=["sorted","reversed"] or type(data["cases"]) is not dict or set(data["cases"])!=CASES or type(data["api_batches"]) is not list or len(data["api_batches"])!=(6 if chunked else 2):
                 raise CaptureError("final_profile",True)
             context=data["context"]
             native={"linux":("Linux","ubuntu-latest"),"win32":("Windows","windows-latest")}
@@ -268,10 +292,17 @@ class MixedCapture:
                 raise CaptureError("final_context",True)
             if re.fullmatch("[0-9a-f]{40}",context["reviewed_head"]) is None or any(re.fullmatch("[1-9][0-9]*",context[key]) is None for key in ("run_id","run_attempt")) or sys.platform not in native or (context["platform"],context["runner_os"],context["matrix_os"])!=(sys.platform,*native[sys.platform]):
                 raise CaptureError("final_context",True)
+            if chunked:
+                expected=[chunk_receipt(context,batch,chunk) for batch in (0,1) for chunk in (0,1,2)]
+                def encode(value):return json.dumps(value,sort_keys=True,separators=(",",":"),allow_nan=False)
+                if factory.CASES!=CASE_ORDER or encode(data["api_batches"])!=encode(expected):
+                    raise CaptureError("final_chunks",True)
+            elif any(type(item) is dict and ("execution_profile" in item or "chunk" in item or item.get("schema")=="atlas-brain.p4-root-mixed-api-chunk/2") for item in data["api_batches"]):
+                raise CaptureError("final_chunks",True)
             target=self.root/"DIGESTS.json"
             if target.exists() or target.is_symlink():
                 raise CaptureError("receipt_exists",True)
-            paths=final_paths()
+            paths=final_paths(self.profile)
             def check():
                 if self._unknown or not self._parent() or not self._owned():
                     self._unknown=True
@@ -306,10 +337,11 @@ class MixedCapture:
                     result[name]={"bytes":size,"sha256":digest.hexdigest()}
                 return result
             before=inventory(paths)
-            receipt={**data,"schema":"atlas-brain.p4-root-mixed-hosted-receipt/1","qualification":"synthetic_root_mixed_observations_only",
+            receipt={**data,"schema":"atlas-brain.p4-root-mixed-hosted-receipt/2" if chunked else "atlas-brain.p4-root-mixed-hosted-receipt/1","qualification":"synthetic_root_mixed_observations_only",
                 "scope":"observations_only","source_required":"original_pinned_evidence_folders","inventory":before,
-                "inventory_excludes":["DIGESTS.json"],"retained_files":384,
+                "inventory_excludes":["DIGESTS.json"],"retained_files":392 if chunked else 384,
                 "witness_scope":"runner_witness_only_parent_counts_forwarded_not_cryptographic_process_origin"}
+            if chunked:receipt["execution_profile"]=CHUNK_PROFILE
             raw=json.dumps(receipt,sort_keys=True,ensure_ascii=False,separators=(",",":"),allow_nan=False).encode("utf-8")+b"\n"
             frame=b"P4_ROOT_MIXED_RECEIPT "+raw
             if len(raw)>FINAL_FRAME_LIMIT or len(frame)>FINAL_FRAME_LIMIT:raise CaptureError("final_frame_budget",True)
@@ -344,7 +376,7 @@ class MixedCapture:
             complete=True
         except CaptureError as error:
             known_failure=type(error) is CaptureError and error.quiescent is True and error.reason in {
-                "final_payload","final_counts","final_profile","final_context","receipt_exists","final_population","final_budget",
+                "final_payload","final_counts","final_profile","final_context","final_chunks","receipt_exists","final_population","final_budget",
                 "final_readback","final_frame_budget","receipt_short_write","receipt_io","final_stdout_short_write","stdout_io","deadline"}
             raise
         finally:
