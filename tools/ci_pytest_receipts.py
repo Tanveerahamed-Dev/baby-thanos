@@ -4,6 +4,7 @@ import json
 import re
 
 SCHEMA = "atlas-brain.ci-pytest/1"
+P0_SCHEMA = "atlas-brain.ci-p0-pytest/1"
 FIELDS = {
     "schema", "head", "run_id", "run_attempt", "platform",
     "shard_index", "shard_count", "universe", "selected", "finished",
@@ -59,6 +60,27 @@ def _ids(value, label, nonempty=True):
     return value
 
 
+def _profile(scope, count):
+    if type(scope) is not str or scope not in ("full", "p0"):
+        raise ReceiptError("invalid_scope")
+    if scope == "p0":
+        if type(count) is not int or count != 4:
+            raise ReceiptError("invalid_p0_shard_count")
+        return P0_SCHEMA, "tests/runner", "p0-"
+    return SCHEMA, "tests", ""
+
+
+def _scope_nodes(nodes, scope):
+    if scope == "p0":
+        for node in nodes:
+            path = node.partition(":" * 2)[0]
+            parts = path.split("/")
+            if (parts[:2] != ["tests", "runner"] or len(parts) < 3
+                    or any(part in ("", ".", "..") for part in parts)
+                    or "\\" in path or "\0" in path or not parts[-1].endswith(".py")):
+                raise ReceiptError("p0_test_root_mismatch")
+
+
 def shard_for(nodeid, count):
     _positive(count, "shard_count")
     if type(nodeid) is not str or not nodeid:
@@ -104,9 +126,10 @@ def _reports(reports, selected, production, platform="win32"):
     return passed
 
 
-def verify_receipts(receipts, *, head, run_id, run_attempt, count, platform="win32"):
+def verify_receipts(receipts, *, head, run_id, run_attempt, count, platform="win32", scope="full"):
     if type(platform) is not str or platform not in ("win32", "linux"):
         raise ReceiptError("invalid_platform")
+    schema, _, _ = _profile(scope, count)
     _metadata(head, run_id, run_attempt, count)
     if type(receipts) is not list or len(receipts) != count:
         raise ReceiptError("receipt_count_mismatch")
@@ -118,7 +141,7 @@ def verify_receipts(receipts, *, head, run_id, run_attempt, count, platform="win
         if type(receipt) is not dict or set(receipt) != FIELDS:
             raise ReceiptError("receipt_fields_mismatch")
         expected = {
-            "schema": SCHEMA, "head": head, "run_id": run_id,
+            "schema": schema, "head": head, "run_id": run_id,
             "run_attempt": run_attempt, "platform": platform, "shard_count": count,
         }
         if any(type(receipt[key]) is not type(value) or receipt[key] != value
@@ -130,6 +153,7 @@ def verify_receipts(receipts, *, head, run_id, run_attempt, count, platform="win
             raise ReceiptError("duplicate_or_invalid_shard")
         seen.add(index)
         current = _ids(receipt["universe"], "universe")
+        _scope_nodes(current, scope)
         if universe is None:
             universe = current
         elif universe != current:
@@ -155,8 +179,11 @@ def verify_receipts(receipts, *, head, run_id, run_attempt, count, platform="win
     if passed == 0:
         raise ReceiptError("no_passed_calls")
     encoded = json.dumps(universe, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    return {
+    summary = {
         "head": head, "run_id": run_id, "run_attempt": run_attempt,
         "shards": count, "tests": len(universe),
         "universe_sha256": hashlib.sha256(encoded).hexdigest(),
     }
+    if scope == "p0":
+        summary.update(schema=P0_SCHEMA, scope="p0")
+    return summary
