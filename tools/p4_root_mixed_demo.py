@@ -153,12 +153,12 @@ def main():
         "hash_seeds":list(SEEDS),"worker_counts":list(WORKERS),"creation_orders":["sorted","reversed"],"api_batches":batches,"cases":cases}
     owner.finalize(payload)
 
-
 if __name__ == "__main__":
     try:
         main()
-    except BaseException:
-        try:
-            os.write(2,b"P4_ROOT_MIXED_REFUSED\n")
-        finally:
-            os._exit(1)
+    finally:
+        if sys.exception() is not None:
+            try:
+                os.write(2,b"P4_ROOT_MIXED_REFUSED\n")
+            finally:
+                os._exit(1)
