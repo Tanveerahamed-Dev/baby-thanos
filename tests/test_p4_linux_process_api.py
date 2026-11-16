@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from tools import p4_linux_control as control
 from tools import p4_linux_entry as entry
 from tools import p4_linux_process_api as api
 from tools import p4_linux_worker as worker
@@ -740,3 +741,210 @@ def test_entry_never_promotes_unknown_or_unclosed_reason_labels_to_terminal(tmp_
     result=constructor(*args)
     with pytest.raises(entry.ProtocolError):
         entry.terminal(raw,1234,result)
+
+
+CONTROL_CASES = ("ok0","ok7","orphan","timeout","system_exit","import_error","hang","malformed","oversize","wrong_context","frame_before_failure","reader_close","late_metadata","parent_signal","crash_writer","missing_eof","flush_failure","backpressure","oversize_request","stop_ack","custody_loss")
+CONTROL_CHILD = r"""
+import errno,io,json,os,shutil,signal,subprocess,sys,tempfile,time
+from pathlib import Path
+from types import SimpleNamespace
+sys.path.insert(0,sys.argv[1])
+from tools import p4_linux_control as control,p4_linux_entry as entry,p4_linux_process_api as api
+case,root=sys.argv[2],Path(os.environ["P4_CONTROL_CASE_ROOT"])
+api.reset_sigchld();api.set_subreaper(True)
+real_clock,real_spawn,real_kill,real_waitid,real_close,real_read,real_write,real_pipe=time.monotonic,subprocess.Popen,os.killpg,os.waitid,os.close,os.read,os.write,os.pipe2
+real_wait,real_open,nominal=real_spawn.wait,Path.open,control.Controlled
+workers,events,pipes,wire,frames,reads,built,returned,duplicates,stolen=[],[],[],[],[],[],[],[],[],[]
+log=tempfile.TemporaryFile()
+environment_secret="environment_"+str(os.getpid())
+argument_secret="argument_"+str(os.getpid())
+env={**os.environ,"P4_ENV_SECRET":environment_secret,"P4_ARG_SECRET":argument_secret,"P4_CASE_ROOT":str(root)}
+code="import os,sys;os.write(1,os.environ['P4_ENV_SECRET'].encode());raise SystemExit("+("7" if case=="ok7" else "0")+")"
+if case in ("orphan","frame_before_failure"):
+    code=("import os,sys,time\nfrom pathlib import Path\np=os.fork()\nif p==0:\n"
+          " f=open(sys.argv[1],'ab',buffering=0);f.write(b'x')\n Path(sys.argv[2]).write_bytes(b'ready')\n"
+          " while True: f.write(b'x');time.sleep(.01)\n"
+          "end=time.monotonic()+2\nwhile not Path(sys.argv[2]).exists() and time.monotonic()<end: time.sleep(.005)\n"
+          "assert Path(sys.argv[2]).exists()\nos._exit(0)\n")
+elif case=="timeout":code="import time;time.sleep(60)"
+faults={
+ "system_exit":'\ndef main(fd): raise SystemExit(os.environ["P4_ARG_SECRET"])\n',
+ "import_error":'\nraise RuntimeError(os.environ["P4_ENV_SECRET"])\n',
+ "hang":'\ndef main(fd):\n import time\n while True: time.sleep(1)\n',
+ "stop_ack":'\ndef main(fd):\n import time\n while True: time.sleep(1)\n',
+ "backpressure":'\ndef main(fd):\n import time\n time.sleep(5);os._exit(7)\n',
+ "malformed":'\ndef main(fd): os.write(fd,b"invalid\\n");os.close(fd)\n',
+ "oversize":'\ndef main(fd): os.write(fd,b"x"*(RECEIPT_LIMIT+1));os.close(fd)\n',
+ "wrong_context":'\n_real_main=main\ndef main(fd):\n original=os.write\n def write(target,data):\n  if target==fd:\n   item=json.loads(data);item["nonce"]="b"*32;data=encode(item)+b"\\n"\n  return original(target,data)\n os.write=write\n _real_main(fd)\n',
+ "frame_before_failure":'\n_real_main=main\ndef main(fd):\n original=os.close\n def close(target):\n  original(target)\n  if target==fd: raise TypeError(os.environ["P4_ENV_SECRET"])\n os.close=close\n _real_main(fd)\n',
+ "crash_writer":'\ndef main(fd):\n import time\n from pathlib import Path\n root=Path(os.environ["P4_CASE_ROOT"])\n p=os.fork()\n if p==0:\n  f=open(root/"heartbeat","ab",buffering=0);f.write(b"x")\n  (root/"ready").write_text(str(os.getpid()))\n  while True: f.write(b"x");time.sleep(.01)\n end=time.monotonic()+2\n while not (root/"ready").exists() and time.monotonic()<end: time.sleep(.005)\n assert (root/"ready").exists()\n os._exit(7)\n',
+ "flush_failure":'\n_real_main=main\ndef main(fd):\n _real_main(fd)\n class Bad:\n  def write(self,value): return len(value)\n  def flush(self): raise SystemExit(os.environ["P4_ENV_SECRET"])\n sys.stderr=Bad()\n',
+}
+if case in faults:
+    fake=root/"fake";(fake/"tools").mkdir(parents=True)
+    for name in ("p4_linux_entry","p4_linux_worker","p4_linux_process_api","p4_process_state"):
+        shutil.copyfile(Path(sys.argv[1])/"tools"/(name+".py"),fake/"tools"/(name+".py"))
+    path=fake/"tools"/"p4_linux_entry.py"
+    with path.open("a") as stream:stream.write(faults[case])
+    control.ROOT=fake
+def spawn(*args,**kwargs):
+    kwargs["stderr"]=log
+    value=real_spawn(*args,**kwargs);workers.append(value)
+    if case=="backpressure":
+        import fcntl
+        fcntl.fcntl(value.stdin.fileno(),fcntl.F_SETPIPE_SZ,4096)
+    return value
+def group(pid,number):
+    if number:assert not stolen  # Any attempted nonzero group signal after external reap must fail the fixture itself.
+    assert workers and pid==workers[0].pid
+    if number:
+        assert number==signal.SIGKILL and workers[0].returncode is None
+        real_waitid(os.P_PID,pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)
+        events.append("stop")
+    else:assert workers[0].returncode is not None
+    result=real_kill(pid,number)
+    if number and case=="stop_ack":raise OSError(errno.EIO,"planted lost group-stop acknowledgement")
+    return result
+def wait(value,timeout=None):
+    assert value is workers[0] and "stop" in events and 0<timeout<=12
+    result=real_wait(value,timeout=timeout);events.append("reap");return result
+def waitid(kind,pid,flags):
+    state=real_waitid(kind,pid,flags)
+    if case=="custody_loss" and state is not None and not stolen:
+        assert state.si_pid==workers[0].pid and state.si_code==os.CLD_EXITED and state.si_status==0
+        stolen.append(os.waitpid(pid,0))
+        return real_waitid(kind,pid,flags)  # Genuine ECHILD after an actual external reap.
+    return state
+def pipe(flags):
+    value=real_pipe(flags);pipes.append(value)
+    if case=="missing_eof":duplicates.append(os.dup(value[1]))
+    return value
+def read(fd,count):
+    result=real_read(fd,count)
+    if pipes and fd==pipes[0][0]:frames.append(result)
+    return result
+def write(fd,data):
+    if workers and fd==workers[0].stdin.fileno():assert os.get_blocking(fd) is False
+    count=real_write(fd,data)
+    if workers and fd==workers[0].stdin.fileno():wire.append(data[:count])
+    return count
+def close(fd):
+    real_close(fd)
+    if pipes and fd==pipes[0][0] and case=="reader_close":raise OSError(errno.EIO,"planted lost reader close acknowledgement")
+def opening(path,*args,**kwargs):
+    mode=args[0] if args else kwargs.get("mode","r")
+    if path.name in ("command.out","command.err") and "r" in mode:
+        reads.append(path);raise AssertionError("controller must not read command outputs")
+    return real_open(path,*args,**kwargs)
+def late(*args):
+    result=nominal(*args);built.append(result)
+    control.time=SimpleNamespace(monotonic=lambda:real_clock()+1000,sleep=time.sleep)
+    return result
+subprocess.Popen,real_spawn.wait,os.killpg,os.waitid,os.pipe2,os.read,os.write,os.close,Path.open=spawn,wait,group,waitid,pipe,read,write,close,opening
+if case=="late_metadata":control.Controlled=late
+if case=="parent_signal":signal.signal(signal.SIGCHLD,signal.SIG_IGN)
+before=(api.get_subreaper(),signal.getsignal(signal.SIGCHLD),os.getsid(0),os.getpgrp())
+start=real_clock()
+try:
+    try:
+        value=control.run_control([sys.executable,"-c",code,str(root/"heartbeat"),str(root/"ready"),argument_secret]+(["x"*(entry.REQUEST_LIMIT+1)] if case=="oversize_request" else ["x"*10000] if case=="backpressure" else []),
+            env=env,cwd=root,stdout_path=root/"command.out",stderr_path=root/"command.err",deadline=start+(6 if case=="backpressure" else 20),timeout=12)
+        returned.append(value)
+    except (control.ControlError,ValueError) as error:
+        assert case not in ("ok0","ok7","orphan","timeout")
+        if case=="stop_ack":assert isinstance(error,control.ControlError) and any(label=="group_stop" for label,detail in error.cleanup)
+    else:
+        assert type(value) is nominal and case in ("ok0","ok7","orphan","timeout")
+        assert value.status==("error" if case in ("orphan","timeout") else "ok")
+        if value.status=="ok":assert value.returncode==(7 if case=="ok7" else 0)
+        else:assert value.reason==("descendants" if case=="orphan" else "timeout")
+    assert before==(api.get_subreaper(),signal.getsignal(signal.SIGCHLD),os.getsid(0),os.getpgrp()) and reads==[]
+    for value in workers:
+        assert environment_secret not in "".join(value.args) and argument_secret not in "".join(value.args)
+    log.seek(0);diagnostics=log.read(65536)
+    assert environment_secret.encode() not in diagnostics and argument_secret.encode() not in diagnostics
+    if case=="frame_before_failure":
+        assert workers[0].returncode==1 and returned==[]
+        assert entry.read_terminal(b"".join(frames),b"".join(wire),workers[0].pid)["status"]=="error"
+    if case=="late_metadata":assert len(built)==1 and returned==[]
+    if case=="backpressure":assert real_clock()-start<6 and len(b"".join(wire))>=4096
+    if case=="crash_writer":
+        pid=int((root/"ready").read_text())
+        fd=api.open_child(pid)
+        try:
+            end=real_clock()+2
+            state=api.child_state(fd)
+            while state is None and real_clock()<end:
+                time.sleep(.005);state=api.child_state(fd)
+            assert state is not None and state.si_code==os.CLD_KILLED and state.si_status==signal.SIGKILL
+        finally:real_close(fd)
+    if case in ("parent_signal","oversize_request"):assert workers==[]
+    if case in ("missing_eof","reader_close"):
+        assert workers[0].returncode==0 and returned==[]
+        assert entry.read_terminal(b"".join(frames),b"".join(wire),workers[0].pid)["status"]=="ok"
+    if case not in ("parent_signal","oversize_request","custody_loss"):assert len(workers)==1 and "stop" in events and "reap" in events
+    if case=="custody_loss":
+        assert stolen==[(workers[0].pid,0)] and workers[0].returncode is None and workers[0]._child_created is False
+        assert returned==[] and events==[]
+        def forbidden_poll(*args,**kwargs):raise AssertionError("lost PID must never be polled")
+        workers[0]._internal_poll=forbidden_poll
+        real_spawn.__del__(workers[0])
+    if case in ("system_exit","import_error","flush_failure","frame_before_failure"):assert workers[0].returncode==1
+    if case in ("hang","stop_ack"):assert workers[0].returncode==-signal.SIGKILL
+finally:
+    for value in workers:
+        if value.pid in {pid for pid,status in stolen}:value._child_created=False
+    os.close,os.killpg,os.waitid,os.read,os.write,os.pipe2=real_close,real_kill,real_waitid,real_read,real_write,real_pipe
+    signal.signal(signal.SIGCHLD,signal.SIG_DFL)
+    for fd in duplicates:real_close(fd)
+    for value in workers:
+        if value.returncode is None and value.pid not in {pid for pid,status in stolen}:
+            try:fd=api.open_child(value.pid)
+            except ChildProcessError:value._child_created=False
+            else:
+                try:api.signal_child(fd,signal.SIGKILL);real_wait(value,timeout=3)
+                finally:real_close(fd)
+    end=real_clock()+3
+    while True:
+        assert real_clock()<end
+        try:item=api.reap_any()
+        except ChildProcessError:break
+        if item is None:
+            raw=(Path("/proc/self/task")/str(os.getpid())/"children").read_text()
+            for pid in map(int,raw.split()):
+                fd=api.open_child(pid)
+                try:api.signal_child(fd,signal.SIGKILL)
+                finally:real_close(fd)
+            time.sleep(.005)
+    log.close()
+print(json.dumps({"case":case,"status":"control-only"},sort_keys=True))
+"""
+
+
+@pytest.mark.parametrize("case", CONTROL_CASES)
+def test_control_real_worker_failures_keep_parent_state_and_never_read_command_files(tmp_path,monkeypatch,case):
+    if sys.platform!="linux":
+        with pytest.raises(control.ControlError,match="^p4_linux_control_linux_only$"):
+            control.run_control([],env={},cwd=tmp_path,stdout_path=tmp_path/"out",stderr_path=tmp_path/"err",deadline=1)
+        return
+    with monkeypatch.context() as guard:
+        guard.setitem(globals(),"CHILD",CONTROL_CHILD)
+        guard.setenv("P4_CONTROL_CASE_ROOT",str(tmp_path))
+        run_case(tmp_path,case,expected_status="control-only")
+
+
+def test_control_import_is_inert_and_nonlinux_refusal_has_no_side_effects(monkeypatch):
+    before=snapshot() if sys.platform=="linux" else None
+    calls=[]
+    def forbidden(*args,**kwargs):
+        calls.append((args,kwargs))
+        raise AssertionError("import/refusal cannot mutate native state or spawn")
+    with monkeypatch.context() as guard:
+        guard.setattr(api.c,"CDLL",forbidden)
+        importlib.reload(control)
+        if sys.platform!="linux":
+            guard.setattr(subprocess,"Popen",forbidden)
+            with pytest.raises(control.ControlError,match="^p4_linux_control_linux_only$"):
+                control.run_control([],env={},cwd=".",stdout_path="out",stderr_path="err",deadline=1)
+    assert calls==[]
+    if before is not None:assert snapshot()==before
