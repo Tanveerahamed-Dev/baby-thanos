@@ -3,10 +3,13 @@
 The reviewed orchestrator, trusted fresh artifact tree and no external writers are premises.
 API-batch processes may not start nested full controllers. Raw child stderr stays in owned files.
 """
+import json
 import math
 import os
+import re
 import stat
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -18,6 +21,24 @@ REPO = Path(__file__).resolve().parents[1]
 CASES = frozenset(("normal", "none", "cold_vrrp", "only_vrrp", "empty", "partial", "no_all_capture", "no_all_target", "zero_vrrp"))
 CHANNELS = frozenset(("github_output", "github_env", "github_path", "github_state", "github_step_summary"))
 
+CONTEXT_SCHEMA = "atlas-brain.p4-git-context/1"
+GIT_RELAY = r"""
+import json,os,subprocess,sys
+expected,repo=sys.argv[1:]
+prefix=["git","--no-pager","--no-optional-locks","--no-replace-objects","--no-lazy-fetch","-c","core.fsmonitor=false","-c","core.attributesFile="+os.devnull,"-c","credential.helper=","-c","protocol.allow=never"]
+try:
+    head=subprocess.run(prefix+["rev-parse","--verify","HEAD"],cwd=repo,capture_output=True,check=False,timeout=10)
+    if head.returncode: raise ValueError("head")
+    actual=head.stdout.decode("ascii").strip()
+    if len(actual)!=40 or any(c not in "0123456789abcdef" for c in actual): raise ValueError("head")
+    diff=subprocess.run(prefix+["diff","--no-ext-diff","--no-textconv","--quiet","HEAD","--"],cwd=repo,capture_output=True,check=False,timeout=10)
+    if diff.returncode not in (0,1): raise ValueError("diff")
+    sys.stdout.buffer.write((json.dumps({"schema":"atlas-brain.p4-git-context/1","observed_head":actual,"tracked_clean":diff.returncode==0},sort_keys=True,separators=(",",":"))+"\n").encode("ascii"))
+    raise SystemExit(0 if actual==expected and diff.returncode==0 else 1)
+except (OSError,ValueError,subprocess.SubprocessError):
+    sys.stderr.write("P4_CONTEXT_REFUSED\n")
+    raise SystemExit(2)
+"""
 
 class CaptureError(metadata.ProcessError):
     def __init__(self, reason, quiescent, cleanup=()):
@@ -119,3 +140,80 @@ class MixedCapture:
             self._unknown |= not verified
             if self._captures and self._captures[-1][0] == pair:
                 self._captures[-1] = pair, "quiet" if verified else "unknown"
+
+    def check_context(self, expected_head):
+        """Observe actual local checkout state; trusted Git/config/attributes, not native egress or origin attestation."""
+        if not self._parent() or self._unknown or self._active or not self.retention_ready:
+            raise CaptureError("parent_or_unknown", False)
+        if type(expected_head) is not str or re.fullmatch("[0-9a-f]{40}", expected_head) is None:
+            raise CaptureError("reviewed_head", True)
+        if sys.platform not in ("linux", "win32") or Path.cwd().resolve() != REPO.resolve():
+            raise CaptureError("repository_cwd", True)
+        if self.deadline-time.monotonic() <= (11 if sys.platform=="linux" else 5):
+            raise CaptureError("deadline", True)
+        temp=Path(os.environ.get("RUNNER_TEMP",""))
+        if not temp.is_absolute() or not temp.is_dir():
+            raise CaptureError("runner_temp", True)
+        temp=temp.resolve(strict=True)
+        if temp.is_relative_to(self.root):
+            raise CaptureError("runner_temp",True)
+        verified,known_completion,self._active=False,False,True
+        scratch,pair,identity=None,None,None
+        def owned():
+            if scratch is None or not self._parent() or not self._owned():
+                return False
+            try:info=scratch.lstat()
+            except OSError:return False
+            return stat.S_ISDIR(info.st_mode) and (info.st_dev,info.st_ino)==identity and scratch.parent.resolve()==temp and not scratch.resolve().is_relative_to(self.root)
+        try:
+            scratch=Path(tempfile.mkdtemp(prefix="p4-root-mixed-context-",dir=temp))
+            info=scratch.lstat()
+            identity=info.st_dev,info.st_ino
+            pair=scratch/"stdout.bin",scratch/"stderr.bin"
+            self._captures.append((pair,"pending"))
+            if not owned():
+                raise CaptureError("context_ownership",False)
+            module=linux if sys.platform=="linux" else windows
+            env={key:value for key,value in os.environ.items() if not key.casefold().startswith("git_") and key.casefold() not in CHANNELS}
+            env.update(GIT_CONFIG_GLOBAL=os.devnull,GIT_CONFIG_SYSTEM=os.devnull,GIT_TERMINAL_PROMPT="0")
+            try:
+                run=module.run_linux if sys.platform=="linux" else module.run_windows
+                value=run([sys.executable,"-I","-S","-c",GIT_RELAY,expected_head,str(REPO)],env=env,cwd=REPO,
+                    stdout_path=pair[0],stderr_path=pair[1],deadline=self.deadline,timeout=90)
+            except metadata.ProcessError as error:
+                native_error=type(error) is module.ProcessError
+                verified=native_error and error.quiescent is True and error.cleanup==() and owned()
+                known_completion=verified
+                raise CaptureError("context_native_refusal",verified,error.cleanup if native_error else ()) from error
+            if type(value) is not module.Result or type(value.returncode) is not int or type(value.stdout) is not bytes or type(value.stderr) is not bytes or value.quiescent is not True:
+                raise CaptureError("context_unverified",False)
+            verified=True
+            if not owned():
+                raise CaptureError("context_ownership",False)
+            if value.returncode or value.stderr:
+                known_completion=True
+                raise CaptureError("context_refused",True)
+            record={"schema":CONTEXT_SCHEMA,"observed_head":expected_head,"tracked_clean":True}
+            frame=(json.dumps(record,sort_keys=True,separators=(",",":"))+"\n").encode("ascii")
+            if value.stdout!=frame:
+                raise CaptureError("context_frame",False)
+            if {path.name for path in scratch.iterdir()}!={"stdout.bin","stderr.bin"} or any(not stat.S_ISREG(path.lstat().st_mode) for path in pair):
+                raise CaptureError("context_population",False)
+            if time.monotonic()>=self.deadline:
+                known_completion=True
+                raise CaptureError("deadline",True)
+            for path in pair:path.unlink()
+            scratch.rmdir()
+            if not self._parent() or not self._owned():
+                raise CaptureError("context_ownership",False)
+            if time.monotonic()>=self.deadline:
+                known_completion=True
+                raise CaptureError("deadline",True)
+            known_completion=True
+            return record
+        finally:
+            verified &= known_completion
+            self._active=False
+            self._unknown |= not verified
+            if pair is not None and self._captures and self._captures[-1][0]==pair:
+                self._captures[-1]=pair,"quiet" if verified else "unknown"
