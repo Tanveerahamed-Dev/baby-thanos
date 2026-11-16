@@ -13,6 +13,7 @@ import pytest
 
 from tools import p4_linux_control as control
 from tools import p4_linux_entry as entry
+from tools import p4_linux_process as reader
 from tools import p4_linux_process_api as api
 from tools import p4_linux_worker as worker
 
@@ -948,3 +949,148 @@ def test_control_import_is_inert_and_nonlinux_refusal_has_no_side_effects(monkey
                 control.run_control([],env={},cwd=".",stdout_path="out",stderr_path="err",deadline=1)
     assert calls==[]
     if before is not None:assert snapshot()==before
+
+
+READER_CASES = ("ok0","ok7","exact_limit","oversize_out","oversize_err","known_existing","orphan","control_error","read_failure","close_failure","read_close","late_stdout","late_close","late_result","fifo","symlink")
+READER_CHILD = r"""
+import builtins,errno,json,os,signal,subprocess,sys,tempfile,time
+from pathlib import Path
+from types import SimpleNamespace
+sys.path.insert(0,sys.argv[1])
+from tools import p4_linux_process as reader,p4_linux_control as control,p4_linux_process_api as api
+case,root=sys.argv[2],Path(os.environ["P4_READER_CASE_ROOT"])
+api.reset_sigchld();api.set_subreaper(True)
+real_clock,real_spawn,real_wait,real_open,real_read=time.monotonic,subprocess.Popen,subprocess.Popen.wait,builtins.open,Path.read_bytes
+real_control,nominal=control.run_control,reader.Result
+workers,completed,attempts,files,requests,built,returned=[],[],[],[],[],[],[]
+log=tempfile.TemporaryFile()
+secret="reader_environment_"+str(os.getpid())
+argument="reader_argument_"+str(os.getpid())
+out,err,protected=root/"command.out",root/"command.err",root/"protected"
+protected.write_bytes(b"preexisting-readable-secret")
+code="import os;os.write(1,b'out\\x00\\xff\\n');os.write(2,os.environ['P4_ENV_SECRET'].encode());raise SystemExit("+("7" if case=="ok7" else "0")+")"
+if case in ("exact_limit","oversize_out","oversize_err"):
+    code="import os;os.write(1,b'x'*"+str(reader.LIMIT+(case=="oversize_out"))+");os.write(2,b'y'*"+str(reader.LIMIT+(case=="oversize_err"))+")"
+elif case=="orphan":
+    code=("import os,sys,time\nfrom pathlib import Path\np=os.fork()\nif p==0:\n"
+          " Path(sys.argv[3]).write_bytes(b'ready')\n while True: time.sleep(.01)\n"
+          "end=time.monotonic()+2\nwhile not Path(sys.argv[3]).exists() and time.monotonic()<end: time.sleep(.005)\n"
+          "assert Path(sys.argv[3]).exists()\nos._exit(0)\n")
+elif case=="fifo":code="import os,sys;os.unlink(sys.argv[1]);os.mkfifo(sys.argv[1])"
+elif case=="symlink":code="import os,sys;os.unlink(sys.argv[1]);os.symlink(sys.argv[4],sys.argv[1])"
+if case=="known_existing":out.write_bytes(b"do-not-read-prior");err.write_bytes(b"do-not-read-prior-error")
+control_failure=control.ControlError("worker_or_channel")
+read_failure=OSError(errno.EIO,"planted lost read acknowledgement")
+close_failure=OSError(errno.EIO,"planted lost stream-close acknowledgement")
+def spawn(*args,**kwargs):
+    kwargs["stderr"]=log
+    value=real_spawn(*args,**kwargs);workers.append(value);return value
+def owned(*args,**kwargs):
+    result=real_control(*args,**kwargs);completed.append(result)
+    if case=="control_error":raise control_failure
+    return result
+def advance():
+    control.time=SimpleNamespace(monotonic=lambda:real_clock()+1000,sleep=time.sleep)
+class Input:
+    def __init__(self,stream,path):self.stream,self.path=stream,path
+    def __enter__(self):return self
+    def fileno(self):return self.stream.fileno()
+    def read(self,count):
+        assert completed and type(completed[0]) is control.Controlled and completed[0].status=="ok"
+        assert count==reader.LIMIT+1
+        requests.append((self.path,count))
+        data=self.stream.read(count)  # Deadline checks follow regular-file I/O; syscalls are not made interruptible.
+        if case in ("read_failure","read_close"):raise read_failure
+        if case=="late_stdout" and self.path==out:advance()
+        return data
+    def __exit__(self,*details):
+        self.stream.close()
+        if case in ("close_failure","read_close"):raise close_failure
+        if case=="late_close" and self.path==err:advance()
+def opening(path,*args,**kwargs):
+    assert completed and completed[0].status=="ok"
+    attempts.append(Path(path))
+    stream=real_open(path,*args,**kwargs);files.append(stream)
+    return Input(stream,Path(path))
+def result(*args):
+    value=nominal(*args);built.append(value);advance();return value
+subprocess.Popen,control.run_control,reader.open=spawn,owned,opening
+if case=="late_result":reader.Result=result
+before=(api.get_subreaper(),signal.getsignal(signal.SIGCHLD),os.getsid(0),os.getpgrp())
+try:
+    try:
+        value=reader.run_linux([sys.executable,"-c",code,str(out),str(err),str(root/"ready"),str(protected),argument],
+            env={**os.environ,"P4_ENV_SECRET":secret},cwd=root,stdout_path=out,stderr_path=err,deadline=real_clock()+20,timeout=12)
+        returned.append(value)
+    except reader.ProcessError as error:
+        assert case not in ("ok0","ok7","exact_limit") and returned==[]
+        if case in ("known_existing","orphan","control_error"):
+            assert attempts==[] and requests==[]
+            if case=="control_error":assert error.__cause__ is control_failure and error.quiescent is False
+            else:assert error.reason==("worker_streams" if case=="known_existing" else "worker_descendants") and error.quiescent is True
+        elif case in ("oversize_out","oversize_err"):assert error.reason=="output_limit"
+        elif case=="read_failure":assert error.__cause__ is read_failure
+        elif case=="close_failure":assert error.__cause__ is close_failure
+        elif case=="read_close":assert error.__cause__ is close_failure and close_failure.__context__ is read_failure
+        elif case in ("late_stdout","late_close","late_result"):
+            assert error.reason=="deadline" and error.quiescent is True
+            if case=="late_stdout":assert attempts==[out]
+            if case=="late_close":assert attempts==[out,err]
+            if case=="late_result":assert len(built)==1 and type(built[0]) is nominal
+        else:
+            assert case in ("fifo","symlink") and requests==[]
+            assert error.reason==("regular_stream" if case=="fifo" else "read")
+    else:
+        assert type(value) is nominal and nominal is reader.metadata.Result and value.quiescent is True
+        assert value.returncode==(7 if case=="ok7" else 0)
+        assert attempts==[out,err] and requests==[(out,reader.LIMIT+1),(err,reader.LIMIT+1)] and len(files)==2
+        if case=="exact_limit":assert value.stdout==b"x"*reader.LIMIT and value.stderr==b"y"*reader.LIMIT
+        else:assert value.stdout==b"out\x00\xff\n" and value.stderr==secret.encode()
+    assert len(completed)==1 and all(stream.closed for stream in files)
+    assert before==(api.get_subreaper(),signal.getsignal(signal.SIGCHLD),os.getsid(0),os.getpgrp())
+    if case=="known_existing":assert real_read(out)==b"do-not-read-prior" and real_read(err)==b"do-not-read-prior-error"
+    assert real_read(protected)==b"preexisting-readable-secret"
+    for value in workers:assert secret not in "".join(value.args) and argument not in "".join(value.args)
+    log.seek(0);diagnostics=log.read(65536)
+    assert secret.encode() not in diagnostics and argument.encode() not in diagnostics
+finally:
+    for value in workers:
+        if value.returncode is None:
+            try:fd=api.open_child(value.pid)
+            except ChildProcessError:value._child_created=False
+            else:
+                try:api.signal_child(fd,signal.SIGKILL);real_wait(value,timeout=3)
+                finally:os.close(fd)
+    end=real_clock()+3
+    while True:
+        assert real_clock()<end
+        try:item=api.reap_any()
+        except ChildProcessError:break
+        if item is None:
+            for pid in map(int,(Path("/proc/self/task")/str(os.getpid())/"children").read_text().split()):
+                fd=api.open_child(pid)
+                try:api.signal_child(fd,signal.SIGKILL)
+                finally:os.close(fd)
+            time.sleep(.005)
+    log.close()
+print(json.dumps({"case":case,"status":"reader-only"},sort_keys=True))
+"""
+
+
+@pytest.mark.parametrize("case",READER_CASES)
+def test_public_reader_fresh_owned_control_then_bounded_raw_io_and_final_deadline(tmp_path,monkeypatch,case):
+    if sys.platform!="linux":
+        with pytest.raises(reader.ProcessError,match="^p4_linux_process_linux_only$"):
+            reader.run_linux([],env={},cwd=tmp_path,stdout_path=tmp_path/"out",stderr_path=tmp_path/"err",deadline=1)
+        assert list(tmp_path.iterdir())==[]
+        return
+    with monkeypatch.context() as guard:
+        guard.setitem(globals(),"CHILD",READER_CHILD)
+        guard.setenv("P4_READER_CASE_ROOT",str(tmp_path))
+        run_case(tmp_path,case,expected_status="reader-only")
+
+
+def test_public_reader_api_cannot_accept_a_caller_terminal():
+    assert reader.Result is reader.metadata.Result
+    with pytest.raises(TypeError):
+        reader.run_linux([],env={},cwd=".",stdout_path="out",stderr_path="err",deadline=1,terminal=object())
