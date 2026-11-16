@@ -127,7 +127,7 @@ def test_string_subclass_key_encode_precedence_is_unchanged():
 
 
 @pytest.mark.parametrize("value", [
-    "\ud800", "\udfff", "x\ud800y", ["\udfff"], {"valid": "\ud800"},
+    "\ud800", chr(0xDFFF), "x\ud800y", ["\udfff"], {"valid": "\ud800"},
     {"\udfff": "valid"}, {"nested": {"\ud800": None}},
 ])
 def test_surrogate_exception_and_following_call_match_reference(value):
