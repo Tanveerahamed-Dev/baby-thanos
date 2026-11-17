@@ -108,7 +108,7 @@ def validate_plan(held: PlanBindings, owner: state.StateOwner, envelope: p4.Enve
     current=request_values(held.requests)
     _need(len(current)==len(held.request_values)==len(held.expected)
         and all(before[0]==after[0] and before[1] is after[1] and before[2] is after[2]
-            and before[3]==after[3] and held.expected.get(before[0]) is before[1]
+            and before[3]==after[3] and held.expected.get(k.CaptureId(before[0])) is before[1]
             for before,after in zip(held.request_values,current,strict=True)))
     actual=graph.retain_targets(held.indexed)
     _need(actual.indexed is held.targets.indexed and len(actual.entries)==len(held.targets.entries)
@@ -154,7 +154,7 @@ def close_execution[T](held: ExecutionBindings[T], owner: state.StateOwner,
         and all(out is before[0] and out.receipt is before[1] and out.receipt.capture is before[2]
             and out.value is before[3] and out.receipt.parse is before[4] for out,before in zip(outputs,held.values,strict=True)))
     _need(len(owner.produced)==len(held.produced_values) and all(
-        owner.produced.get(key) is value and type(value) is state.hsrp.Result and value.parse is parsed
+        owner.produced.get(k.CaptureId(key)) is value and type(value) is state.hsrp.Result and value.parse is parsed
         for key,value,parsed in held.produced_values))
     brief.validate_brief_execution_graph(outputs)
     return tuple(state.StateOwner.own(owner,out) for out in outputs if out.receipt.capture.operation==state.hsrp.OP)
