@@ -1,0 +1,43 @@
+name: Root mixed observation evidence
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  root-mixed-observations:
+    name: Root mixed observations (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.13.1'
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Compare original Root9 API and parent CLI bundles against the independent oracle
+        id: demo
+        env:
+          P4_ROOT_MIXED_REVIEWED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          P4_ROOT_MIXED_MATRIX_OS: ${{ matrix.os }}
+          PYTHONDONTWRITEBYTECODE: '1'
+          P4_ROOT_MIXED_DIAGNOSTICS: '1'
+        run: uv run --no-sync python -B -m tools.p4_root_mixed_demo --profile root9-three-case-v2
+      - name: Retain complete verified synthetic evidence
+        if: ${{ always() && steps.demo.outcome == 'success' && steps.demo.outputs.retention_ready == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p4-root-mixed-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .ci-evidence/p4-root-mixed
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

@@ -7,7 +7,7 @@ import time
 from hashlib import sha256
 from pathlib import Path
 
-from tools.p4_mixed_control import MixedCapture
+from tools.p4_mixed_control import API_CHUNK_PREFIX, CASE_ORDER, CHUNK_PROFILE, LEGACY_PROFILE, MixedCapture, chunk_receipt
 
 ROOT = Path(".ci-evidence/p4-root-mixed")
 CASES = ("normal", "none", "cold_vrrp", "only_vrrp", "empty", "partial", "no_all_capture", "no_all_target", "zero_vrrp")
@@ -71,7 +71,7 @@ def batch_receipt(current, batch):
     return {"schema": "atlas-brain.p4-root-mixed-api-batch/1", "context": current, "batch": batch, "seed": SEEDS[batch], "api_runs": 9, "case_order": list(CASES), "api_process_denied": 4, "additional_denials": 0}
 
 
-def api_batch(current, batch):
+def api_batch(current, batch, chunk=None):
     need(os.environ.get("PYTHONHASHSEED") == SEEDS[batch], "hash_seed")
     from atlas_brain.runner import tripwire
     need(tripwire.install() and tripwire.probe() == 4, "tripwire")
@@ -79,13 +79,15 @@ def api_batch(current, batch):
     need(len(events) == 4, "tripwire")
     from atlas_brain.evidence.admission import Budgets
     from atlas_brain.runner.p4_root_mixed_report import analyse_root_mixed_folder
-    for case in CASES:
+    for case in (CASES if chunk is None else chunk_receipt(current,batch,chunk)["case_order"]):
         files = analyse_root_mixed_folder(ROOT / case / f"inputs{batch}", Budgets(16 * 1024 * 1024, 4 * 1024 * 1024, 128))
         need(set(files) == set(NAMES) and all(type(raw) is bytes for raw in files.values()), "api_reports")
         write_files(ROOT / case / f"api{batch}", files)
     need(tripwire.violations() == events, "extra_egress")
     need(context() == current, "context_changed")
-    sys.stdout.buffer.write(b"P4_ROOT_MIXED_API_BATCH " + encoded(batch_receipt(current, batch)) + b"\n")
+    prefix=b"P4_ROOT_MIXED_API_BATCH " if chunk is None else API_CHUNK_PREFIX
+    receipt=batch_receipt(current,batch) if chunk is None else chunk_receipt(current,batch,chunk)
+    sys.stdout.buffer.write(prefix+encoded(receipt)+b"\n")
 
 
 def cli_receipt(raw, files):
@@ -141,10 +143,11 @@ class _RetentionOutput:
         self._append(b"retention_ready=true\n")
 
 
-def diagnostic(stage, ordinal, deadline):
+def diagnostic(stage, ordinal, deadline, profile=LEGACY_PROFILE):
     """Opt-in parent progress only; no result, process-origin or completion authority."""
-    if os.environ.get("P4_ROOT_MIXED_DIAGNOSTICS")!="1" or "--api-batch" in sys.argv[1:]:return
-    stages={name:count for prefix,count in (("context",2),("api",2),("cli",18)) for name in (prefix+"_before",prefix+"_after")}
+    if os.environ.get("P4_ROOT_MIXED_DIAGNOSTICS")!="1" or any(flag in sys.argv[1:] for flag in ("--api-batch","--api-chunk")):return
+    need(type(profile) is str and profile in (LEGACY_PROFILE,CHUNK_PROFILE), "diagnostic")
+    stages={name:count for prefix,count in (("context",2),("api",6 if profile==CHUNK_PROFILE else 2),("cli",18)) for name in (prefix+"_before",prefix+"_after")}
     need(type(stage) is str and stage in stages and type(ordinal) is int and 0<=ordinal<stages[stage], "diagnostic")
     elapsed=time.monotonic()-(deadline-420)
     need(0<=elapsed<420, "deadline")
@@ -157,22 +160,30 @@ def main():
     deadline = time.monotonic() + 420
     current = context()
     arguments = sys.argv[1:]
+    profile=LEGACY_PROFILE
+    if arguments[:1]==["--profile"]:
+        need(len(arguments)>=2 and arguments[1]==CHUNK_PROFILE, "arguments")
+        profile,arguments=CHUNK_PROFILE,arguments[2:]
     if arguments:
-        need(len(arguments) == 2 and arguments[0] == "--api-batch" and arguments[1] in ("0", "1"), "arguments")
-        api_batch(current, int(arguments[1]))
+        if profile==CHUNK_PROFILE:
+            need(len(arguments)==4 and arguments[0]=="--api-batch" and arguments[1] in ("0","1") and arguments[2]=="--api-chunk" and arguments[3] in ("0","1","2"), "arguments")
+            api_batch(current,int(arguments[1]),int(arguments[3]))
+        else:
+            need(len(arguments) == 2 and arguments[0] == "--api-batch" and arguments[1] in ("0", "1"), "arguments")
+            api_batch(current, int(arguments[1]))
         return
-    owner=MixedCapture(ROOT,deadline=deadline)
+    owner=MixedCapture(ROOT,deadline=deadline,profile=profile)
     output=_RetentionOutput(owner)
-    diagnostic("context_before",0,deadline)
+    diagnostic("context_before",0,deadline,profile)
     owner.check_context(current["reviewed_head"])
-    diagnostic("context_after",0,deadline)
+    diagnostic("context_after",0,deadline,profile)
     from atlas_brain.model.pack_registration import compile_packs
     from atlas_brain.packs.l3.fhrp.root_mixed_profile import DECLARATIONS
     from tools.p4_root_mixed_cases import CASES as factory_cases
     from tools.p4_root_mixed_cases import members
     from tools.p4_root_mixed_evidence import evidence_tables
     from tools.p4_root_mixed_expected import expected_bundle
-    need(factory_cases == CASES and len(CASES) == len(set(CASES)) == 9, "cases")
+    need(factory_cases == CASES and len(CASES) == len(set(CASES)) == 9 and (profile==LEGACY_PROFILE or CASES==CASE_ORDER), "cases")
     compiled = compile_packs(DECLARATIONS)
     need(sum(len(pack.facts) for pack in DECLARATIONS) == 9 and len(compiled.operations) == 5 and compiled.registration_sha256 == sha256(compiled.registration_bytes).hexdigest(), "registration")
     originals, expected, cases = {}, {}, {}
@@ -189,28 +200,33 @@ def main():
     batches = []
     for batch, (seed, workers) in enumerate(zip(SEEDS, WORKERS, strict=True)):
         env = {**os.environ, "PYTHONHASHSEED": seed, "PYTHONDONTWRITEBYTECODE": "1"}
-        diagnostic("api_before",batch,deadline)
-        result = owner.run_saved([sys.executable, "-B", "-m", "tools.p4_root_mixed_demo", "--api-batch", str(batch)], env, ROOT, f"api{batch}")
-        diagnostic("api_after",batch,deadline)
-        unchanged(originals, owner)
-        receipt = batch_receipt(current, batch)
-        need(result.stdout == b"P4_ROOT_MIXED_API_BATCH " + encoded(receipt) + b"\n", "api_receipt")
-        batches.append(receipt)
+        for chunk in ((0,1,2) if profile==CHUNK_PROFILE else (None,)):
+            ordinal=batch if chunk is None else batch*3+chunk
+            label=f"api{batch}" if chunk is None else f"api{batch}-{chunk}"
+            arguments=["--api-batch",str(batch)] if chunk is None else ["--profile",profile,"--api-batch",str(batch),"--api-chunk",str(chunk)]
+            diagnostic("api_before",ordinal,deadline,profile)
+            result=owner.run_saved([sys.executable,"-B","-m","tools.p4_root_mixed_demo",*arguments],env,ROOT,label)
+            diagnostic("api_after",ordinal,deadline,profile)
+            unchanged(originals,owner)
+            receipt=batch_receipt(current,batch) if chunk is None else chunk_receipt(current,batch,chunk)
+            prefix=b"P4_ROOT_MIXED_API_BATCH " if chunk is None else API_CHUNK_PREFIX
+            need(result.stdout==prefix+encoded(receipt)+b"\n","api_receipt")
+            batches.append(receipt)
         for ordinal,case in enumerate(CASES):
             folder = ROOT / case
-            diagnostic("cli_before",batch*len(CASES)+ordinal,deadline)
+            diagnostic("cli_before",batch*len(CASES)+ordinal,deadline,profile)
             result = owner.run_saved([sys.executable, "-B", "-m", "atlas_brain.runner", "--format", "p4-root-mixed-observations", "--evidence", str(folder / f"inputs{batch}"), "--out", str(folder / f"cli{batch}"), "--workers", str(workers)], env, folder, f"cli{batch}")
-            diagnostic("cli_after",batch*len(CASES)+ordinal,deadline)
+            diagnostic("cli_after",batch*len(CASES)+ordinal,deadline,profile)
             unchanged(originals, owner)
             api, cli = snapshot(folder / f"api{batch}", owner), snapshot(folder / f"cli{batch}", owner)
             need(api == cli == expected[case], "oracle_" + case + "_b" + str(batch))
             witness = cli_receipt(result.stdout, cli)
             cases[case]["batches"].append({"batch": batch, "seed": seed, "workers": workers, "creation_order": "reversed" if batch else "sorted", "api_files": signatures(api), "cli_files": signatures(cli), "cli_witness": witness})
     need(context() == current, "context_changed")
-    diagnostic("context_before",1,deadline)
+    diagnostic("context_before",1,deadline,profile)
     owner.check_context(current["reviewed_head"])
-    diagnostic("context_after",1,deadline)
-    payload={"context":current,"case_order":list(CASES),"measured_cases":9,"api_runs":18,"api_processes":2,"cli_runs":18,
+    diagnostic("context_after",1,deadline,profile)
+    payload={"context":current,"case_order":list(CASES),"measured_cases":9,"api_runs":18,"api_processes":6 if profile==CHUNK_PROFILE else 2,"cli_runs":18,
         "hash_seeds":list(SEEDS),"worker_counts":list(WORKERS),"creation_orders":["sorted","reversed"],"api_batches":batches,"cases":cases}
     owner.finalize(payload)
     output.publish()
