@@ -31,6 +31,9 @@ def _encode(value: object) -> str:
     if not all(isinstance(key, str) for key in entries):
         raise TypeError("non_string_key")
     obj = cast(dict[str, object], value)
-    keys = sorted(obj, key=lambda key: key.encode("utf-16be"))
+    if all(type(key) is str and key.isascii() for key in obj):
+        keys = sorted(obj)
+    else:
+        keys = sorted(obj, key=lambda key: key.encode("utf-16be"))
     members = (f"{_encode(key)}:{_encode(obj[key])}" for key in keys)
     return f"{{{','.join(members)}}}"
