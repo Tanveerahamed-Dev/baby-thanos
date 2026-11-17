@@ -1,6 +1,4 @@
-"""Test-only hypothesis: shallow SAFE rows may benefit from CPython's C JSON writer.
-No product activation, serializer memoization, speed threshold, owned-call or 420-second claim.
-"""
+"""Test-only SAFE row/batch CPU hypotheses; no memoization, activation, speed threshold, native timing or 420-second qualification."""
 import cProfile
 import json
 import math
@@ -79,6 +77,8 @@ def probe_encode(value: object) -> str:
             raise ValueError("integer_out_of_range")
         return str(value)
     if kind is list or kind is tuple:
+        if eligible_batch(value):
+            return json.JSONEncoder(sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode(value)
         items = cast("list[object] | tuple[object, ...]", value)
         return f"[{','.join(map(probe_encode, items))}]"
     if kind is not dict:
@@ -107,6 +107,14 @@ def eligible(entries):
         else:
             return False
     return True
+
+
+def eligible_batch(values):
+    if type(values) is not list and type(values) is not tuple:
+        return False
+    return (not values
+        or (type(values[0]) is str and all(type(item) is str and SAFE.fullmatch(item) for item in values))
+        or (type(values[0]) is dict and all(type(item) is dict and eligible(item) for item in values)))
 
 
 @contextmanager
@@ -161,12 +169,12 @@ def read_inputs(folder):
 
 
 def emit(capsys, kind, payload):
-    fields = {"coverage": {"composition_order", "phase_counts", "row_counts", "registration_sha256"},
+    fields = {"coverage": {"composition_order", "phase_counts", "row_counts", "batch_counts", "registration_sha256"},
         "compiler_samples": {"orders", "iterations_per_sample", "samples_ms", "medians_ms", "registration_sha256"},
         "real_case_samples": {"case", "orders", "samples_ms", "medians_ms", "oracle_sha256", "input_sha256"}}
     assert kind in fields and set(payload) == fields[kind]
-    record = {"schema": "atlas-brain.ascii-row-probe/1", "scope": "test_only_compiler_local_diagnostic",
-        "kind": kind, "baseline_blob": BASELINE_BLOB, "compiler_blob": COMPILER_BLOB,
+    record = {"schema": "atlas-brain.ascii-row-probe/2", "scope": "test_only_compiler_local_diagnostic",
+        "kind": kind, "candidate_shape": "homogeneous_safe_rows_or_strings", "counter_scope": "eligibility_checks", "baseline_blob": BASELINE_BLOB, "compiler_blob": COMPILER_BLOB,
         "platform": sys.platform, "run_id": os.environ.get("GITHUB_RUN_ID", "not_hosted"),
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "not_hosted"), **payload}
     raw = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
@@ -215,8 +223,8 @@ def test_custom_key_encode_precedes_values_and_hostile_metaclass_runs_no_hooks()
         def encode(self, *args, **kwargs):
             raise LookupError("key_encoding_precedes_value")
     value = {Key("key"): 9007199254740992}
-    assert parity.outcome(probe, value) == parity.outcome(reference, value) == (
-        "error", LookupError, "key_encoding_precedes_value")
+    assert {parity.outcome(codec, item) for codec in (reference, probe) for item in (value, [value])} == {(
+        "error", LookupError, "key_encoding_precedes_value")}
     hooks = []
     class Alias(type):
         def __eq__(cls, other):
@@ -228,7 +236,7 @@ def test_custom_key_encode_precedes_values_and_hostile_metaclass_runs_no_hooks()
             return iter(())
     for codec in (reference, probe):
         assert parity.outcome(codec, NonJson()) == ("error", TypeError, "non_json_type")
-        assert hooks == []
+        assert hooks == [] and eligible_batch(NonJson()) is False and hooks == []
 
 
 def test_full_dumps_routing_options_and_distinct_return_tokens_are_preserved(monkeypatch):
@@ -256,14 +264,17 @@ def test_full_dumps_routing_options_and_distinct_return_tokens_are_preserved(mon
 def test_live_aliased_row_moves_between_eligible_and_fallback_without_reuse():
     shared = ["safe"]
     value = {"fact": "probe.rows", "reads": shared, "produces": shared}
+    batch = [value]
     first = probe(value)
     assert first == reference(value) and eligible(value)
     for item in (None, True, 1, 1.0, "\x7f", "é", ["nested"], type("Alias", (str,), {})("safe")):
         shared[:] = [item]
         assert not eligible(value)
         assert parity.outcome(probe, value) == parity.outcome(reference, value)
+        assert not eligible_batch(batch) and parity.outcome(probe, batch) == parity.outcome(reference, batch)
     shared[:] = ["safe"]
     assert eligible(value) and probe(value) == reference(value) == first
+    assert eligible_batch(batch) and probe(batch) == reference(batch)
     value["fact"] = "probe.changed"
     assert probe(value) == reference(value) != first
 
@@ -274,8 +285,9 @@ def test_actual_compiler_coverage_fields_freshness_and_phase_counts(monkeypatch,
     assert len(json.loads(expected[3].catalogue_bytes)["relations"]) == 1
     top = json.loads(expected[0].catalogue_bytes), json.loads(expected[0].registration_bytes)
     assert all(not eligible(value) for value in top)
-    original = eligible
+    original, original_batch = eligible, eligible_batch
     hits = dict.fromkeys(("eligible", "fallback", "fact", "relation", "step", "operation", "other"), 0)
+    batch_hits = {"eligible": 0, "nonempty_actual_fact_batches": 0}
     def counted(entries):
         accepted = original(entries)
         hits["eligible" if accepted else "fallback"] += 1
@@ -284,13 +296,20 @@ def test_actual_compiler_coverage_fields_freshness_and_phase_counts(monkeypatch,
                 ("evaluator", "step"), ("operation", "operation")) if field in entries), "other")
             hits[label] += 1
         return accepted
+    def counted_batch(values):
+        accepted = original_batch(values)
+        batch_hits["eligible"] += int(accepted)
+        batch_hits["nonempty_actual_fact_batches"] += int(bool(accepted and values and type(values[0]) is dict and "fact" in values[0]))
+        return accepted
     with monkeypatch.context() as patch:
         patch.setattr(sys.modules[__name__], "eligible", counted)
+        patch.setattr(sys.modules[__name__], "eligible_batch", counted_batch)
         actual, candidate_counts = profiled_compilers(monkeypatch, probe)
     fresh_equal(actual, expected)
     assert baseline_counts == candidate_counts and all(hits[name] > 0 for name in ("eligible", "fallback", "fact", "relation", "step", "operation"))
+    assert batch_hits["nonempty_actual_fact_batches"] > 0
     emit(capsys, "coverage", {"composition_order": ["root9_direct", "mixed7", "root9_profile", "synthetic_relation"],
-        "phase_counts": baseline_counts, "row_counts": hits,
+        "phase_counts": baseline_counts, "row_counts": hits, "batch_counts": batch_hits,
         "registration_sha256": [value.registration_sha256 for value in actual]})
 
 
@@ -367,3 +386,15 @@ def test_two_alternating_real_case_pairs_preserve_all_oracle_bytes_and_inputs(mo
         "medians_ms": {name: median(values) for name, values in samples.items()},
         "oracle_sha256": {name: sha256(value).hexdigest() for name, value in sorted(expected.items())},
         "input_sha256": {name: sha256(value).hexdigest() for name, value in sorted(raw.items())}})
+
+
+def test_homogeneous_batches_are_narrow_and_keep_qualified_fallbacks():
+    vectors = (([], True), ((), True), (["safe"], True), ([{"x": "safe"}] * 2, True),
+        (({"x": "safe"},), True), (["safe", {"x": "safe"}], False), ([{"x": "safe"}, "safe"], False),
+        ([None], False), ([False], False), ([1], False), ([1.0], False), (type("TupleAlias", (tuple,), {})(("safe",)), False),
+        (["é"], False), (["\x7f"], False), (['"'], False), ([["safe"]], False), ([{1: "x"}], False),
+        (type("ListAlias", (list,), {})(["safe"]), False), ([type("DictAlias", (dict,), {})({"x": "safe"})], False),
+        ([type("StrAlias", (str,), {})("safe")], False))
+    for value, accepted in vectors:
+        assert eligible_batch(value) is accepted
+        assert parity.outcome(probe, value) == parity.outcome(reference, value)
