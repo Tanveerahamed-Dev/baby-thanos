@@ -495,6 +495,15 @@ class _SourceSnapshot(Mapping):
         return len(self.sources)
 
 
+def module_prefix(name, modules):
+    """Find the longest live module strictly before a dotted suffix."""
+    while "." in name:
+        name = name.rsplit(".", 1)[0]
+        if name in modules:
+            return name
+    return ""
+
+
 class ImportIndex:
     def __init__(self, sources, forbidden=()):
         if isinstance(sources, _SourceSnapshot) and sources.binding_policy != _binding_policy():
@@ -538,7 +547,7 @@ class ImportIndex:
                 callable_value=callable_value, evaluate_return=evaluate_return)
         if not name.startswith("atlas_brain.") and name != "atlas_brain":
             return {name}
-        module = max((m for m in self.modules if name.startswith(m + ".")), key=len, default="")
+        module = module_prefix(name, self.modules)
         if not module:
             return set()
         exports = self.modules[module][0]
@@ -590,7 +599,7 @@ class ImportIndex:
             return None
         if self.namespace(name):
             return name
-        module = max((m for m in self.modules if name.startswith(m + ".")), key=len, default="")
+        module = module_prefix(name, self.modules)
         if not module:
             return None
         exports, declarations = self.modules[module]
