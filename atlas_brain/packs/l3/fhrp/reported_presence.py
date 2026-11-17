@@ -48,7 +48,7 @@ class PresencePack(StandbyBriefPack[object]):
 
     def prepare(self,envelope: p4.Envelope) -> p4_pipeline.Prepared[object]:
         contract()
-        prepared=StandbyBriefPack.prepare(self,envelope)
+        prepared=StandbyBriefPack[object].prepare(self,envelope)
         self.bindings=custody.retain_plan(self.owner,envelope,self.budgets)
         self.original_run=(type(self.run),self.run)
         if self.factory is not None:PresenceRun.retain_prepare(self.factory,self)
@@ -66,8 +66,8 @@ class PresenceRun:
         _need(type(self) is PresenceRun)
         self.budgets=budgets
         self.original_bindings: custody.PlanBindings | None=None
-        self.run_type: type[object]=type(None)
-        self.original_run: object=None
+        self.run_type: type[object]=object
+        self.original_run: object=object()
         self.pack=PresencePack(budgets,_factory=self)
         tree,channel=stp.RootGuardPack[object](budgets),SummaryPack[object](budgets)
         execution=p4_pipeline.execute_p4_folder(root,budgets,packs=(tree,channel,self.pack))
@@ -81,11 +81,11 @@ class PresenceRun:
         self.labels=tuple((key,target.node.id) for key,target in sorted(plan.indexed.items()))
         self.original=graph.source_rows_bytes(PresenceRun.canonical_rows(self),plan.indexed,plan.targets)
         # All original comparison data above precedes every real pack Writer.
-        stp.RootGuardPack.finish(tree,execution)
+        stp.RootGuardPack[object].finish(tree,execution)
         PresenceRun.close_inputs(self)
-        SummaryPack.finish_current(channel,execution)
+        SummaryPack[object].finish_current(channel,execution)
         PresenceRun.close_inputs(self)
-        source=StandbyBriefPack.finish(self.pack,execution)
+        source=StandbyBriefPack[object].finish(self.pack,execution)
         PresenceRun.close_inputs(self)
         _need(type(source) is state.Result and type(source.rows) is tuple and type(source.executed) is tuple
             and type(source.store) is storage.FactStore)
