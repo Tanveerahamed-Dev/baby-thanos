@@ -64,7 +64,7 @@ def poison_value_class(value,calls):
     class Equal(type):
         def __eq__(self,_other):calls.append("metaclass_equality");raise AssertionError
     class Hook[T](metaclass=Equal):
-        __slots__=("value","basis","evidence","raw")
+        __slots__=k.Known.__slots__
     assert Hook.__slots__==k.Known.__slots__ and calls==[]
     object.__setattr__(value,"__class__",Hook)
     assert type(value) is Hook and calls==[]
