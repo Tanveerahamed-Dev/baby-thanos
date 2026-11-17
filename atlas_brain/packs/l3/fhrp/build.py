@@ -12,13 +12,20 @@ from atlas_brain.evidence.parsekit.rules import Captured, Record
 from atlas_brain.evidence.synthetic import SCHEMA as BASE_SCHEMA
 from atlas_brain.evidence.synthetic import Node, SyntheticGroup
 from atlas_brain.kernel import states as k
+from atlas_brain.model import handle_comparison
 from atlas_brain.model.pack_registration import (
     OperationBinding,
     PackDeclaration,
     compile_packs,
 )
 from atlas_brain.model.specs import EntityKindSpec, FactSpec, StepId, StepSpec
-from atlas_brain.model.store import FactReader, FactStore, bind_reader, bind_writer
+from atlas_brain.model.store import (
+    FactReader,
+    FactStore,
+    FactWriter,
+    bind_reader,
+    bind_writer,
+)
 from atlas_brain.runner import pack_receipts as custody
 from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
 from atlas_brain.runner.pack_runtime import (
@@ -247,10 +254,13 @@ def _canonical_rows(plan: _Plan, executed: tuple[Executed[hsrp.Result], ...], re
 
 def _materialize(plan: _Plan, executed: tuple[Executed[hsrp.Result], ...], registration: str | None = None) -> Result:
     rows = _canonical_rows(plan, executed, registration)
+    cells = tuple((REPORTED_STATE, row.subject, row.value) for row in rows)
     store = FactStore()
     writer = bind_writer(store, step=STEP)
-    for row in rows:
-        writer.write(fact=REPORTED_STATE, subject=row.subject, value=row.value)
+    original_writer = handle_comparison.retain_handle(writer)
+    for fact, subject, value in cells:
+        handle_comparison.compare_writer(original_writer, writer, fact=fact, subject=subject, value=value)
+        FactWriter.write(writer, fact=fact, subject=subject, value=value)
     return Result(store=store, rows=rows, executed=executed)
 
 
