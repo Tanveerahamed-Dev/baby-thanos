@@ -10,7 +10,10 @@ from dataclasses import dataclass
 from atlas_brain.evidence.synthetic import Node
 from atlas_brain.kernel import states as k
 from atlas_brain.packs.l3.fhrp import build as state
-from atlas_brain.packs.l3.fhrp.version_inputs import _target, validate_version_state_graph
+from atlas_brain.packs.l3.fhrp.version_inputs import (
+    _target,
+    validate_version_state_graph,
+)
 
 type Index = dict[tuple[str,k.EntityKey],state.Target]
 type Entry = tuple[tuple[str,k.EntityKey],state.Target,Node,k.Known[str],bytes]

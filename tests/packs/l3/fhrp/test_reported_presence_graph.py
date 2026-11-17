@@ -176,7 +176,7 @@ def test_public_graph_boundaries_refuse_hostile_metaclasses_before_any_callback(
             raise AssertionError("foreign graph attribute")
     foreign=Foreign()
     if site=="state":value=foreign
-    elif site.startswith("known_") or site.startswith("unknown_"):
+    elif site.startswith(("known_", "unknown_")):
         value=known if site.startswith("known_") else unknown
         if site.endswith("evidence"):object.__setattr__(value,"evidence",(foreign,))
         else:object.__setattr__(ref,"locator",foreign)
