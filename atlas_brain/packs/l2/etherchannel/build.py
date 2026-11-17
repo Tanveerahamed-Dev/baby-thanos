@@ -12,9 +12,9 @@ from atlas_brain.evidence.parsekit.rules import Captured, ParseResult, Record
 from atlas_brain.evidence.synthetic import SCHEMA as BASE_SCHEMA
 from atlas_brain.evidence.synthetic import Node, SyntheticGroup, endpoint
 from atlas_brain.kernel import states as k
-from atlas_brain.model import pack_registration
+from atlas_brain.model import handle_comparison, pack_registration
 from atlas_brain.model.specs import EntityKindSpec, FactSpec, StepId, StepSpec
-from atlas_brain.model.store import FactReader, FactStore, bind_writer
+from atlas_brain.model.store import FactReader, FactStore, FactWriter, bind_writer
 from atlas_brain.packs.l2.etherchannel import parse_summary
 from atlas_brain.runner.pack_receipts import CaptureRequest, ParseReceipt
 from atlas_brain.runner.pack_runtime import (
@@ -239,11 +239,17 @@ def _materialize(plan: _Plan, executed: tuple[Executed[parse_summary.Result], ..
         outcomes[(target.context, target.node.key)] = output
     rows = tuple(row for key in sorted(indexed) for row in _rows(indexed[key], outcomes[key], () if plan.proofs is None else plan.proofs[key]))
     k.require(len({r.subject for r in rows}) == len(rows), "etherchannel_subject_collision")
+    cells = tuple(
+        (fact, row.subject, value)
+        for row in rows
+        for fact, value in ((REPORTED_PROTOCOL, row.value), (REPORTED_MEMBER_TOKENS, row.member_tokens))
+    )
     store = FactStore()
     writer = bind_writer(store, step=STEP)
-    for row in rows:
-        writer.write(fact=REPORTED_PROTOCOL, subject=row.subject, value=row.value)
-        writer.write(fact=REPORTED_MEMBER_TOKENS, subject=row.subject, value=row.member_tokens)
+    original_writer = handle_comparison.retain_handle(writer)
+    for fact, subject, value in cells:
+        handle_comparison.compare_writer(original_writer, writer, fact=fact, subject=subject, value=value)
+        FactWriter.write(writer, fact=fact, subject=subject, value=value)
     return Result(store=store, rows=rows, executed=executed)
 
 
