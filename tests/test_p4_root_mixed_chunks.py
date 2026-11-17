@@ -6,11 +6,15 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from test_p4_root_mixed_demo import CURRENT, controlled as controlled, diagnostics_default_off as diagnostics_default_off, encoded
+import test_p4_root_mixed_demo as legacy
+from test_p4_root_mixed_demo import CURRENT, encoded
 
+from atlas_brain.runner import p4_root_mixed_report
 from tools import p4_mixed_control as control
 from tools import p4_root_mixed_demo as demo
-from atlas_brain.runner import p4_root_mixed_report
+
+controlled = legacy.controlled
+diagnostics_default_off = legacy.diagnostics_default_off
 
 V2="root9-three-case-v2"
 ORDER=("normal","none","cold_vrrp","only_vrrp","empty","partial","no_all_capture","no_all_target","zero_vrrp")

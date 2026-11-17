@@ -7,7 +7,14 @@ import time
 from hashlib import sha256
 from pathlib import Path
 
-from tools.p4_mixed_control import API_CHUNK_PREFIX, CASE_ORDER, CHUNK_PROFILE, LEGACY_PROFILE, MixedCapture, chunk_receipt
+from tools.p4_mixed_control import (
+    API_CHUNK_PREFIX,
+    CASE_ORDER,
+    CHUNK_PROFILE,
+    LEGACY_PROFILE,
+    MixedCapture,
+    chunk_receipt,
+)
 
 ROOT = Path(".ci-evidence/p4-root-mixed")
 CASES = ("normal", "none", "cold_vrrp", "only_vrrp", "empty", "partial", "no_all_capture", "no_all_target", "zero_vrrp")
