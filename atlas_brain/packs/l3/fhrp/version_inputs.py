@@ -19,7 +19,7 @@ def _need(condition: bool, code: str) -> None:
 
 
 def _locator(value: k.ByteSpan | k.FieldPointer | k.XmlPath | k.WholeCapture) -> None:
-    _need(type(value) in (k.ByteSpan, k.FieldPointer, k.XmlPath, k.WholeCapture), "locator")
+    _need(any(type(value) is admitted for admitted in (k.ByteSpan,k.FieldPointer,k.XmlPath,k.WholeCapture)), "locator")
     if isinstance(value, k.ByteSpan):
         k.ByteSpan(start=value.start, end=value.end)
     elif isinstance(value, k.FieldPointer):
@@ -29,7 +29,7 @@ def _locator(value: k.ByteSpan | k.FieldPointer | k.XmlPath | k.WholeCapture) ->
 
 
 def _evidence(values: tuple[k.Evidence, ...]) -> None:
-    _need(type(values) is tuple and all(type(ref) in (k.EvidenceRef, k.FactRef, k.RegistryRef) for ref in values), "evidence")
+    _need(type(values) is tuple and all(any(type(ref) is admitted for admitted in (k.EvidenceRef,k.FactRef,k.RegistryRef)) for ref in values), "evidence")
     for ref in values:
         if isinstance(ref, k.EvidenceRef):
             _locator(ref.locator)
@@ -74,6 +74,7 @@ def _capture(value: Capture) -> None:
         Scope(node=scope.node, vrf=scope.vrf, context=scope.context, vdc=scope.vdc, tenant=scope.tenant,
               afi=scope.afi, instance=scope.instance, plane=scope.plane)
         time = metadata.collected_utc
+        _need(type(time) is TimeInterval or type(time) is k.Unknown, "time")
         if isinstance(time, TimeInterval):
             _need(type(time) is TimeInterval, "time")
             TimeInterval(earliest=time.earliest, latest=time.latest, clock=time.clock, bound=time.bound)
@@ -97,6 +98,11 @@ def _target(value: build.Target) -> None:
           and type(declaration.basis) is k.Basis, "target")
     _evidence(declaration.evidence)
     build.Target(context=value.context, node=node, groups=value.groups)
+
+
+def validate_fhrp_target_graph(value: build.Target) -> None:
+    """Validate current target structure; no admission or origin authority."""
+    _target(value)
 
 
 def validate_fhrp_request_graph(request: CaptureRequest) -> None:
@@ -172,7 +178,7 @@ def validate_version_inputs(inputs: VersionInputs) -> None:
 
 def validate_version_state_graph(value: k.Known[str] | k.Unknown) -> None:
     """Close only the current state graph; no canonical value or admission claim."""
-    _need(type(value) in (k.Known, k.Unknown), "state")
+    _need(type(value) is k.Known or type(value) is k.Unknown, "state")
     if isinstance(value, k.Known):
         _need(type(value.value) is str, "state")
         _evidence(value.evidence)
