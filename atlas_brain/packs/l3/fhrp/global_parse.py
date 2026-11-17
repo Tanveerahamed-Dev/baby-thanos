@@ -222,6 +222,8 @@ class StandbyBriefPack[Peer](p4_pipeline.Pack[hsrp.Result | Peer]):
                 or execution.envelope is not run.envelope or run.envelope.registration_sha256 != run.registration):
             raise ValueError("hsrp_global_run")
         envelope, owner = run.envelope, run.owner
+        if type(owner) is not build.StateOwner and type(owner) is not build.VirtualIpOwner:
+            raise ValueError("hsrp_global_owner")
         outputs = execution.executed
         k.require(type(outputs) is tuple and all(type(o) is Executed and type(o.receipt) is ParseReceipt
                   and type(o.receipt.capture) is Capture for o in outputs), "hsrp_global_receipt")
@@ -234,8 +236,11 @@ class StandbyBriefPack[Peer](p4_pipeline.Pack[hsrp.Result | Peer]):
                       and receipt.registration_sha256 == run.registration and capture.source == member.target.node.key
                       and capture.operation == member.target.operation and type(capture.raw) is bytes
                       and capture.raw == member.raw and capture.bytes_sha256 == member.sha256, "hsrp_global_receipt")
-        owned = tuple(owner.own(output) for output in outputs if output.receipt.capture.operation == hsrp.OP)
-        result = owner.finish(owned)
+        owned = tuple(build.StateOwner.own(owner,output) for output in outputs if output.receipt.capture.operation == hsrp.OP)
+        if type(owner) is build.VirtualIpOwner:
+            result = build.VirtualIpOwner.finish(owner,owned)
+        else:
+            result = build.StateOwner.finish(owner,owned)
         self.finished = True
         return result
 

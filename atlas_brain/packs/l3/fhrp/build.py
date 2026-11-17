@@ -367,11 +367,17 @@ class StateOwner(Parser[hsrp.Result]):
         _need(output.value is value and receipt.parse is value.parse, "global_value")
         return Executed(receipt=receipt, value=value)
 
+    def reclose_current_rows(self, envelope: p4.Envelope, budgets: Budgets,
+                             executed: tuple[Executed[hsrp.Result], ...]) -> tuple[Row, ...]:
+        """Pure current rows after caller-closed custody/graphs; no admission seal."""
+        _need(_proofs(envelope, budgets, self.plan.indexed) == self.plan.proofs, "global_provenance")
+        return _canonical_rows(self.plan, tuple(StateOwner.own(self,out) for out in executed), self.registration)
+
     def finish(self, executed: tuple[Executed[hsrp.Result], ...]) -> Result:
         _need(type(executed) is tuple, "global_receipt")
         _need(not self.finished, "global_run")
         _need(set(self.produced) == set(self.plan.expected), "global_value")
-        checked = tuple(self.own(output) for output in executed)
+        checked = tuple(StateOwner.own(self,output) for output in executed)
         result = _materialize(self.plan, checked, self.registration)
         self.finished = True
         return result
@@ -532,7 +538,7 @@ class VirtualIpOwner(StateOwner):
     def virtual_ip_originals(self, executed: tuple[Executed[hsrp.Result], ...]) -> dict[tuple[str, k.EntityKey, str, str], tuple[Executed[hsrp.Result], hsrp.Row]]:
         custody.validate_retained_requests(self.plan.requests, self.retained)
         _need(self.contract == _vip_contract() and set(self.produced) == set(self.plan.expected), "vip_profile")
-        checked = tuple(self.own(output) for output in executed)
+        checked = tuple(StateOwner.own(self,output) for output in executed)
         originals: dict[tuple[str, k.EntityKey, str, str], tuple[Executed[hsrp.Result], hsrp.Row]] = {}
         for output in checked:
             for parsed, _ in _claims(output):
@@ -543,7 +549,7 @@ class VirtualIpOwner(StateOwner):
         return originals
 
     def finish(self, executed: tuple[Executed[hsrp.Result], ...]) -> Result:
-        self.virtual_ip_originals(executed)
+        VirtualIpOwner.virtual_ip_originals(self,executed)
         self.source = super().finish(executed)
         return self.source
 
