@@ -211,3 +211,40 @@ class SummaryPack[Peer](p4_pipeline.Pack[parse_summary.Result | Peer]):
         result = owner.finish(owned)
         self.finished = True
         return result
+
+    def finish_current(self, execution: p4_pipeline.Result[parse_summary.Result | Peer]) -> build.Result:
+        """Exact ordinary route; finite receipt comparisons do not admit arbitrary carriers.
+
+        Trusted callers retain/reclose the original pipeline, plans and current
+        input graphs. Legacy finish remains separate for subclass phases.
+        """
+        if type(self) is not SummaryPack or type(execution) is not p4_pipeline.Result:
+            raise ValueError("etherchannel_global_run")
+        run = self.run
+        if type(run) is not _Run:
+            raise ValueError("etherchannel_global_run")
+        owner = run.owner
+        if type(owner) is not build.ProtocolOwner:
+            raise ValueError("etherchannel_global_owner")
+        if (type(self.finished) is not bool or self.finished or type(run.envelope) is not p4.Envelope
+                or type(run.registration) is not str or type(run.envelope.registration_sha256) is not str
+                or execution.envelope is not run.envelope or run.envelope.registration_sha256 != run.registration):
+            raise ValueError("etherchannel_global_run")
+        build.ProtocolOwner.validate_current(owner)
+        envelope, outputs = run.envelope, execution.executed
+        k.require(type(outputs) is tuple and all(type(o) is Executed and type(o.receipt) is ParseReceipt
+                  and type(o.receipt.capture) is Capture for o in outputs), "etherchannel_global_receipt")
+        members = {m.id: m for m in envelope.captures}
+        k.require(len(outputs) == len(members) and {o.receipt.capture.id for o in outputs} == set(members), "etherchannel_global_coverage")
+        for output in outputs:
+            receipt, capture = output.receipt, output.receipt.capture
+            member = members[capture.id]
+            k.require(receipt.owner == member.target.owner and receipt.context == envelope.context
+                      and receipt.registration_sha256 == run.registration and capture.source == member.target.node.key
+                      and capture.operation == member.target.operation and type(capture.raw) is bytes
+                      and capture.raw == member.raw and capture.bytes_sha256 == member.sha256, "etherchannel_global_receipt")
+        owned = tuple(build.ProtocolOwner.own(owner, output) for output in outputs if output.receipt.capture.operation == parse_summary.OP)
+        result = build.ProtocolOwner.finish_current(owner, owned)
+        k.require(type(self) is SummaryPack, "etherchannel_global_run")
+        self.finished = True
+        return result

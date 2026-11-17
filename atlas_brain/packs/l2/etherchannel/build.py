@@ -462,6 +462,20 @@ class ProtocolOwner(Parser[parse_summary.Result]):
                     _current_span(member.span)
                     _current_fields((("port", member.port), ("flag", member.flag)))
 
+    def finish_current(self, executed: tuple[Executed[parse_summary.Result], ...]) -> Result:
+        """Finish an exact caller-owned receiver; original custody/graphs remain caller duties."""
+        if type(self) is not ProtocolOwner:
+            raise ValueError("etherchannel_global_owner")
+        ProtocolOwner.validate_current(self)
+        k.require(type(executed) is tuple, "etherchannel_global_receipt")
+        k.require(type(self.finished) is bool and not self.finished, "etherchannel_global_run")
+        k.require(set(self.produced) == {r.capture.id for r in self.plan.requests}, "etherchannel_global_value")
+        checked = tuple(ProtocolOwner.own(self, output) for output in executed)
+        result = _materialize(self.plan, checked, self.registration)
+        k.require(type(self) is ProtocolOwner, "etherchannel_global_owner")
+        self.finished = True
+        return result
+
     def validate_reported_protocol_values[T](self, result: Result, reader: FactReader, outputs: tuple[Executed[T], ...]) -> tuple[Target, ...]:
         """Check owning source values after application-owned whole-run/proof closure; no admission authority."""
         k.require(self.finished and type(result) is Result and type(result.rows) is tuple
