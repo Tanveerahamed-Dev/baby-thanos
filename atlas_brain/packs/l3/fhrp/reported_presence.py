@@ -12,9 +12,12 @@ from atlas_brain.packs.l2.etherchannel import build as ec
 from atlas_brain.packs.l2.etherchannel.global_parse import SummaryPack
 from atlas_brain.packs.l2.stp import build as stp
 from atlas_brain.packs.l3.fhrp import build as state
+from atlas_brain.packs.l3.fhrp import gateway_policy as policy
 from atlas_brain.packs.l3.fhrp import reported_presence_custody as custody
 from atlas_brain.packs.l3.fhrp import reported_presence_graph as graph
 from atlas_brain.packs.l3.fhrp import reported_presence_parts as parts
+from atlas_brain.packs.l3.fhrp import required_report_premises as premises
+from atlas_brain.packs.l3.fhrp import required_report_profile as profile
 from atlas_brain.packs.l3.fhrp.global_parse import StandbyBriefPack
 from atlas_brain.packs.l3.fhrp.reported_presence_parts import Result, Row
 from atlas_brain.runner import p4_pipeline
@@ -37,20 +40,27 @@ def contract() -> registration.PackDeclaration:
 
 class PresencePack(StandbyBriefPack[object]):
     """Trusted preparation only; the folder builder owns all subsequent custody."""
-    def __init__(self,budgets: Budgets,*,_factory: PresenceRun | None=None) -> None:
+    def __init__(self,budgets: Budgets,*,_required: profile.Inputs | None=None,_factory: PresenceRun | None=None) -> None:
         super().__init__(budgets)
+        self.requirement_inputs=_required
         self.factory=_factory
+        self.premises: premises.Retained | None=None
         self.bindings: custody.PlanBindings | None=None
         self.original_run: tuple[type[object],object] | None=None
 
     def declaration(self) -> registration.PackDeclaration:
-        return contract()
+        declared=contract()
+        _need(self.requirement_inputs is None or type(self.requirement_inputs) is profile.Inputs)
+        return declared if self.requirement_inputs is None else profile.declaration()
 
     def prepare(self,envelope: p4.Envelope) -> p4_pipeline.Prepared[object]:
         contract()
         prepared=StandbyBriefPack[object].prepare(self,envelope)
         self.bindings=custody.retain_plan(self.owner,envelope,self.budgets)
         self.original_run=(type(self.run),self.run)
+        if self.requirement_inputs is not None:
+            self.premises=premises.retain(envelope,self.budgets,
+                tuple(self.owner.plan.indexed.values()),self.requirement_inputs)
         if self.factory is not None:PresenceRun.retain_prepare(self.factory,self)
         return prepared
 
@@ -62,13 +72,22 @@ class PresenceRun:
         _need(cls is PresenceRun)
         return PresenceRun(root,budgets)
 
-    def __init__(self,root: Path,budgets: Budgets) -> None:
-        _need(type(self) is PresenceRun)
+    @classmethod
+    def open_required_report_folder(cls,root: Path,budgets: Budgets,
+        policies: tuple[policy.GatewayPolicy,...],baseline_raw: bytes | None,
+    ) -> PresenceRun:
+        _need(cls is PresenceRun)
+        return PresenceRun(root,budgets,_requirements=profile.Inputs(policies=policies,baseline_raw=baseline_raw))
+
+    def __init__(self,root: Path,budgets: Budgets,*,_requirements: profile.Inputs | None=None) -> None:
+        _need(type(self) is PresenceRun and (_requirements is None or type(_requirements) is profile.Inputs))
         self.budgets=budgets
+        self.requirements=_requirements
         self.original_bindings: custody.PlanBindings | None=None
+        self.original_premises: premises.Retained | None=None
         self.run_type: type[object]=object
         self.original_run: object=object()
-        self.pack=PresencePack(budgets,_factory=self)
+        self.pack=PresencePack(budgets,_required=_requirements,_factory=self)
         tree,channel=stp.RootGuardPack[object](budgets),SummaryPack[object](budgets)
         execution=p4_pipeline.execute_p4_folder(root,budgets,packs=(tree,channel,self.pack))
         _need(type(self) is PresenceRun and type(self.pack) is PresencePack and type(execution) is p4_pipeline.Result
@@ -132,13 +151,15 @@ class PresenceRun:
             and pack.factory is self and self.original_bindings is None and type(pack.bindings) is custody.PlanBindings)
         if pack.original_run is None:raise ValueError("hsrp_presence_source")
         self.run_type,self.original_run=pack.original_run
-        self.original_bindings=pack.bindings
+        self.original_bindings,self.original_premises=pack.bindings,pack.premises
 
     def canonical_rows(self) -> tuple[state.Row,...]:
         _need(type(self) is PresenceRun)
         _need(type(self.pack) is PresencePack and type(self.execution) is p4_pipeline.Result
             and type(self.plan) is custody.PlanBindings and type(self.held) is custody.ExecutionBindings)
-        _need(self.pack.factory is self and self.pack.bindings is self.original_bindings)
+        _need(self.requirements is None or type(self.requirements) is profile.Inputs)
+        _need(self.pack.factory is self and self.pack.requirement_inputs is self.requirements
+            and self.pack.bindings is self.original_bindings and self.pack.premises is self.original_premises)
         declaration=PresencePack.declaration(self.pack)
         compiled=registration.compile_packs((stp.DECLARATION,ec.DECLARATION,declaration))
         pack,execution,plan=self.pack,self.execution,self.plan
@@ -149,6 +170,11 @@ class PresenceRun:
             and run.envelope is execution.envelope and run.registration==plan.registration and self.held.plan is plan)
         owned=custody.close_execution(self.held,self.owner,execution,self.budgets)
         _need(run.registration==compiled.registration_sha256)
+        if self.requirements is None:_need(self.original_premises is None)
+        else:
+            _need(type(self.original_premises) is premises.Retained)
+            if self.original_premises is None:raise ValueError("hsrp_presence_source")
+            premises.close(self.original_premises,run.envelope,self.budgets,self.requirements)
         _need(type(self.labels) is tuple and all(type(item) is tuple and len(item)==2
             and type(item[0]) is tuple and len(item[0])==2 and all(type(part) is str for part in item[0])
             and type(item[1]) is str for item in self.labels))
@@ -196,6 +222,13 @@ class PresenceRun:
             parts.validate_positive_value(value,source.value,source.subject)
         parts.compare_store(self.presence_store,FACT,STEP.id,tuple((row.source.subject,row.value) for row in result.rows),self.presence_maps)
         return result
+
+    def required_premises(self) -> premises.baseline.BaselinePreparation:
+        """Fresh-own the actual pre-parser declared premises; never adopt external preparations."""
+        PresenceRun.close(self)
+        _need(type(self.original_premises) is premises.Retained)
+        if self.original_premises is None:raise ValueError("hsrp_presence_source")
+        return self.original_premises.prepared
 
     def source_rows(self) -> tuple[state.Row,...]:
         """Fresh-own current original Source rows; never admit an external Source."""
