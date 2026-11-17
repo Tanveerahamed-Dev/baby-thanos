@@ -9,6 +9,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from rename_fixture_support import (
+    _before,
+    rename_before_deadline,
+    restore_before_deadline,
+)
 from test_ci_pytest_cli import _commit, _git
 
 from atlas_brain.model.pack_registration import compile_packs
@@ -215,6 +220,7 @@ def test_real_quiet_native_error_cannot_bless_changed_ownership_even_after_resto
     real=getattr(module,attribute)
     errors=[]
     preserved=tmp_path/"preserved"
+    original_identity=value._identity
     writer="import os,sys,time\nwith open(sys.argv[1],'xb') as marker: marker.write(b'ready')\nwhile True: os.write(1,b'x');time.sleep(.01)\n"
     code=("import subprocess,sys,time\nfrom pathlib import Path\np=subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]])\n"
           "end=time.monotonic()+3\nwhile not Path(sys.argv[2]).exists() and time.monotonic()<end: time.sleep(.005)\nassert Path(sys.argv[2]).exists()\n")
@@ -226,8 +232,10 @@ def test_real_quiet_native_error_cannot_bless_changed_ownership_even_after_resto
                 assert type(error) is module.ProcessError and error.quiescent is True and error.cleanup==()
                 errors.append(error)
                 if drift=="root":
-                    value.root.rename(preserved)
+                    rename_before_deadline(value.root,preserved,value.deadline)
+                    _before(value.deadline)
                     value.root.mkdir()
+                    assert not value._owned()
                 elif drift=="batch":changed.setattr(sys,"argv",["demo","--api-batch","0"])
                 else:changed.setattr(mixed.os,"getpid",lambda:value._pid+1)
                 raise
@@ -237,8 +245,10 @@ def test_real_quiet_native_error_cannot_bless_changed_ownership_even_after_resto
                 value.run_saved(command(code)+[writer,str(tmp_path/"ready")],dict(os.environ),value.root,"api0")
         finally:
             if drift=="root" and preserved.exists():
-                value.root.rmdir()
-                preserved.rename(value.root)
+                restore_before_deadline(value.root,preserved,value.deadline,
+                    errors[0] if errors else None)
+    assert value._identity==original_identity
+    assert (value.root.lstat().st_dev,value.root.lstat().st_ino)==original_identity[:2]
     assert len(errors)==1 and refused.value.__cause__ is errors[0] and refused.value.quiescent is False
     assert value._owned() and not value.retention_ready and value._captures[-1][1]=="unknown"
     calls=[]
