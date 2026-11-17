@@ -23,6 +23,7 @@ def fixture():
     values = tuple(k.Known(value=word, basis=k.Basis.DECLARED, raw=word, evidence=(ref,)) for word in ("first", "second"))
     unselected = k.FactRef(fact=FACTS[0], subject=k.EntityKey("node:unselected"))
     store.FactWriter.write(seed, fact=unselected.fact, subject=unselected.subject, value=values[0])
+    unselected = next(iter(source.values))
     writer, reader = store.bind_writer(source, step=write), store.bind_reader(source, step=read)
     return source, writer, reader, values, unselected
 
