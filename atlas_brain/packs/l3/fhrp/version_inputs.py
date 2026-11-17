@@ -74,7 +74,8 @@ def _capture(value: Capture) -> None:
         Scope(node=scope.node, vrf=scope.vrf, context=scope.context, vdc=scope.vdc, tenant=scope.tenant,
               afi=scope.afi, instance=scope.instance, plane=scope.plane)
         time = metadata.collected_utc
-        if type(time) is TimeInterval:
+        _need(type(time) is TimeInterval or type(time) is k.Unknown, "time")
+        if isinstance(time, TimeInterval):
             _need(type(time) is TimeInterval, "time")
             TimeInterval(earliest=time.earliest, latest=time.latest, clock=time.clock, bound=time.bound)
         else:
@@ -97,6 +98,11 @@ def _target(value: build.Target) -> None:
           and type(declaration.basis) is k.Basis, "target")
     _evidence(declaration.evidence)
     build.Target(context=value.context, node=node, groups=value.groups)
+
+
+def validate_fhrp_target_graph(value: build.Target) -> None:
+    """Validate current target structure; no admission or origin authority."""
+    _target(value)
 
 
 def validate_fhrp_request_graph(request: CaptureRequest) -> None:

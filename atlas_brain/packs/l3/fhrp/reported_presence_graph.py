@@ -11,7 +11,7 @@ from atlas_brain.evidence.synthetic import Node
 from atlas_brain.kernel import states as k
 from atlas_brain.packs.l3.fhrp import build as state
 from atlas_brain.packs.l3.fhrp.version_inputs import (
-    _target,
+    validate_fhrp_target_graph,
     validate_version_state_graph,
 )
 
@@ -27,7 +27,7 @@ def _index(indexed: Index) -> None:
     _need(type(indexed) is dict)
     _need(all(type(key) is tuple and len(key)==2 and all(type(item) is str for item in key)
         and type(target) is state.Target for key,target in indexed.items()))
-    for target in indexed.values():_target(target)
+    for target in indexed.values():validate_fhrp_target_graph(target)
     _need(all(key==(target.context,target.node.key) for key,target in indexed.items()))
 
 
