@@ -66,7 +66,7 @@ def retain_handle(handle: storage.FactReader | storage.FactWriter) -> HandleComp
 
 
 def _compare(original: HandleComparison, handle: storage.FactReader | storage.FactWriter,
-             kind: type[storage.FactReader] | type[storage.FactWriter], fact: k.FactId, subject: k.EntityKey) -> None:
+             kind: type[storage.FactReader | storage.FactWriter], fact: k.FactId, subject: k.EntityKey) -> None:
     _need(type(handle) is kind and type(original) is HandleComparison)
     current_store, step, owners, values, metadata = _parts(handle)
     _need(handle is original.handle and current_store is original.store and step is original.step
