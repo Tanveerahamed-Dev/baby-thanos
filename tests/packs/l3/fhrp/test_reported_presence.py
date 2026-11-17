@@ -1,8 +1,8 @@
 """Real owning producer regressions; shared plants preserve every original control."""
 from dataclasses import replace
 
-import pytest
 import first_use_support as first_use
+import pytest
 from presence_test_support import (
     CUSTODY_FAULTS,
     PHASES,
