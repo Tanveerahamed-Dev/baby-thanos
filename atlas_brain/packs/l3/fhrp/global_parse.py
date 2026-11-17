@@ -217,6 +217,7 @@ class StandbyBriefPack[Peer](p4_pipeline.Pack[hsrp.Result | Peer]):
 
     def finish(self, execution: p4_pipeline.Result[hsrp.Result | Peer]) -> build.Result:
         """Close every global receipt before materializing HSRP's original parsed values."""
+        receiver_type = type(self)
         run = self.run
         if (self.finished or run is None or type(execution) is not p4_pipeline.Result
                 or execution.envelope is not run.envelope or run.envelope.registration_sha256 != run.registration):
@@ -241,6 +242,7 @@ class StandbyBriefPack[Peer](p4_pipeline.Pack[hsrp.Result | Peer]):
             result = build.VirtualIpOwner.finish(owner,owned)
         else:
             result = build.StateOwner.finish(owner,owned)
+        k.require(type(self) is receiver_type, "hsrp_global_run")
         self.finished = True
         return result
 
