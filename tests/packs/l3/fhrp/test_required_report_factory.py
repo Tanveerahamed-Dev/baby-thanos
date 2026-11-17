@@ -13,6 +13,7 @@ from atlas_brain.model import store
 from atlas_brain.packs.l3.fhrp import reported_presence as presence
 from atlas_brain.packs.l3.fhrp import required_report_premises as premises
 
+
 @pytest.mark.parametrize("case,reason",[
     ("ready",None),("permission",None),("baseline",k.UnknownReason.NO_BASELINE),("unmatched",k.UnknownReason.NO_BASELINE),
     ("population",k.UnknownReason.DENOMINATOR_OPEN),("domain",k.UnknownReason.JOIN_UNPROVEN),("binding",k.UnknownReason.JOIN_UNPROVEN),
@@ -95,4 +96,6 @@ def test_actual_factory_refuses_old_registration_before_dispatching_any_parser(t
     document["registration_sha256"]="a2766c4b44c30ed9665a8f00eedddb81d7d876f59cc84581f752e0a2e2449324"
     raw=canonical(document)
     monkeypatch.setattr(presence.state.hsrp,"parse_capture",lambda *_:pytest.fail("old registration parsed"))
+    monkeypatch.setattr(presence.stp.stp,"parse_capture",lambda *_:pytest.fail("old registration parsed STP"))
+    monkeypatch.setattr(presence.ec.parse_summary,"parse_capture",lambda *_:pytest.fail("old registration parsed EC"))
     with pytest.raises(ValueError):presence.PresenceRun.open_required_report_folder(root,replace(LIMITS),policies,raw)
