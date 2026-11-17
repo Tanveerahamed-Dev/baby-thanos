@@ -9,7 +9,8 @@ from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence import p4_admission as p4
 from atlas_brain.evidence.admission import BudgetExceeded
 from atlas_brain.kernel import states as k
-from atlas_brain.model import pack_registration as registration, store
+from atlas_brain.model import pack_registration as registration
+from atlas_brain.model import store
 from atlas_brain.packs.l2.etherchannel import build as ec
 from atlas_brain.packs.l2.etherchannel.global_parse import SummaryPack
 from atlas_brain.packs.l2.stp import build as stp
