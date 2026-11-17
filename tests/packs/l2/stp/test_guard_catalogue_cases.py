@@ -23,11 +23,12 @@ def prepared(root,case):
 
 
 @pytest.mark.parametrize("case",tuple(cases.CASES))
-def test_all_original_catalogue_twins_retain_complete_operands_proofs_gaps_and_denominators(tmp_path,case):
+def test_all_original_catalogue_twins_retain_complete_operands_proofs_gaps_and_denominators(tmp_path,capsys,case):
     inputs,reports=prepared(tmp_path/"inputs",case)
     value=cases.validate(reports,inputs,case)
     cases.validate_retained(value,case)
-    print("P4_R04_RETAINED="+canonical(value).decode("ascii"))
+    with capsys.disabled():
+        print("P4_R04_RETAINED="+canonical(value).decode("ascii"))
     assert value["catalogue"]=="baby-thanos.p4.synthetic/1" and value["alias"]=="EI-R04"
     assert value["historical_mapping"]=="UNVERIFIED" and value["generator"]=="p4_guard_catalogue_cases/1"
     assert value["denominator"]=={"declared_policies":1,"declared_participant_occurrences":2}
