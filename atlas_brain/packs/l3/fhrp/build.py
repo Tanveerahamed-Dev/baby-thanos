@@ -374,11 +374,13 @@ class StateOwner(Parser[hsrp.Result]):
         return _canonical_rows(self.plan, tuple(StateOwner.own(self,out) for out in executed), self.registration)
 
     def finish(self, executed: tuple[Executed[hsrp.Result], ...]) -> Result:
+        receiver_type = type(self)
         _need(type(executed) is tuple, "global_receipt")
         _need(not self.finished, "global_run")
         _need(set(self.produced) == set(self.plan.expected), "global_value")
         checked = tuple(StateOwner.own(self,output) for output in executed)
         result = _materialize(self.plan, checked, self.registration)
+        _need(type(self) is receiver_type, "global_run")
         self.finished = True
         return result
 
