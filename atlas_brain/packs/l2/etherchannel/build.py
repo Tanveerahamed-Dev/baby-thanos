@@ -7,8 +7,8 @@ from typing import cast
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence import p4_admission as p4
 from atlas_brain.evidence.admission import Budgets, record, strict_json, string
-from atlas_brain.evidence.capture import Capture, Scope
-from atlas_brain.evidence.parsekit.rules import Captured, Record
+from atlas_brain.evidence.capture import Capture, CaptureMetadata, ErrorKind, Scope
+from atlas_brain.evidence.parsekit.rules import Captured, ParseResult, Record
 from atlas_brain.evidence.synthetic import SCHEMA as BASE_SCHEMA
 from atlas_brain.evidence.synthetic import Node, SyntheticGroup, endpoint
 from atlas_brain.kernel import states as k
@@ -305,6 +305,47 @@ def _proofs(envelope: p4.Envelope, budgets: Budgets, indexed: dict[_Key, Target]
     return proofs
 
 
+def _current_shape(condition: bool) -> None:
+    k.require(condition, "etherchannel_current_shape")
+
+
+def _current_span(span: k.ByteSpan) -> None:
+    _current_shape(type(span) is k.ByteSpan and type(span.start) is int and type(span.end) is int)
+    k.ByteSpan(start=span.start, end=span.end)
+
+
+def _current_fields(fields: tuple[tuple[str, Captured], ...]) -> None:
+    _current_shape(type(fields) is tuple and all(type(pair) is tuple and len(pair) == 2
+        and type(pair[0]) is str and type(pair[1]) is Captured for pair in fields))
+    for _, token in fields:
+        _current_shape(type(token.raw) is str
+            and (type(token.value) is str or type(token.value) is parse_summary.Protocol or type(token.value) is k.Unknown))
+        _current_span(token.span)
+
+
+def _current_reference(ref: k.RegistryRef) -> None:
+    _current_shape(type(ref) is k.RegistryRef
+        and all(type(item) is str for item in (ref.table, ref.row_id, ref.table_digest, ref.citation)))
+    k.RegistryRef(table=ref.table, row_id=ref.row_id, table_digest=ref.table_digest, citation=ref.citation)
+
+
+def _current_target(target: Target) -> None:
+    _current_shape(type(target) is Target and type(target.context) is str and type(target.node) is Node
+        and type(target.groups) is tuple and type(target.ports) is tuple
+        and all(type(item) is str for item in (*target.groups, *target.ports)))
+    node = target.node
+    _current_shape(type(node.group) is str and type(node.id) is str
+        and type(node.ports) is tuple and all(type(port) is str for port in node.ports))
+    declaration = node.declaration
+    _current_shape(type(declaration) is k.Known and type(declaration.value) is str and type(declaration.raw) is str
+        and declaration.basis is k.Basis.DECLARED and type(declaration.evidence) is tuple)
+    for ref in declaration.evidence:
+        if type(ref) is not k.RegistryRef:
+            raise ValueError("etherchannel_current_shape")
+        _current_reference(ref)
+    Target(context=target.context, node=node, groups=target.groups, ports=target.ports)
+
+
 class ProtocolOwner(Parser[parse_summary.Result]):
     """Own parsing/projection for trusted, admitted, SummaryPack-classified inputs.
 
@@ -355,6 +396,65 @@ class ProtocolOwner(Parser[parse_summary.Result]):
         result = _materialize(self.plan, checked, self.registration)
         self.finished = True
         return result
+
+    def validate_current(self) -> None:
+        """Close only finishing's current read footprint; never establish original-run authority."""
+        _current_shape(type(self) is ProtocolOwner)
+        plan = self.plan
+        _current_shape(type(plan) is _Plan and type(plan.indexed) is dict and type(plan.by_capture) is dict
+            and type(plan.requests) is tuple and type(self.produced) is dict
+            and type(self.finished) is bool and type(self.registration) is str)
+        for key, target in plan.indexed.items():
+            _current_shape(type(key) is tuple and len(key) == 2 and all(type(item) is str for item in key))
+            _current_target(target)
+            _current_shape(key == (target.context, target.node.key))
+        for key, target in plan.by_capture.items():
+            _current_shape(type(key) is str and type(target) is Target
+                and any(target is original for original in plan.indexed.values()))
+        identities: list[k.CaptureId] = []
+        for request in plan.requests:
+            _current_shape(type(request) is CaptureRequest and type(request.capture) is Capture
+                and (request.context is None or type(request.context) is str))
+            capture = request.capture
+            _current_shape(all(type(item) is str for item in
+                (capture.id, capture.source, capture.operation, capture.rendered, capture.codec))
+                and type(capture.raw) is bytes and type(capture.integrity) is k.IntegrityState
+                and (capture.metadata is None or type(capture.metadata) is CaptureMetadata))
+            if capture.metadata is not None:
+                _current_shape(capture.metadata.error is None or type(capture.metadata.error) is ErrorKind)
+            identities.append(capture.id)
+            _current_shape(plan.by_capture.get(capture.id) is plan.indexed.get((request.context or "", capture.source)))
+        _current_shape(len(set(identities)) == len(identities) and set(plan.by_capture) == set(identities)
+            and all(type(key) is str and key in identities for key in self.produced))
+        proofs = plan.proofs
+        if type(proofs) is not dict:
+            raise ValueError("etherchannel_current_shape")
+        _current_shape(all(type(key) is tuple and len(key) == 2 and all(type(item) is str for item in key) for key in proofs)
+            and set(proofs) == set(plan.indexed))
+        for refs in proofs.values():
+            _current_shape(type(refs) is tuple)
+            for ref in refs:
+                _current_reference(ref)
+        for value in self.produced.values():
+            _current_shape(type(value) is parse_summary.Result and type(value.parse) is ParseResult
+                and type(value.rows) is tuple and (value.reason is None or type(value.reason) is k.UnknownReason))
+            parsed = value.parse
+            _current_shape(type(parsed.records) is tuple and type(parsed.quality) is str)
+            for item in parsed.records:
+                _current_shape(type(item) is Record and type(item.rule_id) is str)
+                _current_span(item.span)
+                _current_fields(item.fields)
+            for row in value.rows:
+                _current_shape(type(row) is parse_summary.Row and type(row.group) is str
+                    and type(row.spans) is tuple and type(row.members) is tuple
+                    and (row.reason is None or type(row.reason) is k.UnknownReason))
+                _current_fields(row.fields)
+                for span in row.spans:
+                    _current_span(span)
+                for member in row.members:
+                    _current_shape(type(member) is parse_summary.Member)
+                    _current_span(member.span)
+                    _current_fields((("port", member.port), ("flag", member.flag)))
 
     def validate_reported_protocol_values[T](self, result: Result, reader: FactReader, outputs: tuple[Executed[T], ...]) -> tuple[Target, ...]:
         """Check owning source values after application-owned whole-run/proof closure; no admission authority."""
