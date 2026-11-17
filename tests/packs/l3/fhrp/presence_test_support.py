@@ -137,7 +137,7 @@ def mutate_custody(seen,fault,monkeypatch,declaration_module,calls):
     elif fault=="member":
         object.__setattr__(execution.envelope.captures[0],"target",replace(execution.envelope.captures[0].target))
     elif fault=="outputs":
-        object.__setattr__(execution,"executed",tuple(list(execution.executed)))
+        object.__setattr__(execution,"executed",tuple(item for item in execution.executed))
     elif fault=="produced_value":
         clone=replace(output.value)
         owner.produced[key]=clone
@@ -170,13 +170,13 @@ def mutate_source(seen,handle,value,fault):
     elif fault=="values":
         source.store.values=dict(source.store.values)
     elif fault=="rows":
-        object.__setattr__(source,"rows",tuple(list(source.rows)))
+        object.__setattr__(source,"rows",tuple(item for item in source.rows))
     elif fault=="cell":
         clone=replace(row.value)
         object.__setattr__(row,"value",clone)
         source.store.values[k.FactRef(fact=state.REPORTED_STATE,subject=row.subject)]=clone
     elif fault=="executed":
-        object.__setattr__(source,"executed",tuple(list(source.executed)))
+        object.__setattr__(source,"executed",tuple(item for item in source.executed))
     elif fault=="unknown_need":
         object.__setattr__(row.value,"next_evidence",())
     elif fault=="reader_store":
