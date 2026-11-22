@@ -2,11 +2,19 @@
 from dataclasses import replace
 
 import pytest
-from required_report_cases import budget_inputs, forbid_observations, original_inputs
+from required_report_cases import (
+    budget_inputs,
+    expected_scope,
+    forbid_observations,
+    literal_requirement,
+    original_inputs,
+)
 from test_gateway_source import LIMITS
 
 from atlas_brain.evidence.admission import BudgetExceeded
+from atlas_brain.kernel import states as k
 from atlas_brain.packs.l3.fhrp import reported_presence as presence
+from atlas_brain.packs.l3.fhrp import required_report_run as required
 
 
 @pytest.mark.parametrize("limit", ["exact", "bundle", "count", "artifact", "artifact_boundary"])
@@ -57,3 +65,24 @@ def test_each_observation_tripwire_is_reachable_in_the_real_factory(tmp_path, mo
             monkeypatch.setattr(owner, attr, original)
     with pytest.raises(pytest.fail.Exception, match=f"^unexpected {active} observation$"):
         presence.PresenceRun.open_required_report_folder(root, LIMITS, policies, raw)
+
+
+def test_proof_fixtures_match_the_owning_required_predicate_and_original_scope(tmp_path):
+    root = tmp_path / "inputs"
+    envelope, policies, raw, files = original_inputs(root)
+    assert raw is not None
+    expected_raw, participants = expected_scope(envelope)
+    expected = literal_requirement(envelope, raw)
+    run = required.RequiredReportRun(root, LIMITS, policies, raw)
+    (row,) = required.RequiredReportRun.close(run).rows
+    prepared = presence.PresenceRun.required_premises(run.live)
+    assert prepared.scope.raw == expected_raw and prepared.baseline_raw is raw
+    assert row.subject == expected["subject"] and type(row.value) is k.Known
+    assert row.value.value is False and row.value.basis is k.Basis.DERIVED
+    assert [operand.source.subject for operand in row.operands] == [point["subject"] for point in participants]
+    assert [(ref.table, ref.row_id, ref.table_digest, ref.citation) for ref in row.value.evidence
+        if type(ref) is k.RegistryRef] == [(ref["table"], ref["row_id"], ref["table_sha256"], ref["pointer"])
+        for ref in expected["evidence"] if ref["type"] == "registry"]
+    assert [(ref.fact, ref.subject) for ref in row.value.evidence if type(ref) is k.FactRef] == [
+        (ref["fact"], ref["subject"]) for ref in expected["operands"]]
+    assert {path.name: path.read_bytes() for path in root.iterdir()} == files
