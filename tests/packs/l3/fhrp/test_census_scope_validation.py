@@ -150,3 +150,33 @@ def test_late_actual_envelope_close_cannot_relabel_or_drop_a_census_target(tmp_p
     with pytest.raises(ValueError, match="^hsrp_census_plan_scopes$"):
         requests.validate_census_scopes(plan, LIMITS)
     assert seen == [True, True]
+
+
+@pytest.mark.parametrize("change", ["inventory", "raw"])
+def test_late_actual_envelope_close_cannot_drop_or_change_a_census_member(tmp_path, monkeypatch, change):
+    root = tmp_path / "inputs"
+    input_folder(root)
+    forbid_observations(monkeypatch)
+    plan = requests.prepare_census_folder(root, LIMITS)
+    scope = plan.scopes[0]
+    member = scope.member
+    assert member.target is scope.target and scope.request.capture.raw is member.raw
+    assert any(item is member for item in plan.envelope.captures)
+    validate = requests.custody.validate_plan
+    seen = []
+
+    def validating(*args):
+        validate(*args)
+        seen.append(True)
+        if len(seen) == 2:
+            if change == "inventory":
+                captures = tuple(item for item in plan.envelope.captures if item is not member)
+                object.__setattr__(plan.envelope, "captures", captures)
+            else:
+                object.__setattr__(member, "raw", b"replacement member bytes")
+
+    _forbid_new_preparation(monkeypatch)
+    monkeypatch.setattr(requests.custody, "validate_plan", validating)
+    with pytest.raises(ValueError, match="^hsrp_census_plan_scopes$"):
+        requests.validate_census_scopes(plan, LIMITS)
+    assert seen == [True, True]

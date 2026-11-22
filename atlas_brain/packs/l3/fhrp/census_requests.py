@@ -170,6 +170,14 @@ class _TargetCoordinates:
 
 
 @dataclass(frozen=True, slots=True)
+class _CaptureCoordinates:
+    member: p4.CaptureMember
+    target: p4.Target
+    identity: tuple[str, str, str]
+    raw: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class _EnvelopeCoordinates:
     base: SyntheticGroup
     raw: bytes
@@ -177,6 +185,8 @@ class _EnvelopeCoordinates:
     scope: tuple[str, str]
     targets: tuple[p4.Target, ...]
     definitions: tuple[_TargetCoordinates, ...]
+    captures: tuple[p4.CaptureMember, ...]
+    members: tuple[_CaptureCoordinates, ...]
 
 
 def _envelope_coordinates(envelope: p4.Envelope) -> _EnvelopeCoordinates:
@@ -184,7 +194,7 @@ def _envelope_coordinates(envelope: p4.Envelope) -> _EnvelopeCoordinates:
     _need(type(envelope) is p4.Envelope and type(envelope.base) is SyntheticGroup
           and type(envelope.raw) is bytes and type(envelope.base.raw) is bytes
           and type(envelope.context) is str and type(envelope.registration_sha256) is str
-          and type(envelope.targets) is tuple, "plan_scopes")
+          and type(envelope.targets) is tuple and type(envelope.captures) is tuple, "plan_scopes")
     definitions: list[_TargetCoordinates] = []
     for target in envelope.targets:
         _need(type(target) is p4.Target and type(target.node) is Node
@@ -194,8 +204,15 @@ def _envelope_coordinates(envelope: p4.Envelope) -> _EnvelopeCoordinates:
         node = target.node
         definitions.append(_TargetCoordinates(target, node, (node.group, node.id),
                                               (target.id, target.operation, target.owner), target.params))
+    members: list[_CaptureCoordinates] = []
+    for member in envelope.captures:
+        _need(type(member) is p4.CaptureMember and type(member.target) is p4.Target
+              and type(member.id) is str and type(member.path) is str and type(member.sha256) is str
+              and type(member.raw) is bytes, "plan_scopes")
+        members.append(_CaptureCoordinates(member, member.target, (member.id, member.path, member.sha256), member.raw))
     return _EnvelopeCoordinates(envelope.base, envelope.raw, envelope.base.raw,
-                                (envelope.context, envelope.registration_sha256), envelope.targets, tuple(definitions))
+                                (envelope.context, envelope.registration_sha256), envelope.targets, tuple(definitions),
+                                envelope.captures, tuple(members))
 
 
 def _close_envelope_coordinates(envelope: p4.Envelope, original: _EnvelopeCoordinates) -> None:
@@ -206,6 +223,9 @@ def _close_envelope_coordinates(envelope: p4.Envelope, original: _EnvelopeCoordi
     _need(all(a.target is b.target and a.node is b.node and a.node_identity == b.node_identity
               and a.definition == b.definition and a.params is b.params
               for a, b in zip(current.definitions, original.definitions, strict=True)), "plan_scopes")
+    _need(current.captures is original.captures and len(current.members) == len(original.members), "plan_scopes")
+    _need(all(a.member is b.member and a.target is b.target and a.identity == b.identity and a.raw is b.raw
+              for a, b in zip(current.members, original.members, strict=True)), "plan_scopes")
 
 
 def validate_census_scopes(plan: Plan, budgets: Budgets) -> None:
