@@ -95,7 +95,7 @@ def test_fallback_rejects_unsupported_result_shapes(shape):
 def test_fallback_rejects_bytes_subclass_before_length_or_scan():
     class ForeignBytes(bytes):
         def __len__(self):
-            pytest.fail("measured an open raw payload")
+            raise AssertionError("measured an open raw payload")
 
         def count(self, *_args, **_kwargs):
             pytest.fail("scanned an open raw payload")
