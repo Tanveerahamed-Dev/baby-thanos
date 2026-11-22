@@ -52,13 +52,17 @@ def test_first_actual_callback_cannot_poison_next_use_or_defer_argument_lookup(t
             poison_data(rows,fault,calls)
     def reading(self,**kw):
         value=read(self,**kw)
-        if phase=="source_reader" and self.step is present.STEP and kw["fact"]==state.REPORTED_STATE:plant(self,kw)
-        elif phase=="presence_reader" and self.step is profile.STEP:plant(self,kw)
+        if (
+            phase == "source_reader" and self.step is present.STEP and kw["fact"] == state.REPORTED_STATE
+        ) or (phase == "presence_reader" and self.step is profile.STEP):
+            plant(self, kw)
         return value
     def writing(self,**kw):
         value=write(self,**kw)
-        if phase=="positive_writer" and kw["fact"]==present.FACT:plant(self,kw)
-        elif phase=="required_writer" and kw["fact"]==profile.MISSING:plant(self,kw)
+        if (
+            phase == "positive_writer" and kw["fact"] == present.FACT
+        ) or (phase == "required_writer" and kw["fact"] == profile.MISSING):
+            plant(self, kw)
         return value
     monkeypatch.setattr(required.RequiredReportRun,"read_presence",recording)
     monkeypatch.setattr(store.FactReader,"read",reading)
