@@ -18,6 +18,8 @@ from atlas_brain.kernel import states as k
 from atlas_brain.model.store import FactReader, FactWriter
 from atlas_brain.packs.l3.fhrp import build as state
 from atlas_brain.packs.l3.fhrp import reported_presence as present
+from atlas_brain.packs.l3.fhrp import reported_presence_custody as custody
+from atlas_brain.packs.l3.fhrp.global_parse import StandbyBriefPack
 
 
 @pytest.mark.parametrize("mode",["normal","hsrp","both","partial","error","truncated","conflict"])
@@ -185,3 +187,55 @@ def test_first_actual_source_operation_checks_next_handle_and_uses_frozen_argume
     finally:
         object.__setattr__(step,"reads",original_reads)
     assert len(ops)==(1 if fault in first_use.HANDLE_FAULTS or fault=="value_class" else 6) and calls==[]
+
+
+@pytest.mark.parametrize("plant", ["original", "open", "subclass", "after_snapshot"])
+def test_actual_brief_prepare_requires_private_plan_shape_before_retention(tmp_path, monkeypatch, plant):
+    root = tmp_path / "inputs"
+    inputs(root)
+    prepare = StandbyBriefPack.prepare
+    snapshot = custody.capture_context
+    owners, hits, calls = [], [], []
+
+    class OpenPlan:
+        def __getattribute__(self, name):
+            calls.append(name)
+            pytest.fail("opened an unchecked BRIEF plan")
+
+    def open_as_subclass(owner):
+        class PlanSubclass(type(owner.plan)):
+            __slots__ = ()
+            __getattribute__ = OpenPlan.__getattribute__
+
+        object.__setattr__(owner.plan, "__class__", PlanSubclass)
+
+    def preparing(self, envelope):
+        batch = prepare(self, envelope)
+        owner = batch.handlers[0].parser
+        owners.append(owner)
+        if plant == "open":
+            owner.plan = OpenPlan()
+        elif plant == "subclass":
+            open_as_subclass(owner)
+        return batch
+
+    def snapshotting(envelope, budgets):
+        values = snapshot(envelope, budgets)
+        if plant == "after_snapshot":
+            open_as_subclass(owners[0])
+        hits.append(True)
+        return values
+
+    monkeypatch.setattr(StandbyBriefPack, "prepare", preparing)
+    monkeypatch.setattr(custody, "capture_context", snapshotting)
+    if plant == "original":
+        result = present.build_reported_presence(root, LIMITS)
+        targets = tuple(owners[0].plan.indexed.values())
+        assert len(result.rows) == 6
+        assert all(any(row.target is member for member in targets) for row in result.source.rows)
+    else:
+        monkeypatch.setattr(state.hsrp, "parse_capture", lambda *_: pytest.fail("parsed before the plan check"))
+        with pytest.raises(ValueError, match="^hsrp_presence_custody$"):
+            present.build_reported_presence(root, LIMITS)
+        assert hits == [True]
+    assert len(owners) == 1 and hits and calls == []
