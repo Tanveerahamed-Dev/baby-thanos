@@ -357,6 +357,13 @@ class StateOwner(Parser[hsrp.Result]):
         self.produced: dict[k.CaptureId, hsrp.Result] = {}
         self.finished = False
 
+    def checked_plan(self) -> _Plan | None:
+        """Return the current private plan after its exact class check."""
+        if type(self) is not StateOwner:
+            return None
+        plan = self.plan
+        return plan if type(plan) is _Plan else None
+
     def parse(self, request: CaptureRequest) -> Parsed[hsrp.Result]:
         expected = self.plan.expected
         _need(type(request) is CaptureRequest and request.capture.id in expected

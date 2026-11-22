@@ -76,8 +76,10 @@ class ExecutionBindings[T]:
 def retain_plan(owner: state.StateOwner, envelope: p4.Envelope, budgets: Budgets) -> PlanBindings:
     """Use only at the caller-owned real prepare boundary, before callback exposure."""
     if type(owner) is not state.StateOwner:raise ValueError("hsrp_presence_custody")
-    plan=owner.plan
     pointers,values=capture_context(envelope,budgets)
+    plan = state.StateOwner.checked_plan(owner)
+    if plan is None:
+        raise ValueError("hsrp_presence_custody")
     proofs=plan.proofs
     if type(proofs) is not dict:raise ValueError("hsrp_presence_custody")
     held=PlanBindings(owner=owner,plan=(type(plan),plan),requests=plan.requests,expected=plan.expected,
