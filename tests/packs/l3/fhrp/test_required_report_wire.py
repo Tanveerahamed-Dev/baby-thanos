@@ -258,10 +258,10 @@ def test_exact_escape_unicode_sizes_preserve_frozen_canonical_bytes_and_boundari
             wire.render(header,inputs,tuple(reduced),captures,registry,local,requirements)
 
 
-@pytest.mark.parametrize("scalar",["\ud800","\udfff"])
-def test_surrogates_refuse_before_any_canonical_encoding(monkeypatch,scalar):
+@pytest.mark.parametrize("codepoint",[0xD800,0xDFFF],ids=["high","low"])
+def test_surrogates_refuse_before_any_canonical_encoding(monkeypatch,codepoint):
     header,inputs,captures,registry,local,requirements=fixture()
-    header["scalar"]=scalar
+    header["scalar"]=chr(codepoint)
     _forbid_wire_encoding(monkeypatch)
     with pytest.raises(ValueError,match="^non_unicode_scalar$"):
         wire.render(header,inputs,(10000,10000,100),captures,registry,local,requirements)
