@@ -13,6 +13,7 @@ from atlas_brain.evidence.admission import (
     string,
 )
 from atlas_brain.evidence.capture import Capture
+from atlas_brain.evidence.synthetic import Node, SyntheticGroup
 from atlas_brain.evidence.text import text_lines
 from atlas_brain.kernel import states as k
 from atlas_brain.model.pack_registration import (
@@ -36,8 +37,7 @@ from atlas_brain.runner.pack_runtime import Handler
 _MAX_BYTES = 680_000
 _MAX_LINES = 4_098
 type MemberInput = tuple[p4.CaptureMember, k.CaptureId, k.EntityKey, str, bytes]
-
-
+type _ScopeSelection = tuple[p4.Target, p4.Target, str, str, MemberInput | None]
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Scope:
     target: p4.Target
@@ -95,10 +95,10 @@ def _close_request(request: CaptureRequest, inputs: MemberInput, context_id: str
     _need(values[:5] == (identity, node, operation, context_id, command) and values[5] is raw, "request")
 
 
-def prepare_census_inputs(
+def _derive_scopes(
     envelope: p4.Envelope, budgets: Budgets, brief: state.StateOwner, held: custody.PlanBindings,
-) -> Plan:
-    """Use the actual admitted envelope and original BRIEF prepare, with no external admission authority."""
+) -> tuple[str, str, tuple[_ScopeSelection, ...]]:
+    """Derive the whole census inventory from the original declarations before creating requests."""
     compiled = compile_packs(_declarations())
     _ready_brief(held, brief, envelope, budgets)
     _need(envelope.registration_sha256 == compiled.registration_sha256, "profile")
@@ -118,7 +118,7 @@ def prepare_census_inputs(
 
     identity = (p4.SCHEMA, envelope.registration_sha256, sha256(envelope.raw).hexdigest(),
                 sha256(envelope.base.raw).hexdigest(), context_id)
-    selected: list[tuple[p4.Target, p4.Target, str, str, MemberInput | None]] = []
+    selected: list[_ScopeSelection] = []
     for target in envelope.targets:
         if target.operation != operation:
             continue
@@ -137,30 +137,137 @@ def prepare_census_inputs(
         subject = canonical(("atlas-brain.hsrp-census-scope/1", *identity, source.id, target.id,
                              node, interface, "ipv4", "hsrp", "all"))
         selected.append((target, source, interface, sha256(subject).hexdigest(), members.get(target.id)))
+    return context_id, command, tuple(selected)
 
+
+def _scoped_requests(
+    scopes: tuple[Scope, ...], selected: tuple[_ScopeSelection, ...], context_id: str, command: str,
+) -> tuple[CaptureRequest, ...]:
+    _need(type(scopes) is tuple and len(scopes) == len(selected), "plan_scopes")
+    requests: list[CaptureRequest] = []
+    for scope, (target, source, interface, key, member) in zip(scopes, selected, strict=True):
+        _need(type(scope) is Scope and scope.target is target and scope.source is source
+              and type(scope.interface) is str and scope.interface == interface
+              and type(scope.key) is str and scope.key == key, "plan_scopes")
+        request = scope.request
+        if member is None:
+            _need(scope.member is None and request is None, "plan_scopes")
+        else:
+            if scope.member is not member[0] or request is None:
+                raise ValueError("hsrp_census_plan_scopes")
+            _close_request(request, member, context_id, command)
+            requests.append(request)
+    return tuple(requests)
+
+
+@dataclass(frozen=True, slots=True)
+class _TargetCoordinates:
+    target: p4.Target
+    node: Node
+    node_identity: tuple[str, str]
+    definition: tuple[str, str, str]
+    params: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _EnvelopeCoordinates:
+    base: SyntheticGroup
+    raw: bytes
+    base_raw: bytes
+    scope: tuple[str, str]
+    targets: tuple[p4.Target, ...]
+    definitions: tuple[_TargetCoordinates, ...]
+
+
+def _envelope_coordinates(envelope: p4.Envelope) -> _EnvelopeCoordinates:
+    """Capture current typed coordinates without resolving declarations again."""
+    _need(type(envelope) is p4.Envelope and type(envelope.base) is SyntheticGroup
+          and type(envelope.raw) is bytes and type(envelope.base.raw) is bytes
+          and type(envelope.context) is str and type(envelope.registration_sha256) is str
+          and type(envelope.targets) is tuple, "plan_scopes")
+    definitions: list[_TargetCoordinates] = []
+    for target in envelope.targets:
+        _need(type(target) is p4.Target and type(target.node) is Node
+              and type(target.id) is str and type(target.operation) is str and type(target.owner) is str
+              and type(target.node.group) is str and type(target.node.id) is str and type(target.params) is bytes,
+              "plan_scopes")
+        node = target.node
+        definitions.append(_TargetCoordinates(target, node, (node.group, node.id),
+                                              (target.id, target.operation, target.owner), target.params))
+    return _EnvelopeCoordinates(envelope.base, envelope.raw, envelope.base.raw,
+                                (envelope.context, envelope.registration_sha256), envelope.targets, tuple(definitions))
+
+
+def _close_envelope_coordinates(envelope: p4.Envelope, original: _EnvelopeCoordinates) -> None:
+    current = _envelope_coordinates(envelope)
+    _need(current.base is original.base and current.raw is original.raw and current.base_raw is original.base_raw
+          and current.scope == original.scope and current.targets is original.targets
+          and len(current.definitions) == len(original.definitions), "plan_scopes")
+    _need(all(a.target is b.target and a.node is b.node and a.node_identity == b.node_identity
+              and a.definition == b.definition and a.params is b.params
+              for a, b in zip(current.definitions, original.definitions, strict=True)), "plan_scopes")
+
+
+def validate_census_scopes(plan: Plan, budgets: Budgets) -> None:
+    """Recheck a freshly prepared census inventory without admitting or materializing requests."""
+    _need(type(plan) is Plan and type(budgets) is Budgets and plan.budgets is budgets
+          and type(plan.scopes) is tuple and type(plan.request_values) is tuple, "plan_scopes")
+    envelope, brief, held = plan.envelope, plan.brief, plan.brief_bindings
+    scopes, before = plan.scopes, plan.request_values
+    _need(all(type(row) is tuple and len(row) == 4 and type(row[0]) is str
+              and type(row[1]) is CaptureRequest and type(row[2]) is Capture and type(row[3]) is bytes
+              for row in before), "plan_scopes")
+
+    def close_plan() -> None:
+        _need(type(plan) is Plan and plan.envelope is envelope and plan.brief is brief
+              and plan.brief_bindings is held and plan.budgets is budgets
+              and plan.scopes is scopes and plan.request_values is before, "plan_scopes")
+
+    context_id, command, selected = _derive_scopes(envelope, budgets, brief, held)
+    close_plan()
+    declared = _envelope_coordinates(envelope)
+    current = _scoped_requests(scopes, selected, context_id, command)
+    anchors = tuple(request_anchors.retain_live_request(request) for request in current)
+    values = context.request_values(current)
+    _ready_brief(held, brief, envelope, budgets)
+    close_plan()
+    _close_envelope_coordinates(envelope, declared)
+    checked = _scoped_requests(scopes, selected, context_id, command)
+    _need(len(current) == len(checked) and all(a is b for a, b in zip(current, checked, strict=True)),
+          "plan_scopes")
+    expected = {key: (request, capture) for key, request, capture, _ in before}
+    for request, anchor in zip(checked, anchors, strict=True):
+        original = expected.get(anchor.identity)
+        _need(original is not None and request is original[0] and request.capture is original[1], "plan_scopes")
+        request_anchors.validate_live_request(request, anchor)
+    _need(len(values) == len(before) and all(
+        a[0] == b[0] and a[1] is b[1] and a[2] is b[2] and a[3] == b[3]
+        for a, b in zip(values, before, strict=True)
+    ), "plan_scopes")
+
+
+def prepare_census_inputs(
+    envelope: p4.Envelope, budgets: Budgets, brief: state.StateOwner, held: custody.PlanBindings,
+) -> Plan:
+    """Use the actual admitted envelope and original BRIEF prepare, with no external admission authority."""
+    context_id, command, selected = _derive_scopes(envelope, budgets, brief, held)
     scopes: list[Scope] = []
     for target, source, interface, key, member in selected:
         request = None if member is None else _request(member, context_id, command)
         scopes.append(Scope(target=target, source=source, interface=interface, key=key,
                             member=None if member is None else member[0], request=request))
     _ready_brief(held, brief, envelope, budgets)
-    requests: list[CaptureRequest] = []
-    for scope, (_, _, _, _, member) in zip(scopes, selected, strict=True):
-        request = scope.request
-        if request is None or member is None:
-            _need(request is None and member is None, "request")
-            continue
-        _close_request(request, member, context_id, command)
-        requests.append(request)
-    prepared = tuple(requests)
-    originals = tuple(request_anchors.retain_live_request(request) for request in prepared)
-    values = context.request_values(prepared)
+    original_scopes = tuple(scopes)
+    requests = _scoped_requests(original_scopes, selected, context_id, command)
+    anchors = tuple(request_anchors.retain_live_request(request) for request in requests)
+    values = context.request_values(requests)
     _ready_brief(held, brief, envelope, budgets)
-    for request, original in zip(prepared, originals, strict=True):
-        request_anchors.validate_live_request(request, original)
-    return Plan(envelope=envelope, budgets=budgets, brief=brief, brief_bindings=held, scopes=tuple(scopes),
+    checked = _scoped_requests(original_scopes, selected, context_id, command)
+    _need(all(a is b for a, b in zip(checked, requests, strict=True)), "plan_scopes")
+    for request, anchor in zip(checked, anchors, strict=True):
+        request_anchors.validate_live_request(request, anchor)
+    return Plan(envelope=envelope, budgets=budgets, brief=brief, brief_bindings=held, scopes=original_scopes,
                 request_values=values)
-
 
 def _ready_brief(held: custody.PlanBindings, brief: state.StateOwner, envelope: p4.Envelope, budgets: Budgets) -> None:
     custody.validate_plan(held, brief, envelope, budgets)
