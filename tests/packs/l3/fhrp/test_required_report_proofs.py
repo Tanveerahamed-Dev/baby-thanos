@@ -34,7 +34,7 @@ def test_literal_actual_proofs_all_source_subjects_original_external_bytes_and_n
     assert canonical(next(iter(projected.requirements.values())))==canonical(expected)
     assert len(parsed)==len(set(parsed))==2 and reads==[expected["subject"]]
     scope,_points=expected_scope(envelope)
-    assert set(projected.inputs)==set((*files.values(),scope,raw))
+    assert set(projected.inputs)=={*files.values(),scope,raw}
     assert projected.header["input_artifacts"]==len(files)+2
     raw_map={sha256(item).hexdigest():item for item in projected.inputs}
     for record,fragment in projected.registry:
