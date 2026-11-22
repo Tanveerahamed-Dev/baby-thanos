@@ -364,3 +364,22 @@ def plant_original_envelope_after_brief(monkeypatch):
 
     monkeypatch.setattr(StandbyBriefPack, "prepare", preparing)
     return seen
+
+
+def plant_final_request_snapshot(monkeypatch, requests):
+    snapshot = requests.context.request_values
+    seen = []
+
+    def snapshotting(current):
+        values = snapshot(current)
+        for request in current:
+            capture = request.capture
+            if capture.operation == census.OP:
+                lines = (replace(capture.lines[0], text="different"), *capture.lines[1:])
+                object.__setattr__(capture, "lines", lines)
+                seen.append(capture)
+                break
+        return values
+
+    monkeypatch.setattr(requests.context, "request_values", snapshotting)
+    return seen
