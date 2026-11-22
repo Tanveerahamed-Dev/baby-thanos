@@ -301,6 +301,11 @@ def _ready_brief(held: custody.PlanBindings, brief: state.StateOwner, envelope: 
 def prepare_census_folder(root: Path, budgets: Budgets) -> Plan:
     """Admit and prepare one named folder. Returned comparison material is not an execution receipt."""
     envelope = p4.admit_folder(root, budgets, declarations=_declarations())
+    return prepare_census_envelope(envelope, budgets)
+
+
+def prepare_census_envelope(envelope: p4.Envelope, budgets: Budgets) -> Plan:
+    """Prepare against the pipeline's admitted envelope without reopening its folder."""
     pointers, values = context.capture_context(envelope, budgets)
     binding = state.BINDING
     _need(type(binding) is OperationBinding and type(binding.operation) is str and type(binding.step) is str
