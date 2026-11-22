@@ -4,6 +4,7 @@ from hashlib import sha256
 
 from atlas_brain.evidence.capture import Capture, CaptureMetadata, ErrorKind
 from atlas_brain.evidence.parsekit import rules
+from atlas_brain.evidence.parsekit.patterns import compile_pattern
 from atlas_brain.kernel import states as k
 
 OP = "synthetic.hsrp_ipv4_interface_census"
@@ -91,13 +92,7 @@ def _is_scope(fields: dict[str, rules.Captured], node: k.EntityKey, interface: s
     return fields["node"].raw == node and fields["interface"].raw == interface
 
 
-def parse_capture(capture: Capture, *, node: k.EntityKey, interface: str) -> Result:
-    """Read one framed census for the supplied expected scope, yielding only byte claims."""
-    refused = _capture_refusal(capture, node, interface)
-    if refused is not None:
-        return refused
-    raw = capture.raw
-    parsed = rules.run_rules(raw, capture.id, _RULES, ())
+def _interpret(raw: bytes, parsed: rules.ParseResult, node: k.EntityKey, interface: str) -> Result:
     if not raw.endswith(b"\n"):
         return _unresolved(k.UnknownReason.CAPTURE_TRUNCATED, "missing_final_lf", parsed)
     if b"\r" in raw:
@@ -132,3 +127,109 @@ def parse_capture(capture: Capture, *, node: k.EntityKey, interface: str) -> Res
     census = Census(scope=scope, scope_raw=raw[:parsed.lines[0].span.end], groups=tuple(groups),
                     footer=footer, body_span=k.ByteSpan(start=0, end=footer.span.start))
     return Result(census=census, parse=parsed, reason=None, detail=None)
+
+
+def parse_capture(capture: Capture, *, node: k.EntityKey, interface: str) -> Result:
+    """Read one framed census for the supplied expected scope, yielding only byte claims."""
+    refused = _capture_refusal(capture, node, interface)
+    if refused is not None:
+        return refused
+    raw = capture.raw
+    parsed = rules.run_rules(raw, capture.id, _RULES, ())
+    return _interpret(raw, parsed, node, interface)
+
+
+def _product(condition: bool, reason: str) -> None:
+    k.require(condition, "hsrp_census_product_" + reason)
+
+
+def _same_span(span: k.ByteSpan, start: int, end: int) -> bool:
+    return (type(span) is k.ByteSpan and type(span.start) is int and type(span.end) is int
+            and span.start == start and span.end == end)
+
+
+def _check_record(record: rules.Record, label: str, start: int, end: int,
+                  fields: tuple[tuple[str, str, int, int], ...]) -> None:
+    _product(type(record) is rules.Record and type(record.rule_id) is str and record.rule_id == label
+             and _same_span(record.span, start, end)
+             and type(record.fields) is tuple and len(record.fields) == len(fields), "record")
+    for pair, (name, raw, left, right) in zip(record.fields, fields, strict=True):
+        _product(type(pair) is tuple and len(pair) == 2 and type(pair[0]) is str and pair[0] == name, "token")
+        token = pair[1]
+        _product(type(token) is rules.Captured and type(token.raw) is str and token.raw == raw
+                 and type(token.value) is str and token.value == raw and _same_span(token.span, left, right), "token")
+
+
+def _check_lexical(raw: bytes, parsed: rules.ParseResult) -> rules.ParseResult:
+    """Check every supplied claim against the existing rule table without running the parser."""
+    _product(type(parsed) is rules.ParseResult and type(parsed.records) is tuple
+             and all(type(record) is rules.Record for record in parsed.records)
+             and type(parsed.lines) is tuple and type(parsed.tokens) is tuple and not parsed.tokens
+             and type(parsed.quality) is str, "parse")
+    compiled = tuple((rule, compile_pattern(rule.pattern)) for rule in _RULES)
+    state, offset, index, complete = "start", 0, 0, True
+    for line in parsed.lines:
+        _product(offset < len(raw), "accounting")
+        lf = raw.find(b"\n", offset)
+        end = len(raw) if lf < 0 else lf + 1
+        content_end = end if lf < 0 else lf
+        if lf > offset and raw[lf - 1:lf] == b"\r":
+            content_end -= 1
+        content = raw[offset:content_end]
+        _product(type(line) is rules.LineAccounting and _same_span(line.span, offset, end)
+                 and all(type(value) is str for value in (line.status, line.rule_id, line.reason)), "accounting")
+        for rule, pattern in compiled:
+            if rule.state != state:
+                continue
+            match = pattern.fullmatch(content)
+            if match is None:
+                continue
+            _product(line.status == "consumed" and line.rule_id == rule.rule_id and line.reason == rule.reason
+                     and index < len(parsed.records), "accounting")
+            fields: list[tuple[str, str, int, int]] = []
+            for name in rule.fields:
+                left, right = match.span(name)
+                _product(0 <= left <= right <= content_end - offset, "token")
+                piece = raw[offset + left:offset + right].decode("ascii")
+                fields.append((name, piece, offset + left, offset + right))
+            _check_record(parsed.records[index], rule.rule_id, offset, content_end, tuple(fields))
+            state = rule.target
+            index += 1
+            break
+        else:
+            _product(line.status == "unrecognised" and not line.rule_id and not line.reason, "accounting")
+            complete = False
+        offset = end
+    _product(offset == len(raw) and index == len(parsed.records), "accounting")
+    return rules.ParseResult(parsed.records, parsed.lines, (), "complete" if complete else "partial")
+
+
+def validate_product(capture: Capture, *, node: k.EntityKey, interface: str, value: Result) -> None:
+    """Check the reported parser product against the original bytes and scope."""
+    _product(type(value) is Result, "result")
+    refused = _capture_refusal(capture, node, interface)
+    if refused is not None:
+        _product(value.census is None and value.parse is None and value.reason is refused.reason
+                 and type(value.detail) is str and value.detail == refused.detail, "refusal")
+        return
+    parsed = value.parse
+    if type(parsed) is not rules.ParseResult:
+        raise ValueError("hsrp_census_product_parse")
+    semantic = _interpret(capture.raw, _check_lexical(capture.raw, parsed), node, interface)
+    expected_parse, expected = semantic.parse, semantic.census
+    _product(expected_parse is not None and parsed.quality == expected_parse.quality
+             and value.reason is semantic.reason and (value.detail is None or type(value.detail) is str)
+             and value.detail == semantic.detail, "result")
+    actual = value.census
+    if expected is None:
+        _product(actual is None, "result")
+        return
+    if type(actual) is not Census:
+        raise ValueError("hsrp_census_product_result")
+    _product(actual.scope is expected.scope and actual.footer is expected.footer
+             and type(actual.scope_raw) is bytes and actual.scope_raw == expected.scope_raw
+             and _same_span(actual.body_span, expected.body_span.start, expected.body_span.end)
+             and type(actual.groups) is tuple and len(actual.groups) == len(expected.groups), "result")
+    for group, wanted in zip(actual.groups, expected.groups, strict=True):
+        _product(type(group) is Group and type(group.number) is int and group.number == wanted.number
+                 and group.record is wanted.record, "group")
