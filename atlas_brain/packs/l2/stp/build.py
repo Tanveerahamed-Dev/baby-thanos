@@ -139,18 +139,49 @@ class Result:
     executed: tuple[Executed[stp.Result], ...]
 
 
+type _ParserCoordinates = tuple[k.CaptureId, k.EntityKey, str | None, str, str, str | None]
+
+
+def _parser_capture(request: CaptureRequest) -> tuple[Capture, _ParserCoordinates, bytes]:
+    k.require(type(request) is CaptureRequest and type(request.capture) is Capture, "stp_parser_custody")
+    capture = request.capture
+    coordinates = capture.id, capture.source, capture.operation, capture.rendered, capture.codec, request.context
+    k.require(all(type(value) is str for value in (capture.id, capture.source, capture.rendered, capture.codec))
+              and (capture.operation is None or type(capture.operation) is str)
+              and (request.context is None or type(request.context) is str)
+              and type(capture.raw) is bytes, "stp_parser_custody")
+    return capture, coordinates, capture.raw
+
+
 class _Adapter(Parser[stp.Result]):
     def __init__(self, targets: dict[k.CaptureId, Target], produced: dict[k.CaptureId, stp.Result] | None = None) -> None:
         self.targets = targets
         self.produced = produced
 
     def parse(self, request: CaptureRequest) -> Parsed[stp.Result]:
-        target = self.targets[request.capture.id]
-        if self.produced is not None:
-            k.require(request.capture.id not in self.produced, "stp_global_value")
-        result = stp.parse_capture(request.capture, target.port, target.vlans)
-        if self.produced is not None:
-            self.produced[request.capture.id] = result
+        k.require(type(self) is _Adapter, "stp_parser_custody")
+        capture, coordinates, raw = _parser_capture(request)
+        identity = coordinates[0]
+        lines, targets, produced = capture.lines, self.targets, self.produced
+        k.require(type(targets) is dict and all(type(key) is str for key in targets), "stp_parser_custody")
+        if produced is not None:
+            k.require(type(produced) is dict and all(type(key) is str for key in produced), "stp_parser_custody")
+            k.require(identity not in produced, "stp_global_value")
+        target = targets[identity]
+        k.require(type(target) is Target and type(target.port) is str and type(target.vlans) is tuple
+                  and all(type(vlan) is int for vlan in target.vlans), "stp_parser_custody")
+        port, vlans = target.port, target.vlans
+        result = stp.parse_capture(capture, port, vlans)
+        k.require(type(self) is _Adapter and self.targets is targets and self.produced is produced, "stp_parser_custody")
+        current, live, current_raw = _parser_capture(request)
+        k.require(current is capture and live == coordinates and current_raw is raw and capture.lines is lines,
+                  "stp_parser_custody")
+        k.require(all(type(key) is str for key in targets) and targets.get(identity) is target
+                  and type(target) is Target and type(target.port) is str and target.port == port
+                  and target.vlans is vlans, "stp_parser_custody")
+        if produced is not None:
+            k.require(all(type(key) is str for key in produced) and identity not in produced, "stp_parser_custody")
+            produced[identity] = result
         return result, result.parse
 
 
