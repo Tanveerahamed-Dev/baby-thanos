@@ -1,15 +1,20 @@
 """Original input fixtures for fixed required-report factory and predicate tests."""
 import json
+from dataclasses import replace
+from functools import partial
 from hashlib import sha256
 
+import pytest
 from presence_test_support import inputs
 from test_gateway_source import LIMITS
 
 from atlas_brain.contract.canonical import canonical
 from atlas_brain.evidence import p4_admission as p4
+from atlas_brain.model import store
 from atlas_brain.packs.l2.etherchannel import build as ec
 from atlas_brain.packs.l2.stp import build as stp
 from atlas_brain.packs.l3.fhrp import gateway_policy as policy
+from atlas_brain.packs.l3.fhrp import reported_presence as presence
 from atlas_brain.packs.l3.fhrp import required_report_profile as profile
 
 SELECTORS=(("hsrp","Vl10"),("hsrp-cold","BD10"))
@@ -40,3 +45,40 @@ def original_inputs(root,case="ready",multiple=False):
         "requirements":[] if case=="unmatched" else requirements}
     return envelope,policies,None if "baseline" in case else canonical(document),files
 
+
+
+def budget_inputs(root, limit):
+    """Prepare fixture inputs and exact or reduced limits before any observations."""
+    envelope, policies, raw, files = original_inputs(root)
+    assert raw is not None
+    declared = profile.Inputs(policies=policies, baseline_raw=raw)
+    pack = presence.PresencePack(LIMITS, _required=declared)
+    pack.prepare(envelope)
+    assert pack.premises is not None
+    members = (*files.values(), pack.premises.scope_raw, raw)
+    largest = max(map(len, members))
+    budgets = replace(LIMITS,
+        bundle_bytes=sum(map(len, members)) - (limit == "bundle"),
+        artifacts=len(members) - (limit == "count"),
+        artifact_bytes={"exact": largest, "bundle": largest, "count": largest,
+            "artifact": len(raw) - 1, "artifact_boundary": largest - 1}[limit])
+    return budgets, policies, raw
+
+
+def _unexpected_observation(name, *_args, **_kwargs):
+    pytest.fail(f"unexpected {name} observation")
+
+
+def forbid_observations(monkeypatch):
+    """Trip real pack parsers and store methods; return originals for isolated smoke tests."""
+    targets = {
+        "hsrp": (presence.state.hsrp, "parse_capture"),
+        "stp": (presence.stp.stp, "parse_capture"),
+        "ec": (presence.ec.parse_summary, "parse_capture"),
+        "reader": (store.FactReader, "read"),
+        "writer": (store.FactWriter, "write"),
+    }
+    originals = {name: (owner, attr, getattr(owner, attr)) for name, (owner, attr) in targets.items()}
+    for name, (owner, attr, _) in originals.items():
+        monkeypatch.setattr(owner, attr, partial(_unexpected_observation, name))
+    return originals
