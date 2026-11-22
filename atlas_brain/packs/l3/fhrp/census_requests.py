@@ -228,6 +228,10 @@ def _close_envelope_coordinates(envelope: p4.Envelope, original: _EnvelopeCoordi
               for a, b in zip(current.members, original.members, strict=True)), "plan_scopes")
 
 
+retain_envelope_coordinates = _envelope_coordinates
+close_envelope_coordinates = _close_envelope_coordinates
+
+
 def validate_census_scopes(plan: Plan, budgets: Budgets) -> None:
     """Recheck a freshly prepared census inventory without admitting or materializing requests."""
     _need(type(plan) is Plan and type(budgets) is Budgets and plan.budgets is budgets
