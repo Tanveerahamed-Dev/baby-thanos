@@ -9,7 +9,7 @@ from atlas_brain.evidence.parsekit import rules
 from atlas_brain.kernel import states as k
 from atlas_brain.packs.l3.fhrp import build as brief
 from atlas_brain.packs.l3.fhrp import census_parse_accounting as accounting
-from atlas_brain.packs.l3.fhrp import census_product_snapshot as snapshot
+from atlas_brain.packs.l3.fhrp import census_product_snapshot as product_snapshot
 from atlas_brain.packs.l3.fhrp import census_request_anchors as request_anchors
 from atlas_brain.packs.l3.fhrp import census_requests as requests
 from atlas_brain.packs.l3.fhrp import parse_hsrp_census as census
@@ -32,7 +32,7 @@ class _Emission:
     snapshot: tuple[object, ...]
 
 
-type Birth = tuple[k.CaptureId, _Emission, Parsed[census.Result], census.Result,
+type Birth = tuple[str, _Emission, Parsed[census.Result], census.Result,
                    rules.ParseResult, tuple[object, ...]]
 
 
@@ -70,9 +70,9 @@ class CensusOwner(Parser[census.Result]):
         self.expected = plan.request_values
         self.anchors = tuple(request_anchors.retain_live_request(item[1]) for item in self.expected)
         self.coordinates = self.scopes, self.anchors
-        self.attempted: set[k.CaptureId] = set()
-        self.dispatched: tuple[k.CaptureId, ...] = ()
-        self.emitted: dict[k.CaptureId, _Emission] = {}
+        self.attempted: set[str] = set()
+        self.dispatched: tuple[str, ...] = ()
+        self.emitted: dict[str, _Emission] = {}
         self.original_attempted, self.original_emitted = self.attempted, self.emitted
         self.births: tuple[Birth, ...] = ()
         self.dispatching = False
@@ -82,6 +82,7 @@ class CensusOwner(Parser[census.Result]):
         _need(type(self) is CensusOwner, "owner")
         plan = self.plan
         _need(type(plan) is requests.Plan and plan is self.original_plan and plan.envelope is self.envelope
+              and type(self.brief) is brief.StateOwner and type(self.bindings) is custody.PlanBindings
               and plan.budgets is self.budgets and plan.brief is self.brief and plan.brief_bindings is self.bindings
               and plan.scopes is self.original_scopes and plan.request_values is self.expected, "plan")
         return plan
@@ -108,7 +109,7 @@ class CensusOwner(Parser[census.Result]):
                   and type(live[2]) is Capture and live[2].raw is anchor.raw and live[3] == before[3], "inputs")
             request_anchors.validate_live_request(before[1], anchor)
 
-    def close_emitted(self, pending: k.CaptureId | None = None) -> None:
+    def close_emitted(self, pending: str | None = None) -> None:
         _need(type(self) is CensusOwner and type(self.attempted) is set and self.attempted is self.original_attempted
               and type(self.emitted) is dict and self.emitted is self.original_emitted
               and all(type(identity) is str for identity in self.attempted)
@@ -122,14 +123,14 @@ class CensusOwner(Parser[census.Result]):
               and self.attempted == set(self.dispatched) and len(self.dispatched) == len(self.attempted)
               and self.attempted <= {item[0] for item in self.expected} and len(self.emitted) == len(self.births),
               "emissions")
-        expected = {k.CaptureId(identity): capture for identity, _, capture, _ in self.expected}
+        expected: dict[str, Capture] = {identity: capture for identity, _, capture, _ in self.expected}
         for identity, item, pair, value, parsed, saved in self.births:
             _need(self.emitted.get(identity) is item and item.capture is expected.get(identity)
                   and item.pair is pair and type(pair) is tuple and len(pair) == 2
                   and pair[0] is value and pair[1] is parsed and item.snapshot is saved, "emissions")
             _need(type(value) is census.Result and value.parse is item.original_parse
                   and value.census is item.original_census
-                  and snapshot.snapshot_product(value, parsed, item.capture) == saved, "emissions")
+                  and product_snapshot.snapshot_product(value, parsed, item.capture) == saved, "emissions")
 
     def bound_request(self, request: CaptureRequest) -> tuple[str, request_anchors.RequestAnchor]:
         _need(type(self) is CensusOwner and type(request) is CaptureRequest and type(request.capture) is Capture
@@ -178,10 +179,10 @@ class CensusOwner(Parser[census.Result]):
                 parsed = accounting.refused_parse_accounting(value, raw, max_bytes=len(raw), max_lines=maximum_lines)
                 reclose()
             pair = (value, parsed)
-            values = snapshot.snapshot_product(value, parsed, capture)
+            values = product_snapshot.snapshot_product(value, parsed, capture)
             census.validate_product(capture, node=node, interface=interface, value=value)
             reclose()
-            _need(snapshot.snapshot_product(value, parsed, capture) == values, "result")
+            _need(product_snapshot.snapshot_product(value, parsed, capture) == values, "result")
             emission = _Emission(capture, pair, source_parse, source_census, values)
             self.emitted[identity] = emission
             self.births += ((identity, emission, pair, value, parsed, values),)
@@ -195,4 +196,4 @@ class CensusOwner(Parser[census.Result]):
         CensusOwner.close_inputs(self)
         CensusOwner.close_emitted(self)
         _need(len(self.emitted) == len(self.expected), "emissions")
-        return tuple(self.emitted[k.CaptureId(identity)].pair for identity, _, _, _ in self.expected)
+        return tuple(self.emitted[identity].pair for identity, _, _, _ in self.expected)

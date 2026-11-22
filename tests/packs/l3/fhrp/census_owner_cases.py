@@ -88,7 +88,7 @@ def plant_prepared_carrier(monkeypatch, requests, fault):
     return hits
 
 
-def plant_late_plan_class(monkeypatch, custody, run, member=None):
+def plant_late_plan_class(monkeypatch, custody, run, stale):
     validate = custody.validate_plan
     hits = []
 
@@ -96,10 +96,11 @@ def plant_late_plan_class(monkeypatch, custody, run, member=None):
         validate(*args)
         if not hits:
             hits.append(run.plan)
-            if member is None:
-                open_plan_carrier(run.plan)
+            if stale == "member":
+                object.__setattr__(run.plan.scopes[0].member, "raw", b"late member bytes")
             else:
-                object.__setattr__(member, "raw", b"late member bytes")
+                carriers = {"plan": run.plan, "brief": run.brief, "bindings": run.bindings}
+                open_plan_carrier(carriers[stale])
 
     monkeypatch.setattr(custody, "validate_plan", validating)
     return hits

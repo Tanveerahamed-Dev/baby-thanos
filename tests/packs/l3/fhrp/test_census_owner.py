@@ -118,12 +118,11 @@ def test_actual_prepared_carriers_close_before_first_owner_access(tmp_path, monk
     assert len(hits) == 1 and not calls
 
 
-@pytest.mark.parametrize("stale", ["plan", "member"])
+@pytest.mark.parametrize("stale", ["plan", "member", "brief", "bindings"])
 def test_actual_custody_callback_cannot_dispatch_stale_input(tmp_path, monkeypatch, stale):
     run, calls = _observed_owner(tmp_path, monkeypatch)
     scope = run.plan.scopes[0]
-    member = scope.member if stale == "member" else None
-    hits = plant_late_plan_class(monkeypatch, owner.custody, run, member)
+    hits = plant_late_plan_class(monkeypatch, owner.custody, run, stale)
     error = "plan_scopes" if stale == "member" else "owner_plan"
     with pytest.raises(ValueError, match=f"^hsrp_census_{error}$"):
         owner.CensusOwner.parse(run, scope.request)
