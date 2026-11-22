@@ -88,7 +88,7 @@ def plant_prepared_carrier(monkeypatch, requests, fault):
     return hits
 
 
-def plant_late_plan_class(monkeypatch, custody, run):
+def plant_late_plan_class(monkeypatch, custody, run, member=None):
     validate = custody.validate_plan
     hits = []
 
@@ -96,7 +96,10 @@ def plant_late_plan_class(monkeypatch, custody, run):
         validate(*args)
         if not hits:
             hits.append(run.plan)
-            open_plan_carrier(run.plan)
+            if member is None:
+                open_plan_carrier(run.plan)
+            else:
+                object.__setattr__(member, "raw", b"late member bytes")
 
     monkeypatch.setattr(custody, "validate_plan", validating)
     return hits
@@ -221,7 +224,7 @@ def assert_real_scope_products(run, calls, case, detail, second, dispatch, close
     assert next(parsed for result, parsed in closed if result is first_result) is effective
 
 
-def plant_snapshot_capture_id(monkeypatch, context, capture):
+def plant_snapshot_capture_id(monkeypatch, context, capture, member=None):
     snapshot = context.request_values
     seen = []
 
@@ -231,8 +234,12 @@ def plant_snapshot_capture_id(monkeypatch, context, capture):
 
     def snapshotting(requests):
         values = snapshot(requests)
-        object.__setattr__(capture, "id", OpenId(capture.id))
-        seen.append(values)
+        if any(request.capture is capture for request in requests):
+            if member is None:
+                object.__setattr__(capture, "id", OpenId(capture.id))
+            else:
+                object.__setattr__(member, "raw", b"replacement member bytes")
+            seen.append(values)
         return values
 
     monkeypatch.setattr(context, "request_values", snapshotting)
